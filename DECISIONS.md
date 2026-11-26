@@ -13,7 +13,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-02 | The shock is a **biphasic truncated exponential** waveform adjusted to the patient's resistance. | Provisional | Best-proven shape; no human trial shows another is better for cardiac arrest; founding patents have expired. |
 | D-03 | Adult energy is **150 joules**. | Provisional (Q-07) | Matches Philips and Avive, which opens the "prove equivalence on the bench" approval route. |
 | D-04 | Child energy is **50 joules**, selected in software. | Provisional | Matches Avive and the pocket units; avoids a separate attenuator or pad. |
-| D-05 | **One pad set** for all patients, about 55–70 cm² of gel per pad, front-and-back placement in child mode. | Provisional | Meets the adult minimum area while fitting an infant. Avive's FDA approval documents the same-pads approach. |
+| D-05 | **One pad set** for all patients, about 55–70 cm² of gel per pad, front-and-back placement in child mode. | Provisional | Meets the adult minimum area while fitting an infant. Avive's FDA approval summary and help page describe the same-pads approach, though one spec-page reading says separate child pads; to be settled by reading the FDA summary in full. Several other units (Zoll AED 3, Schiller, Stryker CR2) also use one pad set with a child button. |
 | D-06 | **Semi-automatic:** the device advises, the responder presses the button. | Provisional (Q-10) | Users are trained; keeps a human in the loop. |
 | D-07 | **Rechargeable** lithium-ion battery. | Provisional (Q-06) | A belt-worn unit is charged like a radio; this is the biggest single size saving. |
 | D-08 | Firmware is written in **Rust**. | Provisional | Owner's standing preference; memory safety suits safety-critical code. |
