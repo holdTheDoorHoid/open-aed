@@ -9,7 +9,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 
 | No. | Decision | Status | Reason |
 |---|---|---|---|
-| D-01 | "Rive AED" in the original request is taken to mean the **Avive Connect**. The CellAED is studied as the other very small unit. | Provisional (Q-01) | No product named "Rive" was found. Research put Avive at about 75% confidence. |
+| D-01 | "Rive AED" in the original request is taken to mean the **Avive Connect**. The CellAED is studied as the other very small unit. | **Confirmed by owner, 26 Nov 2026** | No product named "Rive" was found; the owner confirmed the Avive Connect was meant. |
 | D-02 | The shock is a **biphasic truncated exponential** waveform adjusted to the patient's resistance. | Provisional | Best-proven shape; no human trial shows another is better for cardiac arrest; founding patents have expired. |
 | D-03 | Adult energy is **150 joules**. | Provisional (Q-07) | Matches Philips and Avive, which opens the "prove equivalence on the bench" approval route. |
 | D-04 | Child energy is **50 joules**, selected in software. | Provisional | Matches Avive and the pocket units; avoids a separate attenuator or pad. |
@@ -28,7 +28,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 
 ## Open questions for the owner
 
-**Q-01. Did you mean the Avive Connect?** If you meant a different device, say which, and it will be researched.
+**Q-01. Did you mean the Avive Connect?** *Answered 26 Nov 2026: yes.*
 
 **Q-02. Name, and public or private?** The working name is `open-aed`. Recommendation: keep the name, keep the repository private until the licence is chosen and you have read the plan, then make it public. Publishing early is one of the things that separated open medical projects that succeeded from those that stalled.
 
