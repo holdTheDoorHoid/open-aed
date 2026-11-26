@@ -1,0 +1,6 @@
+target/
+*.bak
+*-backups/
+fp-info-cache
+*.kicad_prl
+.DS_Store
