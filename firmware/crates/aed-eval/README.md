@@ -2,6 +2,8 @@
 
 Runs the rhythm analyser (`aed-rhythm`) on **recorded** heart rhythms from three public PhysioNet databases and reports how often it gives the right answer, measured against the American Heart Association's 1997 performance goals.
 
+A second program, `aed-cardially`, runs the same analyser, untuned, on a public set of real **out-of-hospital cardiac-arrest** recordings of ventricular fibrillation (the "Cardially" dataset). See [The Cardially dataset](#the-cardially-dataset-out-of-hospital-vf) below and REPORT.md section 8.
+
 DEVELOPMENT COMPUTER ONLY. NOT A MEDICAL DEVICE. See [SAFETY.md](../../../SAFETY.md). Results on these databases say nothing about how a device would do on real cardiac arrests; read the limits in [REPORT.md](REPORT.md) before quoting any number.
 
 The latest results are in [REPORT.md](REPORT.md). How the analyser was tuned on half of the recordings, and tested once on the other half, is in [TUNING_LOG.md](TUNING_LOG.md); the split itself is in [splits/](splits/README.md).
@@ -65,7 +67,7 @@ Citations the pages ask for:
 cargo test -p aed-eval
 ```
 
-The unit tests use small hand-built files and synthetic signals. `tests/real_data.rs` checks known facts of the real files (sample counts, first samples against the header, checksums of every record). It looks for the data in `$AED_EVAL_DATA` or `data/physionet` at the repository root and **skips, printing "SKIPPED", when the data are absent**, so it passes on a machine without them. `tests/findings.rs` pins down two analyser behaviours found during the evaluation (see REPORT.md). `tests/split.rs` checks that the committed split files have not changed (by their SHA-256), are disjoint and cover every record, and, when the data are present, that rerunning the split rule reproduces them.
+The unit tests use small hand-built files and synthetic signals. `tests/real_data.rs` checks known facts of the real files (sample counts, first samples against the header, checksums of every record). It looks for the data in `$AED_EVAL_DATA` or `data/physionet` at the repository root and **skips, printing "SKIPPED", when the data are absent**, so it passes on a machine without them. `tests/findings.rs` pins down two analyser behaviours found during the evaluation (see REPORT.md). `tests/split.rs` checks that the committed split files have not changed (by their SHA-256), are disjoint and cover every record, and, when the data are present, that rerunning the split rule reproduces them. `tests/cardially_real.rs` checks facts of the Cardially files and the reader (every report read completely, the printed scale, the shock marks, the nine duplicates, the text files against the PDFs); it looks in `$AED_CARDIALLY_DATA` or `data/mendeley/cardially` and skips in the same way. The PDF reader, its decompressor and the text reader have unit tests on small hand-built files, including truncated and corrupted ones.
 
 ## What the tool does, in plain terms
 
@@ -115,4 +117,61 @@ The databases label rhythms in different ways. These are the rules used, and why
 
 ## Third-party code
 
-None. The crate depends only on `aed-types` and `aed-rhythm` and the Rust standard library. It runs only on a development computer.
+None. The crate depends only on `aed-types` and `aed-rhythm` and the Rust standard library. It runs only on a development computer. (The decompressor and the small PDF reader used for the Cardially reports are written here, in `src/cardially/`.)
+
+## The Cardially dataset (out-of-hospital VF)
+
+### What it is
+
+"Cardially – ECG waveform dataset for predicting defibrillation outcome in out-of-hospital cardiac arrested patients", University of Brescia (Italy) with the Vinča Institute (Belgrade), published on Mendeley Data on 17 February 2020, version 1, DOI 10.17632/wpr5nzyn2z.1. It was made to study whether a shock will work, not to test shock advice. What was found in the download on 27 November 2026 (checked in the files, not taken from the description):
+
+| Question | Answer |
+|---|---|
+| Recordings | 260 PDF reports and 258 text files, in three folders by the shock's outcome: `ROEA` 56, `noROEA` 195, `indeterminable` 9. **Nine reports repeat another report's ECG sample for sample** (five `…_2` copies and four pairs under different names, all within the same folder), so there are at most **251 different recordings**. The article says 260 patients; the duplicates make that doubtful, and nothing in the files identifies patients, so patients cannot be counted. |
+| Who and where | Adults (over 18) with out-of-hospital cardiac arrest treated by emergency medical services in Brescia, 2006–2009 (companion article). |
+| Device | The PDFs are reports from Philips review software ("Philips Medical ERECG 3.0.0.0") carrying the device's own event labels (Armed, Shock advised, Shock 1 delivered, Start pause, …). The article names a semi-automatic "HeartStart 3000" defibrillator sold by Laerdal. Not checked further. |
+| What each recording holds | A window of 60 s (six 10 s strips; 4 reports are shorter, 2 longer) starting on a whole second 10.0–11.0 s before "Shock 1 delivered". So: about **10 s of VF before the first shock** (it includes the device's own analysis and charging, hands off, so no CPR) and **about 50 s after it** (median 49 s analysed). 45 recordings have a second shock inside the window; 70 show the device's CPR pause starting about 3 s after the shock. |
+| PDF format | **Not scans**, despite the description ("printed in paper, and scanned"): they contain no images. They are vector drawings "printed" to PDF (PScript5 / Acrobat Distiller 9). The ECG is a line with **one point every 5 ms (200 per second)** and coordinates to 0.03 points (about 1 µV). This crate reads that drawing back exactly: in all 260 files no sample is missing, none is off the 5 ms grid, none conflicts, and the strips' printed clock times join up. |
+| Amplitude calibration | Every page states **"2 div/mV, 5 div/sec"**, and one grid division is 5 mm (14.17 points): the usual 10 mm per mV and 25 mm per second. So there **is** a stated millivolt scale, but it is the review software's statement; whether it draws the device's true amplitude has not been checked against anything. **The software clips the drawn trace at the edges of each strip's box, ±2 mV about the strip's centre line.** That touches at most 0.9 % of any pre-shock segment, but about a quarter of the first 5 s after each shock. |
+| Bandwidth and filtering | Not stated anywhere. The trace has almost no energy above 40 Hz (the analyser's noise ratio has a median of 0.001), so it has very likely been filtered by the device or the software; the band is unknown. Whether 200 per second is the device's own sampling rate or only the software's drawing rate is unknown. |
+| Text files | The authors' own digitisation of the 9 s before the shock, made with the commercial program FindGraph (article). Two columns, time (s) and amplitude (apparently mV), Windows line ends, **irregular spacing** (about 70–150 points per second, repeated instants, gaps up to 80 ms, amplitude steps of about 19 µV). Against the PDF they correlate at a median of 0.98 and end about 0.3 s before the shock mark, but **four are at about half the PDF's amplitude and one does not match its PDF at all** (correlation 0.17). Two text files and two PDFs have no partner of the same name (apparently mistyped names). The PDFs are used for every result here; the text files only as a cross-check. |
+| Labels | Three cardiologists, majority vote, about the **first shock's outcome**: `ROEA` = return of organised electrical activity at 40–150/min within a minute, lasting 15 s without CPR; `noROEA` = asystole, a rate under 40/min, pulseless electrical activity, or continuing VF/VT; `indeterminable` = not decided. They are not rhythm annotations. Every pre-shock segment is VF by the dataset's definition; nobody labelled it second by second. |
+| Other contents | Python code (a data loader, feature extraction, a notebook). Read, never run. |
+
+### Licence and citation
+
+- **Data:** the Mendeley Data page states **CC BY 4.0** (Creative Commons Attribution 4.0 International); read from the page and its metadata on 27 November 2026.
+- **The companion article** (Data in Brief) is published under **CC BY-NC-ND 4.0**, and some summaries apply that to the data; the data page does not. **This discrepancy is unresolved, and written confirmation from the authors is pending.** This project only *evaluates* on the data, for non-commercial research, and neither redistributes nor tunes on them, which either licence allows. Nothing from the dataset (no file, excerpt, plot or per-recording result) is in this repository.
+- **The code inside the zip** is under the BSD 3-clause licence (copyright 2020 Mattia Savardi). None of it is used here.
+- **Citation the dataset's own README asks for:** Benini S, Ivanovic MD, Savardi M, Krsic J, Hadžievski L, Baronio F. ECG waveform dataset for predicting defibrillation outcome in out-of-hospital cardiac arrested patients. *Data in Brief* 34:106635 (published online December 2020). https://doi.org/10.1016/j.dib.2020.106635
+- **The dataset itself:** Benini S, Ivanovic MD, Savardi M, Krsic J, Hadžievski L, Baronio F. Cardially – ECG waveform dataset for predicting defibrillation outcome in out-of-hospital cardiac arrested patients. Mendeley Data, V1 (2020). https://doi.org/10.17632/wpr5nzyn2z.1 (The page shows no ready-made citation; this one is built from its listed authors, title, version and DOI.)
+
+### Getting it
+
+Download the single file `cardially-ecg-dataset.zip` (17,851,923 bytes) from https://data.mendeley.com/datasets/wpr5nzyn2z/1 into a new, empty folder `data/mendeley/cardially/` at the repository root (ignored by git; never commit it), and check its SHA-256, which Mendeley Data lists for the file:
+
+```
+a3bce9bdb07a752f5d055a0ad742e227dade961b258518824069cb7c15fca735  cardially-ecg-dataset.zip
+```
+
+Extract it into `data/mendeley/cardially/extracted/`, leaving out the macOS `__MACOSX` folder. Treat the contents as untrusted: the reader here only parses them, and nothing in the zip needs to be run.
+
+### Running it
+
+From `firmware/`:
+
+```
+cargo run --release -p aed-eval --bin aed-cardially -- --data ../data/mendeley/cardially --out crates/aed-eval/reports/cardially_untuned.md --csv ../data/mendeley/cardially/results.csv
+```
+
+`--data` defaults to `data/mendeley/cardially` at the repository root. `--csv` writes one row per recording (outcome, timing, window reasons, every variant) so that outliers can be examined; it describes individual patients' recordings, so write it under `data/` or outside the repository and never commit it. `--survey` instead prints, for each file, only what the reader recovered. A run takes a few seconds.
+
+### What it can and cannot show
+
+- **VF only.** Every recording is VF before the shock. There is nothing non-shockable, so **these data say nothing about wrong shocks**, only about missed VF.
+- **Short.** About 10 s before the shock. The analyser cannot advise a shock before 7 s and the device allows 12 s, so the main result is for an analysis cut off at 9 s. It cannot show what the last 3 s of a real analysis, or a full 3 s countdown, would do.
+- **Already shocked by another AED.** These are VF episodes that the recording defibrillator itself advised shocking. VF that a commercial AED did not recognise is not in the dataset, so this VF is probably easier than VF in general.
+- **Reconstructed from a printed report,** not from the device's own data file: unknown filtering, an amplitude scale that is the software's statement, clipping at ±2 mV. Where the result depends on amplitude, it is shown under several assumptions.
+- **No CPR artefact before the shock**, no pad impedance, no children (adults only), one city, 2006–2009, one device type.
+- **The post-shock part is description, not scoring:** the labels give the shock's outcome, not the rhythm second by second, and much of it contains CPR.
+- **A clean external test only while nothing is tuned on it.** The analyser was not tuned on these data: its settings are those frozen after the PhysioNet tuning (TUNING_LOG.md). That makes this an independent test of how it detects real out-of-hospital VF. **If any setting is ever chosen by looking at these results, they stop being one**, and that must be recorded.
