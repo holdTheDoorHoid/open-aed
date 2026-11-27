@@ -69,6 +69,17 @@ pub enum Prompt {
     /// The cancel control has read pressed for too long and counts as stuck
     /// (D-31). A stuck cancel would block every shock, so this is a fault.
     CancelStuckContinueCpr,
+    /// Compression sensing (D-36) saw the chest being compressed or moved
+    /// while a shock was being prepared: the shock is held back and the
+    /// rhythm is analysed again. Always followed at once by "Analysing. Do
+    /// not touch the patient."
+    MovementShockDelayed,
+    /// As [`Prompt::MovementShockDelayed`], but the device has already
+    /// analysed again once in this cycle: no shock now. Always followed at
+    /// once by "Start CPR."
+    MovementNoShock,
+    /// During CPR, no compressions have been sensed for a while (D-14).
+    ContinueCpr,
 }
 
 impl Prompt {
@@ -104,6 +115,9 @@ impl Prompt {
             Prompt::PressPadsFirmly => "Press pads firmly to bare chest.",
             Prompt::PadContactPoorNoShock => "Poor pad contact. No shock.",
             Prompt::CancelStuckContinueCpr => "Cancel button stuck. No shocks. Continue CPR.",
+            Prompt::MovementShockDelayed => "Movement detected. Shock delayed.",
+            Prompt::MovementNoShock => "Movement detected. No shock.",
+            Prompt::ContinueCpr => "Continue CPR.",
         }
     }
 }

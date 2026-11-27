@@ -9,7 +9,10 @@ use crate::link::SupervisorFault;
 use crate::rescue::{AbortReason, FaultKind, RescueState, ShockOutcome};
 use crate::selftest::SelfTestFailure;
 use crate::supervisor::{PermitRefusal, ReleaseReason};
-use aed_types::{Millis, Ohms, PatientMode, PlanError, RhythmDecision, ShockPlan, Volts};
+use aed_types::{
+    ChestState, ImpedanceSignal, Millis, Ohms, PatientMode, PlanError, RhythmDecision, ShockPlan,
+    Volts,
+};
 
 /// How many events the main controller keeps.
 pub const EVENT_CAPACITY: usize = 256;
@@ -97,6 +100,121 @@ pub enum Event {
     SupervisorReleasedHold(ReleaseReason),
     /// The supervisor latched a fault.
     SupervisorFaultLatched(SupervisorFault),
+    /// Compression sensing (D-36): while analysing, the chest stopped being
+    /// still (this state). The rhythm analysis was reset and fed nothing
+    /// until hands were off again.
+    AnalysisHeld(ChestState),
+    /// The compression-sensing channel has had this problem, with the pads
+    /// on, for longer than [`crate::Config::chest_channel_fail_ms`]: the
+    /// device now works from the heart signal alone, as without
+    /// compression sensing.
+    ChestSensingFailed(ImpedanceSignal),
+    /// The compression-sensing channel has been good again for
+    /// [`crate::Config::chest_channel_recover_ms`]: it is used again.
+    ChestSensingRestored,
+    /// During CPR, compressions restarted after a pause of this many ms
+    /// (pauses of at least [`crate::Config::pause_record_ms`] only).
+    CprPause(u32),
+    /// End of a CPR period: what compression sensing measured during it.
+    CprPeriodSummary {
+        /// Compressions detected.
+        compressions: u16,
+        /// Average rate over compressions given in runs, per minute (0 if none).
+        rate_per_min: u16,
+        /// Share of the period spent compressing, tenths of a percent.
+        on_chest_permille: u16,
+        /// Longest pause between compressions, ms.
+        longest_pause_ms: u32,
+    },
+    /// "Continue CPR." was said because no compressions were sensed for
+    /// [`crate::Config::no_compression_prompt_ms`].
+    NoCompressionsPrompt,
+}
+
+/// How many compressions the compression record keeps (the newest).
+pub const COMPRESSION_LOG_CAPACITY: usize = 512;
+
+/// One detected compression, for the compression record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompressionEntry {
+    /// When it was detected.
+    pub at: Millis,
+    /// Its size, milliohms peak to peak after filtering (capped at 65,535).
+    pub amplitude_mohm: u16,
+}
+
+/// The compression record: one entry per detected compression (D-14),
+/// kept apart from the main event record so that compressions (about 220
+/// per CPR period) can never push safety events out of it. Fixed size; the
+/// oldest entry is overwritten and counted.
+#[derive(Debug, Clone)]
+pub struct CompressionLog<const N: usize> {
+    slots: [Option<CompressionEntry>; N],
+    next: usize,
+    len: usize,
+    overwritten: u32,
+}
+
+impl<const N: usize> Default for CompressionLog<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> CompressionLog<N> {
+    /// An empty record.
+    #[must_use]
+    pub const fn new() -> Self {
+        CompressionLog {
+            slots: [None; N],
+            next: 0,
+            len: 0,
+            overwritten: 0,
+        }
+    }
+
+    /// Add one compression.
+    pub fn push(&mut self, entry: CompressionEntry) {
+        let Some(slot) = self.slots.get_mut(self.next) else {
+            self.overwritten = self.overwritten.saturating_add(1);
+            return;
+        };
+        *slot = Some(entry);
+        self.next = self.next.saturating_add(1).checked_rem(N).unwrap_or(0);
+        if self.len < N {
+            self.len = self.len.saturating_add(1);
+        } else {
+            self.overwritten = self.overwritten.saturating_add(1);
+        }
+    }
+
+    /// Entries held.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// True if no entries are held.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Entries lost to overwriting.
+    #[must_use]
+    pub const fn overwritten(&self) -> u32 {
+        self.overwritten
+    }
+
+    /// The newest entry, if any.
+    #[must_use]
+    pub fn newest(&self) -> Option<CompressionEntry> {
+        if self.len == 0 {
+            return None;
+        }
+        let index = self.next.checked_add(N.saturating_sub(1))?.checked_rem(N)?;
+        self.slots.get(index).copied().flatten()
+    }
 }
 
 /// An event with the time it happened.
