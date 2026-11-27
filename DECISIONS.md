@@ -68,6 +68,9 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-56 | **Temperature sensing: six points, one read only by the supervisor.** Untrusted readings make the device "not ready" when idle. In a rescue, an unknown temperature does not block a shock. | **Confirmed by owner, 27 Nov 2026** | Fail safe when idle; never let a broken sensor deny a shock. |
 | D-57 | **The pad connector reports which pad set is fitted**, and the device keeps its heat history and counters in memory that survives battery removal. | **Confirmed by owner, 27 Nov 2026** | Needed to track pad heat per pad set and to keep the heat record honest. |
 | D-58 | **Circuit diagrams are generated from reviewable pin tables** with the generator from the owner's wildlife-station project, copied into `tools/`, and checked by KiCad's own rule check and a connection round trip on every build. | **Confirmed by owner, 27 Nov 2026** | A reviewer can check a pin table against a datasheet line by line. |
+| D-59 | **Consent is needed to start a shock, not to finish it.** The main controller's request and the supervisor's permit must both be present for the output stage to begin. Once the sequence has begun, hardware completes the planned pulse, limited by a hardware time cap that no software can extend, then locks out until consent has been removed. Pad and voltage readings are checked when consent is given, not during the pulse. | Provisional (design review finding R-1; Q-50) | A shock lasts about 10 thousandths of a second. During it the pad reading necessarily goes open and the capacitor voltage necessarily falls, so re-checking them would withdraw consent mid-shock and cut the pulse off in an undefined way. |
+| D-60 | **If the adult/child switch's two contacts disagree, the hardware voltage ceiling defaults to the adult value**, the main controller sees the disagreement, records it and reports "not ready". | Provisional (review finding R-8; Q-50) | With the ceiling defaulting to the child value, one broken contact would block every adult shock. The child dose is still set by the main controller and checked by the supervisor. |
+| D-61 | **A low-voltage "test permit" lets the self-test exercise the interlock and the output switches** without a patient and without full voltage. | Provisional (review finding R-13; Q-50) | Otherwise two kinds of fault in the shock path have no way of being detected before a rescue. |
 
 ## Owner questions
 
@@ -159,6 +162,8 @@ Answered on 27 November 2026.
 - **For the hardware engineer:** how to hold the voltage sensors to 1% + 7 V over the device's life (recalibrate at service, or costlier low-drift parts); the temperature range of the candidate pad-resistance chip.
 
 - **Q-49** (owner): D-54 to D-57 were confirmed on 27 Nov 2026. Three smaller judgment calls in the heat rules remain assumptions the owner has not been asked about one by one: a device that was once above 70 °C but has cooled still shocks if its switch-on self-test passes; "service soon" appears at 90% of capacitor life; time with the battery removed is not counted as pad heat.
+
+- **Q-50** (owner): confirm D-59, D-60 and D-61, which came out of the independent review of the circuit design (docs/reviews/2026-11-27-hardware-design-review.md).
 
 ## Things that need a professional, not a guess
 
