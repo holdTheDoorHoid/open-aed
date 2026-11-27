@@ -10,7 +10,7 @@ Trained responders: police officers, paramedics, medical professionals. They car
 
 | Target | Value | Why |
 |---|---|---|
-| Weight, first prototype goal | 700 g or less | Matches the smallest full-energy units on sale (St John Pocket AED P3, Schiller FRED easyport plus at 780 g) |
+| Weight, first prototype goal | 700 g or less, **including pads** (D-43) | Matches the smallest full-energy units on sale (St John Pocket AED P3, Schiller FRED easyport plus at 780 g) |
 | Volume, first prototype goal | 0.7 litre or less | Same |
 | Stretch goal | 500 g and 0.5 litre | The hardware estimate for a 150 J device from catalogue parts is 350–620 cm³ and 420–800 g |
 | Not a goal | 300 g, like the CellAED | That device reached its size by cutting shock energy and shock count, and its maker has had regulatory trouble. Catalogue parts do not get there at full energy. |
@@ -75,7 +75,7 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 
 Field surveys found 15–21% of public AEDs not ready when inspected, and an analysis of 1,150 fatal failures found about a quarter caused by battery or power and about a quarter by pads and connectors. So:
 
-- Regular self-test that charges the capacitor to full energy and discharges it into an internal test load.
+- Self-test into an internal test load: full energy once a week, a low-voltage check every day (D-15).
 - Battery tested under a realistic load, with cautious low-battery logic.
 - Pad connection and gel condition checked through the pads' electrical resistance.
 - A clear ready / not-ready indicator, and readiness reported to the agency over Bluetooth.
@@ -91,8 +91,8 @@ Field surveys found 15–21% of public AEDs not ready when inspected, and an ana
 - Firmware in Rust. (D-08) A safety-qualified Rust compiler (Ferrocene) exists and has been qualified to the medical software standard at its strictest class since January 2025. **Unresolved:** two research threads disagree on whether that qualification covers the small microcontroller family this device would use. Check with the vendor before choosing the processor.
 - No single fault may cause or block a shock. Published designs converge on three independent checks before energy is released: the main processor, a separate supervisor, and a hardware interlock.
 - The storage capacitor discharges itself by default whenever it is not actively being held for a shock, with a permanent backup bleed resistor as well.
-- Off-the-shelf parts only; nothing custom except the charging transformer and the circuit boards. Parts must be on sale from mainstream distributors.
+- Catalogue parts wherever they exist; made-to-order parts where they do not, each with a published specification (D-42). The storage capacitor is made to order: about 100 µF, at least 2,200 V, rated for 85 °C storage (D-41).
 
 ## Connectivity
 
-Bluetooth for setup and downloading event records in the first version. Cellular and location reporting are deferred: any internet-capable device takes on the FDA's cybersecurity requirements. (D-09)
+Bluetooth, on a separate pre-certified module (D-45), for setup and downloading event records in the first version. Cellular and location reporting are deferred: any internet-capable device takes on the FDA's cybersecurity requirements. (D-09)
