@@ -8,6 +8,7 @@ Rust firmware for the Open AED, at the simulation stage. **No hardware exists. N
 | `crates/aed-rhythm` | Decides shockable / not shockable / not sure |
 | `crates/aed-waveform` | Plans the shock and models the discharge |
 | `crates/aed-core` | The rescue sequence, the supervisor's rules, self-test, prompts, event record |
+| `crates/aed-eval` | Scores the rhythm analysis against public recordings of real heart rhythms (data not included) |
 | `crates/aed-sim` | Simulated device and patient; runs everything together |
 
 Run from this folder:

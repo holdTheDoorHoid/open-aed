@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/aed-types", "crates/aed-rhythm", "crates/aed-waveform", "crates/aed-core", "crates/aed-sim"]
+members = ["crates/aed-types", "crates/aed-rhythm", "crates/aed-waveform", "crates/aed-core", "crates/aed-sim", "crates/aed-eval"]
 
 [workspace.package]
 version = "0.1.0"

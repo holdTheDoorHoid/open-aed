@@ -4,3 +4,4 @@ target/
 fp-info-cache
 *.kicad_prl
 .DS_Store
+data/

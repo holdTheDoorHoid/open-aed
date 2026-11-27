@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aed-eval"
+version = "0.1.0"
+dependencies = [
+ "aed-rhythm",
+ "aed-types",
+]
+
+[[package]]
 name = "aed-rhythm"
 version = "0.1.0"
 dependencies = [

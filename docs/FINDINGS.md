@@ -15,6 +15,7 @@
 | F-7 | A weak charger makes the device silent for 12 seconds at switch-on before it reports the fault. | Medium | **Fixed 27 Nov 2026.** A weak charger is reported about 1 s after switch-on. |
 | F-8 | Pads that are on but read just over 175 ohms get only "Attach pads", forever. See Q-16. | Medium | **Fixed 27 Nov 2026** by wider pad sensing and a "Press pads firmly" prompt (D-32). |
 | F-9 | **Child mode: in-tolerance sensors can allow a shock about 21% over target.** If the charger regulates high while both sensors read low, all checks pass at up to 1,227 volts true, which into a 25–35 ohm child delivers about 60 J instead of 50 J. The placeholder tolerance is 15%. Ways out: more accurate sensors (about 1% + 7 V), or a change to the child waveform at low resistance. The adult worst case is +13.6%, close to the limit. | High | **Fixed 27 Nov 2026** by requiring sensors accurate to 1% + 7 V (D-28). Worst case is now +14.2% against a 15% placeholder limit, which is a thin margin. |
+| F-10 | **On real recordings the rhythm analysis misses about 4 in 10 episodes of coarse ventricular fibrillation.** First run on 105 public recordings (28 November 2026): 61.9% caught against a 90% target. It very rarely advises a shock wrongly (normal rhythm left alone 100.0% of the time, other non-shockable rhythms 99.9%). The misses come from thresholds tuned on made-up signals, not from a coding error. Rapid ventricular tachycardia could not be tested at all with this data. Full report: `firmware/crates/aed-eval/REPORT.md`. | **High** | Open |
 
 A side effect of the F-1 fix: when the signal never becomes clean (very weak fibrillation, interference, a responder who never stops compressing), each analysis now lasts the full 12 seconds before the device says "Unable to analyse. No shock. Start CPR."
 
@@ -49,3 +50,29 @@ A side effect of the F-1 fix: when the signal never becomes clean (very weak fib
 - On noisy borderline signals the analysis can waver between "shockable" and "not sure", and a single "not sure" during the countdown cancels the shock.
 - A broken discharge load is not noticed until the device next needs to empty a fully charged capacitor.
 - The rhythm analysis has only been run on made-up signals. It has not been tested on fast non-shockable rhythms, which are common in children.
+
+## First test on real recordings (28 November 2026)
+
+The rhythm analysis was run, with no adjustment, on three public databases of real heart recordings (PhysioNet: 35 + 22 + 48 recordings). Figures are for a 12-second analysis on the first recording channel.
+
+| Measure | Result | Target | Verdict |
+|---|---|---|---|
+| Coarse ventricular fibrillation caught | 61.9% (399 segments, 30 recordings) | 90% or more | **Fails** |
+| Rapid ventricular tachycardia caught | no usable data | 75% or more | Not testable |
+| Normal rhythm correctly left alone | 100.0% (6,093 segments, 60 recordings) | 99% or more | Meets |
+| Other non-shockable rhythms left alone | 99.9% (2,458 segments, 39 recordings) | 95% or more | Meets |
+| Flatline left alone | 96.4% (56 segments, only 4 recordings) | 95% or more | Too little data; one doubtful label |
+| Analyses ending "unable to analyse" | 7.4% | none set | |
+
+What this means:
+
+- **The analysis errs heavily on the side of not shocking.** That is the safer direction for a fully automatic device, but a device that misses four in ten shockable rhythms does not do its job.
+- **Main causes of the misses,** in order: one threshold (the "band-pass count") set too high for real fibrillation; the rule that turns any disagreement between the two methods into "not sure"; a lower frequency limit; and the rule meant to spot chest compressions, which fires on 17–19% of these recordings although none contains CPR.
+- **Shorter analyses do worse:** 47% at 8 seconds, 40% at 7. The 7-second analysis seen in simulation is therefore optimistic for real signals.
+- **Three rules tuned on made-up signals do not work on real ones:** the clipping check never fires, the flatline check catches almost no real flatline, and the weak-fibrillation rule almost never applies.
+
+What it does not mean:
+
+- These are hospital and monitor recordings from a few dozen patients, not out-of-hospital cardiac arrests through defibrillator pads. They contain no CPR movement and no children. Even a pass here would say little about a real device.
+- This was a clean test only because nothing was tuned on these recordings. Any tuning on them from here on must hold whole patients back for testing.
+- The American Heart Association target figures are from the research notes and have not been checked against the original paper.

@@ -1,0 +1,13 @@
+[package]
+name = "aed-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Runs the rhythm analyser on recorded PhysioNet heart signals and reports how it does. Development computer only."
+
+[dependencies]
+aed-types.workspace = true
+aed-rhythm.workspace = true
+
+[lints]
+workspace = true
