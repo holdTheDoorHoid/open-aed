@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use aed_rhythm::{Analyzer, WindowReport};
+use aed_rhythm::{Analyzer, Settings, WindowReport};
 use aed_types::{RhythmAnalyzer, RhythmDecision, ECG_SAMPLE_RATE_HZ};
 
 use crate::condition::{quantize, to_microvolts, Resampler};
@@ -165,9 +165,20 @@ impl Outcome {
     }
 }
 
+/// The stand-clear countdown after "shock advised", seconds (aed-core
+/// configuration). During it the rescue sequence abandons the shock on any
+/// answer other than `Shockable`.
+pub const COUNTDOWN_S: f64 = 3.0;
+
 /// The result of one simulated analysis.
 #[derive(Debug, Clone)]
 pub struct AnalysisRun {
+    /// For a shock: `Some(true)` if the analyser announced anything other
+    /// than `Shockable` in the [`COUNTDOWN_S`] after the shock was advised
+    /// (the rescue sequence would then abandon the shock), `Some(false)` if
+    /// not, `None` if the recording does not continue long enough in the same
+    /// rhythm to tell.
+    pub cancelled_in_countdown: Option<bool>,
     /// The device outcome.
     pub outcome: Outcome,
     /// Seconds from the start of the analysis to the final answer, if any.
@@ -178,10 +189,21 @@ pub struct AnalysisRun {
     pub decisive: Option<usize>,
 }
 
-/// Feed a fresh analyser `samples` (one analysis) and apply the device's rule.
+/// Feed a fresh analyser `samples` (one analysis) and apply the device's
+/// rule, with the device's settings. No countdown check.
 #[must_use]
 pub fn run_segment(samples: &[i16]) -> AnalysisRun {
-    let mut a = Analyzer::new();
+    run_segment_with(samples, &[], Settings::DEFAULT)
+}
+
+/// Feed a fresh analyser with `settings` the analysis `samples` and apply
+/// the device's rule. If it ends in a shock, keep feeding (the rest of
+/// `samples`, then `after`, the signal that follows the analysis) for the
+/// [`COUNTDOWN_S`] stand-clear countdown and record whether the analyser
+/// would have cancelled the shock.
+#[must_use]
+pub fn run_segment_with(samples: &[i16], after: &[i16], settings: Settings) -> AnalysisRun {
+    let mut a = Analyzer::with_settings(settings);
     let mut windows: Vec<WindowReport> = Vec::new();
     let mut seen = 0_u32;
     for (i, s) in samples.iter().enumerate() {
@@ -194,12 +216,30 @@ pub fn run_segment(samples: &[i16]) -> AnalysisRun {
         }
         match d {
             Some(RhythmDecision::Shockable) => {
+                let need = (COUNTDOWN_S * FS as f64).round() as usize;
+                let rest = samples.get(i + 1..).unwrap_or(&[]).iter().chain(after.iter());
+                let mut fed = 0_usize;
+                let mut cancelled = false;
+                for x in rest.take(need) {
+                    fed += 1;
+                    if matches!(a.push(*x), Some(d) if d != RhythmDecision::Shockable) {
+                        cancelled = true;
+                        break;
+                    }
+                }
                 return AnalysisRun {
                     outcome: Outcome::Shock,
                     decided_at_s: Some((i + 1) as f64 / FS as f64),
                     decisive: windows.len().checked_sub(1),
                     windows,
-                }
+                    cancelled_in_countdown: if cancelled {
+                        Some(true)
+                    } else if fed >= need {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                };
             }
             Some(RhythmDecision::NonShockable) => {
                 return AnalysisRun {
@@ -207,6 +247,7 @@ pub fn run_segment(samples: &[i16]) -> AnalysisRun {
                     decided_at_s: Some((i + 1) as f64 / FS as f64),
                     decisive: windows.len().checked_sub(1),
                     windows,
+                    cancelled_in_countdown: None,
                 }
             }
             _ => {}
@@ -217,6 +258,7 @@ pub fn run_segment(samples: &[i16]) -> AnalysisRun {
         decided_at_s: None,
         windows,
         decisive: None,
+        cancelled_in_countdown: None,
     }
 }
 
@@ -270,8 +312,8 @@ pub const STREAM_TRUTH_SPAN_S: f64 = 6.0;
 
 /// Run one analyser over a whole channel without resets.
 #[must_use]
-pub fn run_stream(samples: &[i16]) -> Vec<(f64, WindowReport)> {
-    let mut a = Analyzer::new();
+pub fn run_stream(samples: &[i16], settings: Settings) -> Vec<(f64, WindowReport)> {
+    let mut a = Analyzer::with_settings(settings);
     let mut out = Vec::new();
     let mut seen = 0_u32;
     for (i, s) in samples.iter().enumerate() {
@@ -317,9 +359,10 @@ pub struct RecordOutput {
     pub streams: Vec<Vec<ScoredWindow>>,
 }
 
-/// Run everything for one prepared record.
+/// Run everything for one prepared record, with the analyser's `settings`
+/// (the device uses `Settings::DEFAULT`).
 #[must_use]
-pub fn evaluate_record(p: &Prepared) -> RecordOutput {
+pub fn evaluate_record(p: &Prepared, settings: Settings) -> RecordOutput {
     let mut segments = Vec::new();
     let mut streams = Vec::new();
     let mut all_runs = Vec::new();
@@ -359,7 +402,11 @@ pub fn evaluate_record(p: &Prepared) -> RecordOutput {
                                 None
                             },
                             railed_fraction: railed as f64 / s.len().max(1) as f64,
-                            run: run_segment(s),
+                            run: run_segment_with(
+                                s,
+                                slice_s(&chan.samples, start + len, (start + len + COUNTDOWN_S).min(run.end)),
+                                settings,
+                            ),
                         });
                     }
                     start += len;
@@ -367,7 +414,7 @@ pub fn evaluate_record(p: &Prepared) -> RecordOutput {
             }
         }
         // Streaming.
-        let raw = run_stream(&chan.samples);
+        let raw = run_stream(&chan.samples, settings);
         let mut scored = Vec::with_capacity(raw.len());
         let mut idx = 0_usize;
         for (t_end, report) in raw {
@@ -440,6 +487,25 @@ mod tests {
     }
 
     #[test]
+    fn countdown_is_checked_after_a_shock() {
+        let vf = sine(5.0, 500.0, 12.0);
+        let r = run_segment_with(&vf, &sine(5.0, 500.0, 3.0), Settings::DEFAULT);
+        assert_eq!(r.outcome, Outcome::Shock);
+        assert_eq!(r.cancelled_in_countdown, Some(false), "VF goes on: not cancelled");
+        // A signal that turns into clipped junk right after "shock advised"
+        // cancels it (a change to a flat line would not be seen this fast:
+        // the 4 s window makes that blind for about 3 s, finding F-4).
+        let mut stop = sine(5.0, 500.0, 7.0);
+        stop.extend((0..8 * FS).map(|i| if (i / 50) % 2 == 0 { 3000 } else { -3000 }));
+        let r = run_segment_with(&stop, &[], Settings::DEFAULT);
+        assert_eq!(r.outcome, Outcome::Shock);
+        assert_eq!(r.cancelled_in_countdown, Some(true));
+        // Not enough signal after the shock to tell.
+        let r = run_segment_with(&sine(5.0, 500.0, 8.0), &[], Settings::DEFAULT);
+        assert_eq!(r.cancelled_in_countdown, None);
+    }
+
+    #[test]
     fn too_short_to_decide_is_inconclusive() {
         let r = run_segment(&sine(5.0, 500.0, 4.0));
         assert_eq!(r.outcome, Outcome::Inconclusive);
@@ -448,7 +514,7 @@ mod tests {
 
     #[test]
     fn stream_gives_one_window_per_second() {
-        let w = run_stream(&sine(5.0, 500.0, 20.0));
+        let w = run_stream(&sine(5.0, 500.0, 20.0), Settings::DEFAULT);
         assert_eq!(w.len(), 16);
         assert_eq!(w[0].0, 5.0);
     }

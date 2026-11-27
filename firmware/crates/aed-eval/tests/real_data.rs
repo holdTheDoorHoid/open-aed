@@ -110,7 +110,7 @@ fn every_record_loads_with_matching_checksums() {
 fn end_to_end_on_one_record() {
     let Some(d) = data_dir() else { return };
     let p = prepare(Db::Cudb, &d.join("cudb"), "cu01").unwrap();
-    let out = evaluate_record(&p);
+    let out = evaluate_record(&p, aed_rhythm::Settings::DEFAULT);
     assert!(!out.segments.is_empty());
     assert_eq!(out.streams.len(), 1);
     // One streaming window per second after the first 5 s.

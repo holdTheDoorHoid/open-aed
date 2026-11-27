@@ -16,11 +16,9 @@
 
 use crate::filter::{Biquad, Kind};
 use crate::settings::{
-    ARTIFACT_BAND_MAX_HZ, ASYSTOLE_MAX_PP_UV, CONCENTRATION_VF_MIN, COUNT_CENTRE_HZ, COUNT_LEVEL,
-    COUNT_Q, COUNT_VF_MIN, DOMINANT_SEARCH_MAX_HZ, DOMINANT_VF_MAX_HZ, DOMINANT_VF_MIN_HZ,
-    FINE_VF_MAX_PP_UV, LEAKAGE_VF_MAX, MAX_LOW_BAND_FRACTION, MAX_NOISE_RATIO,
-    MAX_PLAUSIBLE_PP_UV, MAX_SATURATED_FRACTION, SAMPLES_PER_SECOND, SAMPLE_RATE_HZ,
-    SPECTRUM_BINS, SPECTRUM_MIN_HZ, SPECTRUM_STEP_HZ, TCSC_LEVEL, TCSC_VF_MIN, WINDOW_SAMPLES,
+    Settings, ARTIFACT_BAND_MAX_HZ, COUNT_CENTRE_HZ, COUNT_LEVEL, COUNT_Q,
+    DOMINANT_SEARCH_MAX_HZ, SAMPLES_PER_SECOND, SAMPLE_RATE_HZ, SPECTRUM_BINS, SPECTRUM_MIN_HZ,
+    SPECTRUM_STEP_HZ, TCSC_LEVEL, WINDOW_SAMPLES,
 };
 use aed_types::RhythmDecision;
 use core::f32::consts::PI;
@@ -46,6 +44,14 @@ pub struct Features {
     pub spectral_concentration: f32,
     /// Share of power below the compression-artifact limit (0 to 1).
     pub low_band_fraction: f32,
+    /// Share of raw samples in flat-topped runs at the window's extremes
+    /// (clipping seen in the signal itself; 0 to 1).
+    pub clipped_fraction: f32,
+    /// Median over the window's one-second pieces of the cleaned signal's
+    /// peak-to-peak value, microvolts.
+    pub second_pp_median_uv: f32,
+    /// Root-mean-square of the cleaned signal, microvolts.
+    pub rms_uv: f32,
 }
 
 /// Why a window got its verdict, in words a log reader can follow.
@@ -53,8 +59,10 @@ pub struct Features {
 pub enum Reason {
     /// A measurement came out as not-a-number or infinite.
     InvalidMeasurement,
-    /// Too much of the signal was clipped by the input electronics.
+    /// Too much of the signal was at the input electronics' limit.
     Saturated,
+    /// The signal has flat tops: it was clipped somewhere before the analyser.
+    Clipped,
     /// The signal is far larger than a heart signal can be.
     AmplitudeImplausible,
     /// The signal is almost flat: asystole.
@@ -73,7 +81,7 @@ pub enum Reason {
     NeitherMethodShockable,
 }
 
-/// The verdict for one window, before the "several windows in a row" rule.
+/// The verdict for one window, before the confirmation rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowVerdict {
     /// The answer for this window on its own.
@@ -90,11 +98,13 @@ pub struct WindowVerdict {
 ///
 /// `window` holds the cleaned signal, oldest sample first. It is **modified**
 /// (a taper is applied for the spectrum), so pass a scratch copy.
-/// `saturated_samples` and `noise_energy` come from the analyser's running counts.
+/// `saturated_samples`, `clipped_samples` and `noise_energy` come from the
+/// analyser's running counts and its raw-sample buffer.
 #[must_use]
 pub fn measure(
     window: &mut [f32; WINDOW_SAMPLES],
     saturated_samples: u32,
+    clipped_samples: u32,
     noise_energy: f32,
 ) -> Features {
     let x = window.as_slice();
@@ -110,6 +120,8 @@ pub fn measure(
     let threshold_crossing_fraction = threshold_crossing_fraction(x);
     let bandpass_count_fraction = bandpass_count_fraction(x);
     let vf_leakage = vf_leakage(x);
+    let second_pp_median_uv = second_pp_median(x);
+    let rms_uv = libm::sqrtf(band_energy / WINDOW_SAMPLES as f32);
     let spectral = spectral_features(window);
     Features {
         peak_to_peak_uv: max - min,
@@ -121,6 +133,39 @@ pub fn measure(
         dominant_frequency_hz: spectral.dominant_hz,
         spectral_concentration: spectral.concentration,
         low_band_fraction: spectral.low_band_fraction,
+        clipped_fraction: clipped_samples as f32 / WINDOW_SAMPLES as f32,
+        second_pp_median_uv,
+        rms_uv,
+    }
+}
+
+/// Median over one-second pieces of the peak-to-peak value. With four
+/// pieces the median is the mean of the middle two, so one short spike
+/// (a single artefact) cannot raise it.
+#[must_use]
+pub fn second_pp_median(x: &[f32]) -> f32 {
+    let mut pp = [0.0_f32; WINDOW_SAMPLES / SAMPLES_PER_SECOND];
+    for (chunk, slot) in x.chunks(SAMPLES_PER_SECOND).zip(pp.iter_mut()) {
+        let (lo, hi) = chunk
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+        *slot = if hi >= lo { hi - lo } else { 0.0 };
+    }
+    // Insertion sort of four numbers; no panicking paths.
+    for i in 1..pp.len() {
+        let mut j = i;
+        while j > 0 {
+            match (pp.get(j - 1).copied(), pp.get(j).copied()) {
+                (Some(a), Some(b)) if a > b => pp.swap(j - 1, j),
+                _ => break,
+            }
+            j -= 1;
+        }
+    }
+    let n = pp.len();
+    match (pp.get((n - 1) / 2), pp.get(n / 2)) {
+        (Some(a), Some(b)) => 0.5 * (a + b),
+        _ => 0.0,
     }
 }
 
@@ -295,6 +340,13 @@ fn average_over_seconds(x: &[f32], f: impl Fn(&[f32]) -> f32) -> f32 {
     }
 }
 
+/// Turn one window's measurements into a verdict, with the device's
+/// settings ([`Settings::DEFAULT`]).
+#[must_use]
+pub fn classify(f: &Features) -> WindowVerdict {
+    classify_with(f, &Settings::DEFAULT)
+}
+
 /// Turn one window's measurements into a verdict for that window.
 ///
 /// Order matters and every doubtful case leans toward not shocking:
@@ -302,7 +354,7 @@ fn average_over_seconds(x: &[f32], f: impl Fn(&[f32]) -> f32) -> f32 {
 /// the two method families. Comparisons are written so that a value exactly
 /// on a threshold does not count as shockable.
 #[must_use]
-pub fn classify(f: &Features) -> WindowVerdict {
+pub fn classify_with(f: &Features, s: &Settings) -> WindowVerdict {
     let verdict = |decision, reason, t, q| WindowVerdict {
         decision,
         reason,
@@ -319,35 +371,43 @@ pub fn classify(f: &Features) -> WindowVerdict {
         f.dominant_frequency_hz,
         f.spectral_concentration,
         f.low_band_fraction,
+        f.clipped_fraction,
+        f.second_pp_median_uv,
+        f.rms_uv,
     ];
     if !all.iter().all(|v| v.is_finite()) {
         return verdict(RhythmDecision::Indeterminate, Reason::InvalidMeasurement, false, false);
     }
-    if f.saturated_fraction > MAX_SATURATED_FRACTION {
+    if f.saturated_fraction > s.max_saturated_fraction {
         return verdict(RhythmDecision::Indeterminate, Reason::Saturated, false, false);
     }
-    if f.peak_to_peak_uv > MAX_PLAUSIBLE_PP_UV {
+    if f.clipped_fraction > s.max_clipped_fraction {
+        return verdict(RhythmDecision::Indeterminate, Reason::Clipped, false, false);
+    }
+    if f.peak_to_peak_uv > s.max_plausible_pp_uv {
         return verdict(RhythmDecision::Indeterminate, Reason::AmplitudeImplausible, false, false);
     }
-    if f.peak_to_peak_uv < ASYSTOLE_MAX_PP_UV {
+    let flat = f.peak_to_peak_uv < s.asystole_max_uv
+        || (f.rms_uv < s.asystole_max_rms_uv && f.vf_leakage > s.asystole_min_leakage);
+    if flat {
         return verdict(RhythmDecision::NonShockable, Reason::Asystole, false, false);
     }
-    if f.noise_ratio > MAX_NOISE_RATIO {
+    if f.noise_ratio > s.max_noise_ratio {
         return verdict(RhythmDecision::Indeterminate, Reason::Noisy, false, false);
     }
 
-    let time_vote = f.threshold_crossing_fraction > TCSC_VF_MIN
-        && f.bandpass_count_fraction > COUNT_VF_MIN;
-    let freq_vote = f.vf_leakage < LEAKAGE_VF_MAX
-        && f.dominant_frequency_hz > DOMINANT_VF_MIN_HZ
-        && f.dominant_frequency_hz < DOMINANT_VF_MAX_HZ
-        && f.spectral_concentration > CONCENTRATION_VF_MIN;
+    let time_vote = f.threshold_crossing_fraction > s.tcsc_vf_min
+        && f.bandpass_count_fraction > s.count_vf_min;
+    let freq_vote = f.vf_leakage < s.leakage_vf_max
+        && f.dominant_frequency_hz > s.dominant_vf_min_hz
+        && f.dominant_frequency_hz < s.dominant_vf_max_hz
+        && f.spectral_concentration > s.concentration_vf_min;
 
-    if f.low_band_fraction > MAX_LOW_BAND_FRACTION {
+    if f.low_band_fraction > s.max_low_band_fraction {
         return verdict(RhythmDecision::Indeterminate, Reason::PossibleArtifact, time_vote, freq_vote);
     }
     match (time_vote, freq_vote) {
-        (true, true) if f.peak_to_peak_uv < FINE_VF_MAX_PP_UV => {
+        (true, true) if f.peak_to_peak_uv < s.fine_vf_max_pp_uv => {
             verdict(RhythmDecision::Indeterminate, Reason::FineVf, true, true)
         }
         (true, true) => verdict(RhythmDecision::Shockable, Reason::BothMethodsShockable, true, true),
@@ -390,7 +450,7 @@ mod tests {
     #[test]
     fn flat_window_is_asystole_not_a_crash() {
         let mut w = [0.0; WINDOW_SAMPLES];
-        let f = measure(&mut w, 0, 0.0);
+        let f = measure(&mut w, 0, 0, 0.0);
         let v = classify(&f);
         assert_eq!(v.decision, RhythmDecision::NonShockable);
         assert_eq!(v.reason, Reason::Asystole);
@@ -410,7 +470,7 @@ mod tests {
     fn exactly_on_threshold_is_not_shockable() {
         let f = Features {
             peak_to_peak_uv: 1000.0,
-            threshold_crossing_fraction: TCSC_VF_MIN,
+            threshold_crossing_fraction: crate::settings::TCSC_VF_MIN,
             bandpass_count_fraction: 0.9,
             vf_leakage: 0.1,
             dominant_frequency_hz: 5.0,
@@ -431,6 +491,8 @@ mod tests {
             vf_leakage: 0.9,
             dominant_frequency_hz: 5.0,
             spectral_concentration: 0.9,
+            // A 1,000 µV signal has a root-mean-square well above the flatline limit.
+            rms_uv: 300.0,
             ..Features::default()
         };
         let v = classify(&f);

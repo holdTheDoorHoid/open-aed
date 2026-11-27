@@ -15,7 +15,9 @@
 | F-7 | A weak charger makes the device silent for 12 seconds at switch-on before it reports the fault. | Medium | **Fixed 27 Nov 2026.** A weak charger is reported about 1 s after switch-on. |
 | F-8 | Pads that are on but read just over 175 ohms get only "Attach pads", forever. See Q-16. | Medium | **Fixed 27 Nov 2026** by wider pad sensing and a "Press pads firmly" prompt (D-32). |
 | F-9 | **Child mode: in-tolerance sensors can allow a shock about 21% over target.** If the charger regulates high while both sensors read low, all checks pass at up to 1,227 volts true, which into a 25–35 ohm child delivers about 60 J instead of 50 J. The placeholder tolerance is 15%. Ways out: more accurate sensors (about 1% + 7 V), or a change to the child waveform at low resistance. The adult worst case is +13.6%, close to the limit. | High | **Fixed 27 Nov 2026** by requiring sensors accurate to 1% + 7 V (D-28). Worst case is now +14.2% against a 15% placeholder limit, which is a thin margin. |
-| F-10 | **On real recordings the rhythm analysis misses about 4 in 10 episodes of coarse ventricular fibrillation.** First run on 105 public recordings (27 November 2026): 61.9% caught against a 90% target. It very rarely advises a shock wrongly (normal rhythm left alone 100.0% of the time, other non-shockable rhythms 99.9%). The misses come from thresholds tuned on made-up signals, not from a coding error. Rapid ventricular tachycardia could not be tested at all with this data. Full report: `firmware/crates/aed-eval/REPORT.md`. | **High** | Open |
+| F-10 | **On real recordings the rhythm analysis misses too much coarse ventricular fibrillation.** Untuned it caught 61.9% against a 90% target. After tuning on half the patients it caught **71.1% on the other, held-back half** (58.3% untuned on those same patients). Still well short. It rarely advises a shock wrongly, though slightly more often than before tuning. Full report: `firmware/crates/aed-eval/REPORT.md`. | **High** | **Open.** Improved 27 Nov 2026, target not reached. Further gains need more and better data, not more tuning of this data. |
+| F-11 | **About a third of correct shock decisions on real fibrillation would be cancelled during the 3-second countdown.** The rescue sequence abandons a shock on any single "not shockable" or "not sure" answer while armed, and real fibrillation flickers between answers. On the held-back half only 46.8% of fibrillation analyses would end in a delivered shock. Relaxing the rule (ignoring one doubtful second) was tried and rejected because it made finding F-4 worse: a shock 2.5 s after the heart had recovered. | **High** | Open (owner and clinician decision, Q-21) |
+| F-12 | **Very fast chest compressions over a flatline are read as a shockable rhythm.** Made-up compressions at 150 a minute with no heart rhythm underneath were called shockable 20 times out of 20 (never at 140 a minute or slower). They look like rapid ventricular tachycardia. The heart signal alone cannot tell them apart; a separate signal that senses compressions, such as the resistance between the pads, is needed. | **High** | Open (needs pad-resistance sensing) |
 
 A side effect of the F-1 fix: when the signal never becomes clean (very weak fibrillation, interference, a responder who never stops compressing), each analysis now lasts the full 12 seconds before the device says "Unable to analyse. No shock. Start CPR."
 
@@ -70,6 +72,26 @@ What this means:
 - **Main causes of the misses,** in order: one threshold (the "band-pass count") set too high for real fibrillation; the rule that turns any disagreement between the two methods into "not sure"; a lower frequency limit; and the rule meant to spot chest compressions, which fires on 17–19% of these recordings although none contains CPR.
 - **Shorter analyses do worse:** 47% at 8 seconds, 40% at 7. The 7-second analysis seen in simulation is therefore optimistic for real signals.
 - **Three rules tuned on made-up signals do not work on real ones:** the clipping check never fires, the flatline check catches almost no real flatline, and the weak-fibrillation rule almost never applies.
+
+## After tuning (27 November 2026)
+
+The patients were split in half by a fixed rule before any tuning. Settings were adjusted using only the development half, then the held-back half was scored once with the settings frozen. Figures are for a 12-second analysis.
+
+| Measure | Untuned, all recordings | Tuned, held-back half | Same half, untuned | Target |
+|---|---|---|---|---|
+| Coarse fibrillation caught, channel 0 | 61.9% | **71.1%** (218 segments, 16 patients) | 58.3% | 90% |
+| Coarse fibrillation caught, channel 1 | 78.5% | 80.9% (89 segments, 2 patients) | 75.3% | 90% |
+| Same, with an 8-second analysis | 47.1% | 58.0% | 44.3% | |
+| Normal rhythm left alone, channel 0 | 100.0% | 99.8% (5 wrong shock decisions in 3,007) | 99.9% | 99% |
+| Normal rhythm left alone, channel 1 | 99.8% | 99.4% (18 in 2,875) | 99.7% | 99% |
+| Other non-shockable left alone | 99.9% | 99.5% | 99.8% | 95% |
+| Flatline left alone | 96.4% | no data in this half | no data | 95% |
+
+- **What was changed:** one threshold lowered slightly; confirmation changed from "three looks in a row" to "three of the last five"; the size limit raised; a working clipping check and a better flatline check added. A more flexible scoring model was tried and did worse. The compression rule was left alone.
+- **All 31 wrong shock decisions on the held-back half come from three recordings,** the same three that caused them before tuning: one where the labelled "normal" stretches sit between bursts of flutter and look abnormal, one fast atrial fibrillation, one fast supraventricular rhythm. Most would have been cancelled during the countdown.
+- **Flatline got worse on the development half** (91.1% under cross-validation against 96.4% untuned), all from one stretch of one recording whose label is doubtful. The held-back half has no flatline, so this is unresolved.
+- **Limits on how clean this test is:** the untuned results for every recording, including which patients did badly, had been seen before the split was made.
+- **The honest conclusion:** tuning these settings on this data is close to exhausted. Reaching 90% needs recordings from real cardiac arrests through defibrillator pads, from many patients, and a compression-sensing signal.
 
 What it does not mean:
 

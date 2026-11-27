@@ -44,6 +44,8 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-32 | **Pads are sensed up to about 250 ohms.** Above the 175 ohm shock range the device still analyses and says "press pads firmly", but shocks only once the resistance is in range; otherwise CPR continues. Widening the shock range itself is to be studied once the standard is bought. | **Confirmed by owner, 27 Nov 2026** | Finding F-8: pads that are on but read slightly high must not leave the responder with only "attach pads". |
 | D-33 | **Emptying the capacitor runs in the background.** The responder gets the next instruction at once; the device confirms empty, will not recharge until it is, and faults if it cannot confirm. | Provisional | Waiting for the capacitor to empty delayed the responder by up to a second on every cycle for no safety gain. |
 | D-34 | **Moving the adult/child switch during an analysis** recharges for the new mode without stopping the analysis. After a shock is advised, a switch change still cancels it. | Provisional (Q-19) | A switch moved as pads go on is most likely a correction; sending the patient to two minutes of CPR first would cost more. |
+| D-35 | **Rhythm-analysis tuning on public data uses a fixed patient split**, recorded in `firmware/crates/aed-eval/splits/`. The held-back half was scored once on 27 Nov 2026 and is now spent as a clean test. | Provisional | So results are not flattered by tuning and testing on the same patients. |
+| D-36 | **The device will sense compressions through the pads' resistance** and use that, not the heart signal alone, to tell compressions from a rhythm. | Provisional | Finding F-12, and the research finding that pad resistance gives compression rate with no extra sensor. |
 
 ## Owner questions
 
@@ -84,6 +86,10 @@ All seven were answered on 27 November 2026.
 **Q-19. Adult/child switch moved during analysis.** The firmware recharges for the new mode and keeps analysing (D-34). The alternative is to stop, go to CPR and analyse again in the new mode. Confirm or overrule.
 
 **Q-20. The last-seconds blind spot (finding F-4).** A heart that recovers in the last 2 seconds before delivery is still shocked, because the analysis looks at a 4-second stretch of signal. Options: add a fast "has the rhythm just changed?" check during the countdown; shorten the analysis window (costs accuracy); or accept it, as commercial fully automatic units have a similar gap. Needs a clinician's view.
+
+**Q-21. How strict should the countdown be? (finding F-11)** Today any single doubtful answer during the 3-second countdown cancels the shock. On real fibrillation that cancels about a third of correct shocks. Allowing one doubtful second would deliver more of them, but would also shock a heart that recovered up to 2.5 seconds earlier (finding F-4). This is a trade between missed shocks and unnecessary ones and needs a clinician's view. Not changed.
+
+**Q-22. Resume the search for real cardiac-arrest recordings? (reverses D-20)** D-20 parked data partnerships until the software worked on public data. It has now been tested and tuned on public data and the conclusion is that public data cannot take it further. Recommendation: un-park it now.
 
 ## Things that need a professional, not a guess
 

@@ -2,7 +2,8 @@
 //! Command-line front end: evaluate the rhythm analyser on PhysioNet data.
 //!
 //! ```text
-//! cargo run --release -p aed-eval -- --data <dir> [--db cudb|vfdb|mitdb]... [--csv <out dir>] [--out <report.md>] [--threads N]
+//! cargo run --release -p aed-eval -- --data <dir> [--db cudb|vfdb|mitdb]... [--records <list>] [--csv <out dir>] [--out <report.md>] [--threads N]
+//! cargo run --release -p aed-eval -- --data <dir> --make-split <out dir>
 //! ```
 //!
 //! Prints the report as Markdown. DEVELOPMENT COMPUTER ONLY; NOT A MEDICAL DEVICE.
@@ -12,10 +13,45 @@ use std::process::ExitCode;
 
 use aed_eval::report::{build_report, episodes_csv, segments_csv, Meta};
 use aed_eval::run_all;
+use aed_eval::split::{list_text, make_split, parse_list, sha256_hex, survey};
 use aed_eval::truth::Db;
 
 fn usage() {
-    eprintln!("Usage: aed-eval --data <dir with cudb/ vfdb/ mitdb/> [--db cudb|vfdb|mitdb]... [--csv <out dir>] [--out <report.md>] [--threads N]");
+    eprintln!("Usage: aed-eval --data <dir with cudb/ vfdb/ mitdb/> [--db cudb|vfdb|mitdb]... [--records <list file>] [--untuned] [--kind <text>] [--csv <out dir>] [--out <report.md>] [--threads N]");
+    eprintln!("       aed-eval --data <dir> --make-split <out dir>   (writes development.txt and held_out.txt)");
+}
+
+/// Write the patient-wise split files (see `aed_eval::split`).
+fn write_split(data: &std::path::Path, dir: &std::path::Path) -> ExitCode {
+    let records = match survey(data) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("cannot read the annotations: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let split = make_split(&records);
+    let files = [
+        ("development.txt", "Development half: all tuning uses only these records.", &split.development),
+        ("held_out.txt", "Held-out half: run once, with frozen settings, at the end.", &split.held_out),
+    ];
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("cannot create {}: {e}", dir.display());
+        return ExitCode::FAILURE;
+    }
+    for (file, title, names) in files {
+        let text = list_text(title, names);
+        if let Err(e) = std::fs::write(dir.join(file), &text) {
+            eprintln!("cannot write {file}: {e}");
+            return ExitCode::FAILURE;
+        }
+        println!("{file}: {} records, sha256 {}", names.len(), sha256_hex(text.as_bytes()));
+    }
+    for r in &records {
+        let side = if split.development.contains(&format!("{}/{}", r.db.name(), r.name)) { "development" } else { "held-out" };
+        println!("  {}/{}  {:<18} {side}", r.db.name(), r.name, r.content.text());
+    }
+    ExitCode::SUCCESS
 }
 
 /// Today's date (UTC) as YYYY-MM-DD, from the system clock.
@@ -57,13 +93,17 @@ fn commit_text() -> String {
     } else {
         format!("**uncommitted changes in the analyser**: {}", rhythm.lines().collect::<Vec<_>>().join("; "))
     };
-    format!("`{hash}` ({rhythm_note}; {others} uncommitted path(s) elsewhere in the repository, including this new evaluation crate)")
+    format!("`{hash}` ({rhythm_note}; {others} uncommitted path(s) elsewhere in the repository)")
 }
 
 fn main() -> ExitCode {
     let mut data: Option<PathBuf> = None;
     let mut csv: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
+    let mut records: Option<PathBuf> = None;
+    let mut make_split_dir: Option<PathBuf> = None;
+    let mut untuned = false;
+    let mut kind: Option<String> = None;
     let mut dbs: Vec<Db> = Vec::new();
     let mut threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut args = std::env::args().skip(1);
@@ -72,6 +112,10 @@ fn main() -> ExitCode {
             "--data" => data = args.next().map(PathBuf::from),
             "--csv" => csv = args.next().map(PathBuf::from),
             "--out" => out = args.next().map(PathBuf::from),
+            "--records" => records = args.next().map(PathBuf::from),
+            "--make-split" => make_split_dir = args.next().map(PathBuf::from),
+            "--untuned" => untuned = true,
+            "--kind" => kind = args.next(),
             "--threads" => match args.next().and_then(|t| t.parse().ok()) {
                 Some(t) => threads = t,
                 None => {
@@ -100,11 +144,34 @@ fn main() -> ExitCode {
         usage();
         return ExitCode::FAILURE;
     };
+    if let Some(dir) = make_split_dir {
+        return write_split(&data, &dir);
+    }
+    let only = match &records {
+        None => None,
+        Some(path) => match std::fs::read(path) {
+            Ok(bytes) => match std::str::from_utf8(&bytes).map_err(|e| e.to_string()).and_then(parse_list) {
+                Ok(list) => {
+                    eprintln!("restricted to {} records from {} (sha256 {})", list.len(), path.display(), sha256_hex(&bytes));
+                    Some((list, path.display().to_string(), sha256_hex(&bytes)))
+                }
+                Err(e) => {
+                    eprintln!("bad record list {}: {e}", path.display());
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(e) => {
+                eprintln!("cannot read {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        },
+    };
     if dbs.is_empty() {
         dbs = Db::ALL.to_vec();
     }
     eprintln!("aed-eval: development tool, not a medical device. Evaluating {dbs:?} from {} ...", data.display());
-    let (outputs, failed) = run_all(&data, &dbs, threads);
+    let settings = if untuned { aed_eval::tune::UNTUNED } else { aed_rhythm::Settings::DEFAULT };
+    let (outputs, failed) = run_all(&data, &dbs, threads, only.as_ref().map(|(l, _, _)| l.as_slice()), settings);
     if outputs.is_empty() {
         eprintln!("No records could be loaded.");
         for (db, r, e) in &failed {
@@ -117,6 +184,15 @@ fn main() -> ExitCode {
         commit: commit_text(),
         data_dir: "data/physionet".into(),
         failed,
+        records: only.as_ref().map(|(l, p, h)| format!("{} records listed in `{p}` (SHA-256 `{h}`)", l.len())),
+        kind: kind.unwrap_or_else(|| {
+            if untuned {
+                "**Untuned analyser** (thresholds as at commit 9cf11b6, set on made-up signals only; the clipping and flatline checks added later are switched off).".into()
+            } else {
+                "**Analyser with its current settings** (`Settings::DEFAULT`).".into()
+            }
+        }),
+        settings,
     };
     let text = build_report(&outputs, &meta);
     println!("{text}");

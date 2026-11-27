@@ -4,7 +4,7 @@ Runs the rhythm analyser (`aed-rhythm`) on **recorded** heart rhythms from three
 
 DEVELOPMENT COMPUTER ONLY. NOT A MEDICAL DEVICE. See [SAFETY.md](../../../SAFETY.md). Results on these databases say nothing about how a device would do on real cardiac arrests; read the limits in [REPORT.md](REPORT.md) before quoting any number.
 
-The latest results are in [REPORT.md](REPORT.md).
+The latest results are in [REPORT.md](REPORT.md). How the analyser was tuned on half of the recordings, and tested once on the other half, is in [TUNING_LOG.md](TUNING_LOG.md); the split itself is in [splits/](splits/README.md).
 
 ## Running it
 
@@ -20,11 +20,23 @@ Options:
 |---|---|
 | `--data <dir>` | Folder holding `cudb/`, `vfdb/` and `mitdb/` (required) |
 | `--db cudb` (or `vfdb`, `mitdb`) | Only this database; may be repeated |
+| `--records <file>` | Only the records listed in this file (`splits/development.txt` or `splits/held_out.txt`); the report records the list's SHA-256 |
+| `--untuned` | Run the analyser with its settings from before any tuning on real data (commit 9cf11b6), for comparison |
+| `--kind <text>` | A sentence printed under the report's title, saying what kind of run it is |
+| `--make-split <dir>` | Instead of evaluating, (re)write the patient-wise split files into `<dir>` (see [splits/README.md](splits/README.md)) |
 | `--csv <dir>` | Also write `segments.csv` (every scored analysis) and `episodes.csv` (every VF / flutter / VT episode in the continuous run) |
 | `--out <file>` | Also save the report to a file |
 | `--threads <n>` | Records evaluated in parallel (default: all cores) |
 
 The report is printed as Markdown. A full run takes about half a minute on 8 cores.
+
+The tuning experiments are a second program, `aed-tune`, which runs only on the development list:
+
+```
+cargo run --release -p aed-eval --bin aed-tune -- --data /path/to/data/physionet --records crates/aed-eval/splits/development.txt frozen
+```
+
+Its experiments and what each printed are listed in [TUNING_LOG.md](TUNING_LOG.md).
 
 ## Getting the data
 
@@ -53,17 +65,17 @@ Citations the pages ask for:
 cargo test -p aed-eval
 ```
 
-The unit tests use small hand-built files and synthetic signals. `tests/real_data.rs` checks known facts of the real files (sample counts, first samples against the header, checksums of every record). It looks for the data in `$AED_EVAL_DATA` or `data/physionet` at the repository root and **skips, printing "SKIPPED", when the data are absent**, so it passes on a machine without them. `tests/findings.rs` pins down two analyser behaviours found during the evaluation (see REPORT.md).
+The unit tests use small hand-built files and synthetic signals. `tests/real_data.rs` checks known facts of the real files (sample counts, first samples against the header, checksums of every record). It looks for the data in `$AED_EVAL_DATA` or `data/physionet` at the repository root and **skips, printing "SKIPPED", when the data are absent**, so it passes on a machine without them. `tests/findings.rs` pins down two analyser behaviours found during the evaluation (see REPORT.md). `tests/split.rs` checks that the committed split files have not changed (by their SHA-256), are disjoint and cover every record, and, when the data are present, that rerunning the split rule reproduces them.
 
 ## What the tool does, in plain terms
 
 1. **Reads the files.** PhysioNet stores each recording as a small text "header" (what is in the file and how to scale it), a packed binary sample file, and an annotation file (the experts' labels). The readers for all three are written here, with no outside libraries. Every file is treated as possibly hostile: sizes are capped, every field is checked, and a bad file produces an error message, never a crash. Each signal's checksum and first sample are compared with what the header promises.
 2. **Converts the signal** to what the analyser expects: whole microvolts at 250 samples per second. Each signal is scaled with its own gain and baseline; anything that would not fit is clipped and counted. The 360-per-second MIT-BIH Arrhythmia recordings are converted to 250 per second with a proper anti-aliasing resampler (tested with sine sweeps: flat to within 0.5 % up to 90 Hz, more than 60 dB rejection of what would otherwise fold back). Nothing is rescaled to "correct" amplitudes, even where the calibration is known to be doubtful (cudb).
 3. **Works out the truth** from the annotations (next section).
-4. **Runs the analyser as the device would.** At the start of every analysis the device resets the analyser, then acts on its first final answer: "shock", "no shock", or, if neither comes within the time limit, "unable to analyse" (no shock). That is simulated on consecutive, non-overlapping stretches of signal for analysis lengths of 7 s (the shortest that can end in a shock), 8 s and 12 s (the device's limit, decision D-27). Separately, one analyser is run over each whole recording without resets, to see how it behaves when the rhythm changes.
+4. **Runs the analyser as the device would.** At the start of every analysis the device resets the analyser, then acts on its first final answer: "shock", "no shock", or, if neither comes within the time limit, "unable to analyse" (no shock). That is simulated on consecutive, non-overlapping stretches of signal for analysis lengths of 7 s (the shortest that can end in a shock), 8 s and 12 s (the device's limit, decision D-27). After a "shock", the analyser is fed the next 3 s too (the stand-clear countdown, where the same rhythm continues): the rescue sequence abandons a shock on any answer other than "shock" during the countdown, so these shocks are counted as **cancelled in the countdown**. Separately, one analyser is run over each whole recording without resets, to see how it behaves when the rhythm changes.
 5. **Counts and reports**, by database, by channel, pooled, and per recording, with exact confidence limits, the AHA goals, and a failure analysis of which rules caused the mistakes.
 
-Nothing in this crate changes the analyser or its settings. The analyser's thresholds were never tuned on these recordings, which makes this a clean first test; once anyone tunes on them, a fair test will need recordings kept aside (whole patients, not segments).
+Nothing in this crate changes the device's analyser. The first run (27 November 2026, `reports/baseline_untuned_9cf11b6.md`) was untuned and therefore clean. Since then some settings have been re-chosen on the **development** half of the recordings only, and the **held-out** half was run once with the settings frozen (TUNING_LOG.md). Results on the development half flatter the analyser; only the held-out figures are a fair test, and even they are not fully blind (see REPORT.md).
 
 ## How annotations become ground truth
 

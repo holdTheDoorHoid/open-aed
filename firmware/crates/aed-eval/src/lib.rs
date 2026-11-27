@@ -24,8 +24,10 @@
 pub mod condition;
 pub mod eval;
 pub mod report;
+pub mod split;
 pub mod stats;
 pub mod truth;
+pub mod tune;
 pub mod wfdb;
 
 use std::path::Path;
@@ -42,13 +44,36 @@ pub type Failures = Vec<(Db, String, String)>;
 /// (which holds `cudb/`, `vfdb/`, `mitdb/`), using up to `threads` threads.
 /// Databases whose directory or RECORDS file is missing are skipped and
 /// listed as failures. Results are in database then RECORDS order.
+///
+/// If `only` is given, just the records it names are evaluated (a record it
+/// names that is not in the RECORDS list is reported as a failure).
+/// `settings` are the analyser's (the device uses `Settings::DEFAULT`).
 #[must_use]
-pub fn run_all(data_dir: &Path, dbs: &[Db], threads: usize) -> (Vec<RecordOutput>, Failures) {
+pub fn run_all(
+    data_dir: &Path,
+    dbs: &[Db],
+    threads: usize,
+    only: Option<&[(Db, String)]>,
+    settings: aed_rhythm::Settings,
+) -> (Vec<RecordOutput>, Failures) {
     let mut jobs: Vec<(Db, String)> = Vec::new();
     let mut failed: Failures = Vec::new();
     for db in dbs {
         match wfdb::read_records_list(&data_dir.join(db.name())) {
-            Ok(list) => jobs.extend(list.into_iter().map(|r| (*db, r))),
+            Ok(list) => {
+                if let Some(only) = only {
+                    for (d, r) in only.iter().filter(|(d, _)| d == db) {
+                        if !list.contains(r) {
+                            failed.push((*d, r.clone(), "not in the RECORDS list".into()));
+                        }
+                    }
+                }
+                jobs.extend(
+                    list.into_iter()
+                        .filter(|r| only.is_none_or(|o| o.iter().any(|(d, n)| d == db && n == r)))
+                        .map(|r| (*db, r)),
+                );
+            }
             Err(e) => failed.push((*db, "RECORDS".into(), e.to_string())),
         }
     }
@@ -60,7 +85,7 @@ pub fn run_all(data_dir: &Path, dbs: &[Db], threads: usize) -> (Vec<RecordOutput
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some((db, name)) = jobs.get(i) else { break };
                 let r = prepare(*db, &data_dir.join(db.name()), name)
-                    .map(|p| evaluate_record(&p))
+                    .map(|p| evaluate_record(&p, settings))
                     .map_err(|e| e.to_string());
                 if let Ok(mut v) = results.lock() {
                     v.push((i, r));

@@ -4,15 +4,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use aed_rhythm::settings::{
-    ASYSTOLE_MAX_PP_UV, CONCENTRATION_VF_MIN, COUNT_VF_MIN, DOMINANT_VF_MAX_HZ,
-    DOMINANT_VF_MIN_HZ, FINE_VF_MAX_PP_UV, LEAKAGE_VF_MAX, MAX_LOW_BAND_FRACTION,
-    MAX_NOISE_RATIO, MAX_PLAUSIBLE_PP_UV, MAX_SATURATED_FRACTION, TCSC_VF_MIN,
-};
-use aed_rhythm::{reason_label, Features, Reason, WindowReport};
+use aed_rhythm::{reason_label, Features, Reason, Settings, WindowReport};
 use aed_types::RhythmDecision;
 
-use crate::eval::{Outcome, RecordOutput, ScoredWindow, SegmentResult, DEVICE_VARIANT_S, VARIANTS_S};
+use crate::eval::{Outcome, RecordOutput, ScoredWindow, SegmentResult, COUNTDOWN_S, DEVICE_VARIANT_S, VARIANTS_S};
 use crate::stats::{clopper_pearson_lower, median, percentile, wilson_lower};
 use crate::truth::{
     Db, Label, TruthClass, ARTIFACT_GUARD_S, FINE_VF_UV, NOISE_GUARD_S, RAPID_VT_BPM,
@@ -249,6 +244,9 @@ fn other_breakdown(out: &mut String, segs: &[&SegmentResult]) {
     let _ = writeln!(out);
 }
 
+/// A test on one window's measurements, made stricter by a fraction.
+pub type ConditionTest = Box<dyn Fn(&Features, f32) -> bool>;
+
 /// One analyser condition that must hold for a window to be called shockable.
 pub struct Condition {
     /// Short name.
@@ -257,72 +255,84 @@ pub struct Condition {
     pub rule: String,
     /// True if the window passes (is on the VF side), with the threshold made
     /// stricter by the fraction `k` (0 = the current setting).
-    pub passes: fn(&Features, f32) -> bool,
+    pub passes: ConditionTest,
 }
 
-/// The twelve conditions, in the order `classify` applies them (settings from `settings.rs`).
+/// The conditions, in the order `classify` applies them, for the given settings.
 #[must_use]
-pub fn conditions() -> Vec<Condition> {
+pub fn conditions(st: &Settings) -> Vec<Condition> {
+    let s = *st;
     vec![
         Condition {
             key: "not saturated",
-            rule: format!("saturated fraction ≤ {MAX_SATURATED_FRACTION}"),
-            passes: |f, _| f.saturated_fraction <= MAX_SATURATED_FRACTION,
+            rule: format!("saturated fraction ≤ {}", s.max_saturated_fraction),
+            passes: Box::new(move |f, _| f.saturated_fraction <= s.max_saturated_fraction),
+        },
+        Condition {
+            key: "not clipped (flat tops)",
+            rule: format!("clipped fraction ≤ {}", s.max_clipped_fraction),
+            passes: Box::new(move |f, _| f.clipped_fraction <= s.max_clipped_fraction),
         },
         Condition {
             key: "plausible size",
-            rule: format!("peak-to-peak ≤ {MAX_PLAUSIBLE_PP_UV} µV"),
-            passes: |f, _| f.peak_to_peak_uv <= MAX_PLAUSIBLE_PP_UV,
+            rule: format!("peak-to-peak ≤ {} µV", s.max_plausible_pp_uv),
+            passes: Box::new(move |f, _| f.peak_to_peak_uv <= s.max_plausible_pp_uv),
         },
         Condition {
             key: "not flatline",
-            rule: format!("peak-to-peak ≥ {ASYSTOLE_MAX_PP_UV} µV"),
-            passes: |f, k| f.peak_to_peak_uv >= ASYSTOLE_MAX_PP_UV * (1.0 + k),
+            rule: format!(
+                "peak-to-peak ≥ {} µV, and not (rms < {} µV with leakage > {})",
+                s.asystole_max_uv, s.asystole_max_rms_uv, s.asystole_min_leakage
+            ),
+            passes: Box::new(move |f, k| {
+                f.peak_to_peak_uv >= s.asystole_max_uv * (1.0 + k)
+                    && !(f.rms_uv < s.asystole_max_rms_uv * (1.0 + k) && f.vf_leakage > s.asystole_min_leakage)
+            }),
         },
         Condition {
             key: "not noisy",
-            rule: format!("noise ratio ≤ {MAX_NOISE_RATIO}"),
-            passes: |f, k| f.noise_ratio <= MAX_NOISE_RATIO * (1.0 - k),
+            rule: format!("noise ratio ≤ {}", s.max_noise_ratio),
+            passes: Box::new(move |f, k| f.noise_ratio <= s.max_noise_ratio * (1.0 - k)),
         },
         Condition {
             key: "not low-band (compression)",
-            rule: format!("low-band fraction ≤ {MAX_LOW_BAND_FRACTION}"),
-            passes: |f, k| f.low_band_fraction <= MAX_LOW_BAND_FRACTION * (1.0 - k),
+            rule: format!("low-band fraction ≤ {}", s.max_low_band_fraction),
+            passes: Box::new(move |f, k| f.low_band_fraction <= s.max_low_band_fraction * (1.0 - k)),
         },
         Condition {
             key: "TCSC",
-            rule: format!("threshold-crossing fraction > {TCSC_VF_MIN}"),
-            passes: |f, k| f.threshold_crossing_fraction > TCSC_VF_MIN * (1.0 + k),
+            rule: format!("threshold-crossing fraction > {}", s.tcsc_vf_min),
+            passes: Box::new(move |f, k| f.threshold_crossing_fraction > s.tcsc_vf_min * (1.0 + k)),
         },
         Condition {
             key: "band-pass count",
-            rule: format!("band-pass count > {COUNT_VF_MIN}"),
-            passes: |f, k| f.bandpass_count_fraction > COUNT_VF_MIN * (1.0 + k),
+            rule: format!("band-pass count > {}", s.count_vf_min),
+            passes: Box::new(move |f, k| f.bandpass_count_fraction > s.count_vf_min * (1.0 + k)),
         },
         Condition {
             key: "VF-filter leakage",
-            rule: format!("leakage < {LEAKAGE_VF_MAX}"),
-            passes: |f, k| f.vf_leakage < LEAKAGE_VF_MAX * (1.0 - k),
+            rule: format!("leakage < {}", s.leakage_vf_max),
+            passes: Box::new(move |f, k| f.vf_leakage < s.leakage_vf_max * (1.0 - k)),
         },
         Condition {
             key: "dominant freq. low limit",
-            rule: format!("dominant frequency > {DOMINANT_VF_MIN_HZ} Hz"),
-            passes: |f, k| f.dominant_frequency_hz > DOMINANT_VF_MIN_HZ * (1.0 + k),
+            rule: format!("dominant frequency > {} Hz", s.dominant_vf_min_hz),
+            passes: Box::new(move |f, k| f.dominant_frequency_hz > s.dominant_vf_min_hz * (1.0 + k)),
         },
         Condition {
             key: "dominant freq. high limit",
-            rule: format!("dominant frequency < {DOMINANT_VF_MAX_HZ} Hz"),
-            passes: |f, k| f.dominant_frequency_hz < DOMINANT_VF_MAX_HZ * (1.0 - k),
+            rule: format!("dominant frequency < {} Hz", s.dominant_vf_max_hz),
+            passes: Box::new(move |f, k| f.dominant_frequency_hz < s.dominant_vf_max_hz * (1.0 - k)),
         },
         Condition {
             key: "spectral concentration",
-            rule: format!("concentration > {CONCENTRATION_VF_MIN}"),
-            passes: |f, k| f.spectral_concentration > CONCENTRATION_VF_MIN * (1.0 + k),
+            rule: format!("concentration > {}", s.concentration_vf_min),
+            passes: Box::new(move |f, k| f.spectral_concentration > s.concentration_vf_min * (1.0 + k)),
         },
         Condition {
             key: "not fine VF",
-            rule: format!("peak-to-peak ≥ {FINE_VF_MAX_PP_UV} µV"),
-            passes: |f, k| f.peak_to_peak_uv >= FINE_VF_MAX_PP_UV * (1.0 + k),
+            rule: format!("peak-to-peak ≥ {} µV", s.fine_vf_max_pp_uv),
+            passes: Box::new(move |f, k| f.peak_to_peak_uv >= s.fine_vf_max_pp_uv * (1.0 + k)),
         },
     ]
 }
@@ -341,71 +351,85 @@ struct FeatureCol {
     name: &'static str,
     get: fn(&Features) -> f32,
     rule: String,
-    vf_side: fn(f32) -> bool,
+    vf_side: Box<dyn Fn(f32) -> bool>,
 }
 
-fn feature_cols() -> Vec<FeatureCol> {
+fn feature_cols(st: &Settings) -> Vec<FeatureCol> {
+    let s = *st;
     vec![
         FeatureCol {
             name: "peak-to-peak (µV, after the analyser's filter)",
             get: |f| f.peak_to_peak_uv,
-            rule: format!("≥ {FINE_VF_MAX_PP_UV} for shock, < {ASYSTOLE_MAX_PP_UV} = flatline, > {MAX_PLAUSIBLE_PP_UV} = implausible"),
-            vf_side: |v| (FINE_VF_MAX_PP_UV..=MAX_PLAUSIBLE_PP_UV).contains(&v),
+            rule: format!("≥ {} for shock, < {} = flatline, > {} = implausible", s.fine_vf_max_pp_uv, s.asystole_max_uv, s.max_plausible_pp_uv),
+            vf_side: Box::new(move |v| (s.fine_vf_max_pp_uv..=s.max_plausible_pp_uv).contains(&v)),
+        },
+        FeatureCol {
+            name: "root-mean-square (µV, after the analyser's filter)",
+            get: |f| f.rms_uv,
+            rule: format!("≥ {} (or leakage ≤ {}) to escape the flatline rule", s.asystole_max_rms_uv, s.asystole_min_leakage),
+            vf_side: Box::new(move |v| v >= s.asystole_max_rms_uv),
         },
         FeatureCol {
             name: "noise ratio",
             get: |f| f.noise_ratio,
-            rule: format!("≤ {MAX_NOISE_RATIO}"),
-            vf_side: |v| v <= MAX_NOISE_RATIO,
+            rule: format!("≤ {}", s.max_noise_ratio),
+            vf_side: Box::new(move |v| v <= s.max_noise_ratio),
         },
         FeatureCol {
             name: "low-band fraction",
             get: |f| f.low_band_fraction,
-            rule: format!("≤ {MAX_LOW_BAND_FRACTION}"),
-            vf_side: |v| v <= MAX_LOW_BAND_FRACTION,
+            rule: format!("≤ {}", s.max_low_band_fraction),
+            vf_side: Box::new(move |v| v <= s.max_low_band_fraction),
         },
         FeatureCol {
             name: "threshold-crossing fraction (TCSC)",
             get: |f| f.threshold_crossing_fraction,
-            rule: format!("> {TCSC_VF_MIN}"),
-            vf_side: |v| v > TCSC_VF_MIN,
+            rule: format!("> {}", s.tcsc_vf_min),
+            vf_side: Box::new(move |v| v > s.tcsc_vf_min),
         },
         FeatureCol {
             name: "band-pass count",
             get: |f| f.bandpass_count_fraction,
-            rule: format!("> {COUNT_VF_MIN}"),
-            vf_side: |v| v > COUNT_VF_MIN,
+            rule: format!("> {}", s.count_vf_min),
+            vf_side: Box::new(move |v| v > s.count_vf_min),
         },
         FeatureCol {
             name: "VF-filter leakage",
             get: |f| f.vf_leakage,
-            rule: format!("< {LEAKAGE_VF_MAX}"),
-            vf_side: |v| v < LEAKAGE_VF_MAX,
+            rule: format!("< {}", s.leakage_vf_max),
+            vf_side: Box::new(move |v| v < s.leakage_vf_max),
         },
         FeatureCol {
             name: "dominant frequency (Hz)",
             get: |f| f.dominant_frequency_hz,
-            rule: format!("> {DOMINANT_VF_MIN_HZ} and < {DOMINANT_VF_MAX_HZ}"),
-            vf_side: |v| v > DOMINANT_VF_MIN_HZ && v < DOMINANT_VF_MAX_HZ,
+            rule: format!("> {} and < {}", s.dominant_vf_min_hz, s.dominant_vf_max_hz),
+            vf_side: Box::new(move |v| v > s.dominant_vf_min_hz && v < s.dominant_vf_max_hz),
         },
         FeatureCol {
             name: "spectral concentration",
             get: |f| f.spectral_concentration,
-            rule: format!("> {CONCENTRATION_VF_MIN}"),
-            vf_side: |v| v > CONCENTRATION_VF_MIN,
+            rule: format!("> {}", s.concentration_vf_min),
+            vf_side: Box::new(move |v| v > s.concentration_vf_min),
         },
         FeatureCol {
-            name: "saturated fraction",
+            name: "saturated fraction (front-end limit)",
             get: |f| f.saturated_fraction,
-            rule: format!("≤ {MAX_SATURATED_FRACTION}"),
-            vf_side: |v| v <= MAX_SATURATED_FRACTION,
+            rule: format!("≤ {}", s.max_saturated_fraction),
+            vf_side: Box::new(move |v| v <= s.max_saturated_fraction),
+        },
+        FeatureCol {
+            name: "clipped fraction (flat tops)",
+            get: |f| f.clipped_fraction,
+            rule: format!("≤ {}", s.max_clipped_fraction),
+            vf_side: Box::new(move |v| v <= s.max_clipped_fraction),
         },
     ]
 }
 
-const REASONS: [Reason; 10] = [
+const REASONS: [Reason; 11] = [
     Reason::InvalidMeasurement,
     Reason::Saturated,
+    Reason::Clipped,
     Reason::AmplitudeImplausible,
     Reason::Asystole,
     Reason::Noisy,
@@ -441,6 +465,12 @@ pub struct Meta {
     pub data_dir: String,
     /// Records that could not be loaded, with the error.
     pub failed: Vec<(Db, String, String)>,
+    /// If the run was restricted to a record list: which list.
+    pub records: Option<String>,
+    /// What kind of run this is, in a sentence or two (printed under the title).
+    pub kind: String,
+    /// The analyser settings used.
+    pub settings: Settings,
 }
 
 fn seg_group<'a>(all: &'a [SegmentResult], variant: u32, title: String, pick: impl Fn(&SegmentResult) -> bool) -> Group<'a> {
@@ -493,25 +523,26 @@ pub fn build_report(outputs: &[RecordOutput], meta: &Meta) -> String {
     header(&mut out, meta, outputs);
     data_checks(&mut out, outputs, meta);
     headline(&mut out, outputs, &segs);
+    timing_section(&mut out, &segs);
     segment_tables(&mut out, outputs, &segs);
     per_record(&mut out, outputs, &segs);
     streaming(&mut out, outputs);
-    failure_analysis(&mut out, outputs, &segs);
-    amplitude_section(&mut out, outputs);
+    failure_analysis(&mut out, outputs, &segs, &meta.settings);
+    amplitude_section(&mut out, outputs, &meta.settings);
     closing(&mut out);
     out
 }
 
 fn header(out: &mut String, meta: &Meta, outputs: &[RecordOutput]) {
-    let _ = writeln!(out, "# Rhythm analyser: first run on recorded heart rhythms\n");
+    let _ = writeln!(out, "# Rhythm analyser on recorded heart rhythms\n");
     let _ = writeln!(out, "- **Date (UTC):** {}", meta.date);
     let _ = writeln!(out, "- **Analyser evaluated:** `aed-rhythm` at git commit {}", meta.commit);
     let _ = writeln!(out, "- **Data:** PhysioNet cudb, vfdb, mitdb (public Holter / monitoring recordings), read from `{}`", meta.data_dir);
     let _ = writeln!(out, "- **Records evaluated:** {}", outputs.len());
-    let _ = writeln!(
-        out,
-        "\n**This is a first, untuned run.** The analyser's thresholds were set on made-up signals only; nothing was adjusted on these recordings. That makes this a clean first test. Any future tuning on these recordings uses up that cleanliness: after tuning, results on them will flatter the analyser, and a fair test will need patient-wise splits (whole records, never segments, in either the tuning or the test set; mitdb records 201 and 202 are the same patient) and a separate held-out set.\n"
-    );
+    if let Some(r) = &meta.records {
+        let _ = writeln!(out, "- **Restricted to:** {r}");
+    }
+    let _ = writeln!(out, "\n{}\n", meta.kind);
     let _ = writeln!(out, "**What these numbers are not.** They are not a claim about a real device. The recordings are:\n");
     let _ = writeln!(out, "- few patients (35 + 22 + 47), so thousands of segments are really a few dozen independent people; the confidence limits below treat segments as independent and are therefore too optimistic;");
     let _ = writeln!(out, "- in-hospital monitoring and ambulatory (Holter) recordings from the 1970s-80s, not out-of-hospital cardiac arrest recorded through defibrillator pads;");
@@ -520,7 +551,7 @@ fn header(out: &mut String, meta: &Meta, outputs: &[RecordOutput]) {
     let _ = writeln!(out, "- annotated with varying care: mitdb by two cardiologists beat by beat; vfdb with rhythm labels only; cudb with \"preliminary\" labels, approximate VF onsets, and every beat labelled normal even when it is not.");
     let _ = writeln!(out, "\nPublic-database results are known to overstate field performance (research notes, section 2). Nothing here is safe or ready for use on a person. See SAFETY.md.\n");
     let _ = writeln!(out, "## How it was scored\n");
-    let _ = writeln!(out, "- **Device-realistic analysis.** For each segment a fresh analyser (as after the reset at the start of every analysis) is fed one analysis worth of signal. The first final answer decides: `Shockable` → shock; `NonShockable` → no shock; neither by the time limit → *inconclusive* (\"unable to analyse\", no shock). \"Not sure\" does not end an analysis (D-27). Three analysis lengths: **7 s** (the shortest that can end in a shock: 1 s settling + 4 s window + 2 more windows for 3 in a row), **8 s** (the analysis-time requirement mentioned in the configuration), and **12 s** (the device's actual limit, D-27; the headline).");
+    let _ = writeln!(out, "- **Device-realistic analysis.** For each segment a fresh analyser (as after the reset at the start of every analysis) is fed one analysis worth of signal. The first final answer decides: `Shockable` → shock; `NonShockable` → no shock; neither by the time limit → *inconclusive* (\"unable to analyse\", no shock). \"Not sure\" does not end an analysis (D-27). Three analysis lengths: **7 s** (the shortest that can end in a shock: 1 s settling + 4 s window + 2 more windows, since at least 3 windows must say shockable), **8 s** (the analysis-time requirement mentioned in the configuration), and **12 s** (the device's actual limit, D-27; the headline).");
     let _ = writeln!(out, "- **Scoring of inconclusive.** For sensitivity it is a miss. For specificity it is a correct \"no shock\". It is also counted on its own everywhere, because a device that says \"not sure\" to everything would score perfect specificity and be useless.");
     let _ = writeln!(out, "- **Segments** are consecutive, non-overlapping, and only taken where the ground truth is one class throughout, at least {TRANSITION_GUARD_S} s from any annotated rhythm change, at least {NOISE_GUARD_S} s from any stretch marked noisy for that channel, and at least {ARTIFACT_GUARD_S} s from isolated-artifact or tape-slippage marks.");
     let _ = writeln!(out, "- **Channels.** Channel 0 and every other channel are scored separately; nothing is picked per record. Pooled tables are shown per channel.");
@@ -626,6 +657,47 @@ fn headline(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult]) 
             pct(inc, rs.len() as u64),
             rs.len()
         );
+    }
+    let _ = writeln!(out);
+}
+
+/// Time to decision and shocks lost in the stand-clear countdown.
+fn timing_section(out: &mut String, segs: &[SegmentResult]) {
+    let _ = writeln!(out, "## Time to decision, and shocks lost in the countdown ({DEVICE_VARIANT_S} s analysis)\n");
+    let _ = writeln!(out, "Every second of analysis is hands-off time. \"Decided by\" = share of segments with a final answer (shock or no shock) by that time after the analysis started; the rest are still analysing. After \"shock advised\" the rescue sequence counts down for {COUNTDOWN_S} s and abandons the shock on any answer other than `Shockable` (aed-core); \"cancelled in countdown\" counts shocks the analyser itself would have called off that way, measured by carrying on into the signal that follows (where the same rhythm continues). \"Delivered\" = shocks not cancelled, over all segments; a shock whose countdown could not be checked counts as delivered.\n");
+    let _ = writeln!(out, "| Group | Class | n | decided by 7 s | 8 s | 10 s | 12 s | median time to answer (s) | 90th pct (s) | shocks | cancelled in countdown | countdown not checkable | delivered |");
+    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    for ch in [0_usize, 1] {
+        for class in [TruthClass::CoarseVf, TruthClass::Vfl, TruthClass::VtRateUnknown, TruthClass::Nsr, TruthClass::OtherNonShockable, TruthClass::Asystole] {
+            let v: Vec<&SegmentResult> = segs
+                .iter()
+                .filter(|s| s.variant_s == DEVICE_VARIANT_S && s.channel == ch && s.class == class)
+                .collect();
+            if v.is_empty() {
+                continue;
+            }
+            let n = v.len() as u64;
+            let by = |t: f64| v.iter().filter(|s| s.run.decided_at_s.is_some_and(|d| d <= t + 1e-9)).count() as u64;
+            let times: Vec<f64> = v.iter().filter_map(|s| s.run.decided_at_s).collect();
+            let shocks: Vec<&&SegmentResult> = v.iter().filter(|s| s.run.outcome == Outcome::Shock).collect();
+            let cancelled = shocks.iter().filter(|s| s.run.cancelled_in_countdown == Some(true)).count() as u64;
+            let unknown = shocks.iter().filter(|s| s.run.cancelled_in_countdown.is_none()).count() as u64;
+            let _ = writeln!(
+                out,
+                "| channel {ch} | {} | {n} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                class.name(),
+                pct(by(7.0), n),
+                pct(by(8.0), n),
+                pct(by(10.0), n),
+                pct(by(12.0), n),
+                median(&times).map_or("–".into(), |m| format!("{m:.0}")),
+                percentile(&times, 90.0).map_or("–".into(), |m| format!("{m:.0}")),
+                shocks.len(),
+                cancelled,
+                unknown,
+                pct(shocks.len() as u64 - cancelled, n)
+            );
+        }
     }
     let _ = writeln!(out);
 }
@@ -956,8 +1028,8 @@ fn streaming(out: &mut String, outputs: &[RecordOutput]) {
     let _ = writeln!(out);
 }
 
-fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult]) {
-    let conds = conditions();
+fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult], st: &Settings) {
+    let conds = conditions(st);
     let _ = writeln!(out, "## Failure analysis\n");
     let _ = writeln!(out, "Nothing below was used to change the analyser. Where a threshold is \"moved\", it is a what-if count only.\n");
 
@@ -1011,7 +1083,7 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
     // 2. Feature distributions.
     let _ = writeln!(out, "### Feature distributions on real data versus the thresholds\n");
     let _ = writeln!(out, "Streaming windows, all databases and channels, by true class. \"VF side\" = share of windows on the shockable side of that feature's threshold(s). A feature only helps if VF windows are mostly on the VF side and non-shockable windows mostly are not.\n");
-    for col in feature_cols() {
+    for col in feature_cols(st) {
         let _ = writeln!(out, "**{}** (shockable side: {})\n", col.name, col.rule);
         let _ = writeln!(out, "| Class | windows | 5% | 25% | median | 75% | 95% | VF side |");
         let _ = writeln!(out, "|---|---|---|---|---|---|---|---|");
@@ -1081,12 +1153,13 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
         let _ = writeln!(out, "| {l} | {fp} | {n} | {} |", pct(*fp, *n));
     }
     let _ = writeln!(out);
-    let _ = writeln!(out, "Every false shock passed all twelve conditions in three windows in a row (that is the only way to reach `Shockable`), so \"which rule fired\" is always \"both method families said shockable\". The useful question is which condition was closest to stopping it. For each condition: the share of the three confirming windows of every false shock that would have been stopped had that one threshold been 10 % / 20 % stricter, against the share of correctly shocked coarse-VF confirming windows that the same change would also stop (the cost). What-if counts only; nothing was changed.\n");
-    let fp_windows: Vec<&WindowReport> = fps.iter().flat_map(|s| confirming(s)).collect();
+    let _ = writeln!(out, "Every false shock passed all {} conditions in at least {} of the last {} windows (that is the only way to reach `Shockable`), so \"which rule fired\" is always \"both method families said shockable\". The useful question is which condition was closest to stopping it. For each condition: the share of the confirming windows of every false shock that would have been stopped had that one threshold been 10 % / 20 % stricter, against the share of correctly shocked coarse-VF confirming windows that the same change would also stop (the cost). What-if counts only; nothing was changed.\n", conds.len(), st.confirm_windows, st.confirm_span);
+    let span = usize::from(st.confirm_span);
+    let fp_windows: Vec<&WindowReport> = fps.iter().flat_map(|s| confirming(s, span)).collect();
     let tp_windows: Vec<&WindowReport> = dev
         .iter()
         .filter(|s| s.class == TruthClass::CoarseVf && s.run.outcome == Outcome::Shock)
-        .flat_map(|s| confirming(s))
+        .flat_map(|s| confirming(s, span))
         .collect();
     let _ = writeln!(out, "| Condition | rule | false-shock windows stopped at 10% / 20% stricter (of {}) | coarse-VF windows also stopped at 10% / 20% (of {}) |", fp_windows.len(), tp_windows.len());
     let _ = writeln!(out, "|---|---|---|---|");
@@ -1162,9 +1235,9 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
         };
         pri(a).cmp(&pri(b)).then(a.run.decided_at_s.unwrap_or(99.0).total_cmp(&b.run.decided_at_s.unwrap_or(99.0)))
     });
-    let _ = writeln!(out, "### The 20 worst false shocks\n");
-    let _ = writeln!(out, "Normal rhythm first, then by how fast the shock came. Features are those of the window that confirmed the shock.\n");
-    worst_table(out, &worst_fp.into_iter().take(20).collect::<Vec<_>>());
+    let _ = writeln!(out, "### Every false shock ({} in all, both channels)\n", worst_fp.len());
+    let _ = writeln!(out, "Normal rhythm first, then asystole, then by how fast the shock came. Features are those of the window that confirmed the shock.\n");
+    worst_table(out, &worst_fp.into_iter().take(200).collect::<Vec<_>>());
     let mut worst_miss: Vec<&&SegmentResult> = missed.clone();
     worst_miss.sort_by(|a, b| b.amplitude_uv.total_cmp(&a.amplitude_uv));
     let _ = writeln!(out, "### The 20 worst missed VF segments\n");
@@ -1172,9 +1245,18 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
     worst_table(out, &worst_miss.into_iter().take(20).collect::<Vec<_>>());
 }
 
-fn confirming(s: &SegmentResult) -> Vec<&WindowReport> {
+/// The shockable windows among the last `span` up to the one that
+/// confirmed the shock (the windows that made the confirmation).
+fn confirming(s: &SegmentResult, span: usize) -> Vec<&WindowReport> {
     match s.run.decisive {
-        Some(i) => s.run.windows.iter().take(i + 1).skip((i + 1).saturating_sub(3)).collect(),
+        Some(i) => s
+            .run
+            .windows
+            .iter()
+            .take(i + 1)
+            .skip((i + 1).saturating_sub(span))
+            .filter(|w| w.verdict.decision == RhythmDecision::Shockable)
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -1200,7 +1282,7 @@ fn blocker_table(out: &mut String, conds: &[Condition], windows: &[&WindowReport
         }
     }
     let n = windows.len() as u64;
-    let _ = writeln!(out, "Which conditions failed, over {n} {what} ({} passed all twelve). \"Only blocker\" = the window failed that condition and no other, so that single threshold alone kept it from being shockable.\n", pct(passing_all, n));
+    let _ = writeln!(out, "Which conditions failed, over {n} {what} ({} passed all of them). \"Only blocker\" = the window failed that condition and no other, so that single threshold alone kept it from being shockable.\n", pct(passing_all, n));
     let _ = writeln!(out, "| Condition | rule | failed (any) | only blocker |");
     let _ = writeln!(out, "|---|---|---|---|");
     for (i, c) in conds.iter().enumerate() {
@@ -1244,11 +1326,12 @@ fn worst_table(out: &mut String, rows: &[&&SegmentResult]) {
     let _ = writeln!(out);
 }
 
-fn amplitude_section(out: &mut String, outputs: &[RecordOutput]) {
+fn amplitude_section(out: &mut String, outputs: &[RecordOutput], st: &Settings) {
+    let (fine_max, flat_max, implausible) = (st.fine_vf_max_pp_uv, st.asystole_max_uv, st.max_plausible_pp_uv);
     let _ = writeln!(out, "## Amplitude calibration and the microvolt rules\n");
-    let _ = writeln!(out, "The analyser has three absolute-size rules: under {ASYSTOLE_MAX_PP_UV} µV peak to peak is flatline (no shock); under {FINE_VF_MAX_PP_UV} µV VF is \"fine\" (not shocked); over {MAX_PLAUSIBLE_PP_UV} µV is implausible (not sure). They only mean something if the recording's microvolts are right. cudb's gain of 400 ADC units/mV is described by PhysioNet as nominal (10 mV full scale \"nominal\"; cu01 was replayed from a Holter tape). Nothing here was rescaled.\n");
+    let _ = writeln!(out, "The analyser has three absolute-size rules: under {flat_max} µV peak to peak is flatline (no shock); under {fine_max} µV VF is \"fine\" (not shocked); over {implausible} µV is implausible (not sure). They only mean something if the recording's microvolts are right. cudb's gain of 400 ADC units/mV is described by PhysioNet as nominal (10 mV full scale \"nominal\"; cu01 was replayed from a Holter tape). Nothing here was rescaled.\n");
     let _ = writeln!(out, "Per database, channel 0: the median over records of each record's median ground-truth amplitude (1-s peak to peak, drift removed) in clean streaming windows, and how VF windows fall against the analyser's own size rules (its peak-to-peak is measured after its 1–30 Hz filter, so it reads lower than the ground-truth figure).\n");
-    let _ = writeln!(out, "| Database | non-VF amplitude (median of record medians) | VF amplitude (median of record medians) | VF windows | analyser pp < {FINE_VF_MAX_PP_UV} µV (fine-VF rule) | analyser pp < {ASYSTOLE_MAX_PP_UV} µV (flatline rule) | ground truth < {FINE_VF_UV} µV |");
+    let _ = writeln!(out, "| Database | non-VF amplitude (median of record medians) | VF amplitude (median of record medians) | VF windows | analyser pp < {fine_max} µV (fine-VF rule) | analyser pp < {flat_max} µV (flatline rule) | ground truth < {FINE_VF_UV} µV |");
     let _ = writeln!(out, "|---|---|---|---|---|---|---|");
     for db in dbs_present(outputs) {
         let mut nonvf = Vec::new();
@@ -1269,8 +1352,8 @@ fn amplitude_section(out: &mut String, outputs: &[RecordOutput]) {
                 vf.push(m);
             }
             n_vf += v.len() as u64;
-            fine += v.iter().filter(|w| w.report.features.peak_to_peak_uv < FINE_VF_MAX_PP_UV).count() as u64;
-            flat += v.iter().filter(|w| w.report.features.peak_to_peak_uv < ASYSTOLE_MAX_PP_UV).count() as u64;
+            fine += v.iter().filter(|w| w.report.features.peak_to_peak_uv < fine_max).count() as u64;
+            flat += v.iter().filter(|w| w.report.features.peak_to_peak_uv < flat_max).count() as u64;
             gt_fine += v.iter().filter(|w| w.amplitude_uv < FINE_VF_UV).count() as u64;
         }
         let f = |v: &[f64]| median(v).map_or_else(|| "–".to_string(), |m| format!("{m:.0} µV ({} records)", v.len()));
