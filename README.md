@@ -29,4 +29,8 @@ Copy what is proven; innovate only where it is safe to. The shock itself follows
 
 ## Licence
 
-Not yet chosen; see question Q-03 in [DECISIONS.md](DECISIONS.md). Until a licence is added, all rights are reserved.
+Share-alike: if you improve it, you publish the improvement. See [LICENSE.md](LICENSE.md).
+
+- Hardware designs: CERN Open Hardware Licence v2, Strongly Reciprocal (CERN-OHL-S-2.0)
+- Firmware and software: GNU General Public License v3 or later (GPL-3.0-or-later)
+- Documents and research: Creative Commons Attribution-ShareAlike 4.0 (CC-BY-SA-4.0)

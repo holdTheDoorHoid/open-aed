@@ -25,8 +25,10 @@ No hardware. No hazard.
 
 - Research report and topic notes. *Done in first draft.*
 - Draft requirements, decision log, safety rules. *Done in first draft.*
-- Owner answers the open questions in DECISIONS.md.
-- Choose the licence.
+- Owner answers the open questions in DECISIONS.md. *Done 26 November 2026.*
+- Choose the licence. *Done: share-alike (D-17).*
+- Owner reads the plan and safety rules; then the repository goes public (D-13).
+- Start recruiting an engineer with professional high-voltage experience (D-18); Phase 3 cannot start without one.
 - Buy the current defibrillator standard (IEC 60601-2-4 edition 3.2, September 2026) and replace every "unverified" limit in the requirements with the real figure.
 - Start looking for three advisers: a resuscitation clinician, a medical-device regulatory consultant, and a patent attorney.
 
@@ -42,7 +44,7 @@ Nothing above battery voltage. No shock hazard.
 - **Firmware skeleton:** the state machine (pads on, analysing, charging, shock advised, CPR), prompts, event recording, and the two-controller agreement scheme, running on development boards.
 - **Circuit simulation** of the charger and output stage, to size parts before buying any.
 - **User-interface mock-up** to try prompt wording and screen layouts with real responders.
-- Begin approaching ambulance services, universities and registries about access to cardiac-arrest recordings.
+- Data partnerships are parked by owner decision (D-20). Once the rhythm analysis works on public data, begin approaching ambulance services, universities and registries about access to cardiac-arrest recordings. This must be done before Phase 5.
 
 **Exit:** rhythm analysis meets the AHA targets on public data with honest patient-separated testing; firmware state machine runs end to end against the simulator.
 

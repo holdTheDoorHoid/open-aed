@@ -1,6 +1,6 @@
 # Draft target specification
 
-Version 0.1, 26 November 2026. Every number here is provisional and traces to the research in [research_notes/](../research_notes/). Decision numbers (D-xx) and open questions (Q-xx) refer to [DECISIONS.md](../DECISIONS.md).
+Version 0.2, 26 November 2026. Every number here is provisional and traces to the research in [research_notes/](../research_notes/). Decision numbers (D-xx) and open questions (Q-xx) refer to [DECISIONS.md](../DECISIONS.md).
 
 ## Who it is for
 
@@ -22,12 +22,12 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 | Item | Target | Why |
 |---|---|---|
 | Waveform | Biphasic truncated exponential, adjusted to the patient's measured resistance | The best-proven shape. No human trial shows any other biphasic shape is better for cardiac arrest. Founding patents expired around 2013. (D-02) |
-| Adult energy | 150 joules | Matches Philips and Avive. The FDA accepted Avive's bench proof that its 150 J waveform matched Philips' in place of a new human trial. (D-03, Q-07) |
+| Adult energy | 150 joules | Matches Philips and Avive. The FDA accepted Avive's bench proof that its 150 J waveform matched Philips' in place of a new human trial. (D-03) |
 | Child energy | 50 joules, chosen in software | Matches Avive and the pocket units. (D-04) |
 | Patient resistance range | 25 to 175 ohms | The range the defibrillator standard tests |
 | Storage capacitor | About 100 µF charged to 1.7–2.0 kV | Follows from the above. Below about 60 µF the shock becomes too brief to work well. |
 | Charge time | 8 seconds or less from a ready battery | Provisional; the standard's exact limit must be read from the purchased standard |
-| Shocks per battery charge | 30 or more | Provisional (Q-06) |
+| Shocks per battery charge | 30 or more | Provisional  |
 
 ## Pads
 
@@ -47,13 +47,15 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 
 ## Operation
 
-- Semi-automatic: the device advises, the responder presses the button. (D-06, Q-10)
+- **Fully automatic** (D-06): when a shock is advised the device warns everyone to stand clear, counts down aloud and on screen, and delivers the shock itself. No shock button.
+- Because no human confirms the shock, the design must include: a loud stand-clear warning and countdown; a cancel control the responder can hit at any time; a check that the pads are still attached and the signal is still shockable right up to delivery; and the independent second check on the shock path. Whether the device can sense someone touching the patient is an open research question.
+- The accuracy bar for leaving normal rhythms alone matters even more than on a semi-automatic unit.
 - Short prompts for trained users, loud enough for a roadside, with a screen that can be read in sunlight and worked with gloves.
 - Records the whole event for the handover and for review.
 
 ## Power
 
-- Rechargeable lithium-ion, charged like a radio. One modern 21700-size cell (about 70 g) holds enough for roughly 200 charges of the capacitor. A unit that is worn daily does not need the four-year standby battery of a wall-mounted AED, and this is the biggest single size saving. (D-07, Q-06)
+- Rechargeable lithium-ion, charged like a radio. One modern 21700-size cell (about 70 g) holds enough for roughly 200 charges of the capacitor. A unit that is worn daily does not need the four-year standby battery of a wall-mounted AED, and this is the biggest single size saving. (D-07)
 - Self-test must load the battery realistically. A past fatal recall came from battery logic that misjudged the charge.
 
 ## Toughness
@@ -89,4 +91,4 @@ Field surveys found 15–21% of public AEDs not ready when inspected, and an ana
 
 ## Connectivity
 
-Bluetooth for setup and downloading event records in the first version. Cellular and location reporting are deferred: any internet-capable device takes on the FDA's cybersecurity requirements. (D-09, Q-08)
+Bluetooth for setup and downloading event records in the first version. Cellular and location reporting are deferred: any internet-capable device takes on the FDA's cybersecurity requirements. (D-09)
