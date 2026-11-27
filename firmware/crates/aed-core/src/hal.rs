@@ -48,20 +48,129 @@ pub enum PadCartridge {
     HeatWorn,
 }
 
-/// What the shock hardware reports after a shock was requested.
+/// What the shock hardware's sequence logic reports (decision D-59). Each
+/// controller reads it on its own input; neither relies on the other's view.
+///
+/// One shock is one **sequence**: both consents present, then the
+/// interlock rail rises, the patient relay moves the pads from the
+/// measuring front ends to the output bridge, the main controller's timer
+/// runs the phases, and at the first conducting moment the hardware latches
+/// "sequence active". From then on it completes the planned pulse whatever
+/// the request and permit lines do, limited only by a non-retriggerable
+/// hardware time cap and the over-current trip. When it ends, drive is
+/// removed, the relay returns the pads to the front ends, and the hardware
+/// locks out until both consents have been fully removed: one sequence per
+/// permit. The rules are written out in [`crate::interlock`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShockStatus {
-    /// No shock is requested.
+pub enum SequenceStatus {
+    /// No sequence: rail down, relay at rest (pads on the front ends), not
+    /// locked out.
     Idle,
-    /// A shock is requested and has not happened yet (for example, the
-    /// supervisor's permit has not arrived).
-    Pending,
-    /// The shock was delivered.
-    Delivered,
-    /// The hardware interlock refused the shock.
+    /// Both consents present and the rail up; the relay is moving or has
+    /// moved the pads to the bridge; no current has flowed yet. Removing a
+    /// consent now still stops everything.
+    Armed,
+    /// The sequence latch is set: the pulse is running and will complete
+    /// whatever the consent lines do.
+    Active,
+    /// The sequence has ended, in this way. Drive is removed and the relay
+    /// is returning (or has returned) the pads to the front ends. Locked
+    /// out until both consents are removed.
+    Ended(SequenceEnd),
+    /// The rail was removed before any sequence started because the
+    /// hardware's own limit on how long a permit may hold the rail up ran
+    /// out. Locked out until both consents are removed.
+    LockedOut,
+}
+
+impl SequenceStatus {
+    /// True once current has flowed in this sequence (active or ended).
+    #[must_use]
+    pub const fn started(self) -> bool {
+        matches!(self, SequenceStatus::Active | SequenceStatus::Ended(_))
+    }
+
+    /// True while the hardware refuses a new sequence until both consents
+    /// have been removed.
+    #[must_use]
+    pub const fn locked_out(self) -> bool {
+        matches!(self, SequenceStatus::Ended(_) | SequenceStatus::LockedOut)
+    }
+}
+
+/// How a sequence ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceEnd {
+    /// The last planned phase ended normally.
+    Completed,
+    /// The non-retriggerable hardware time cap expired first and cut the
+    /// drive (for example a stuck phase timer).
+    TimeCapTripped,
+    /// The over-current trip cut the drive.
+    OverCurrentTripped,
+}
+
+/// Where the patient relay's position sense says the pads are connected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayPosition {
+    /// At rest: pads on the heart-signal and pad-resistance front ends.
+    /// The only position in which pad and heart readings mean anything.
+    FrontEnds,
+    /// Pads on the output bridge.
+    Bridge,
+    /// Neither contact confirmed: moving, bouncing, or a sense fault.
+    Between,
+}
+
+/// One step of the bridge switch test (D-61), run only under a test permit,
+/// at low voltage, into the device's internal test load (never the pads:
+/// the patient relay cannot move under a test permit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeTestStep {
+    /// Low-side switch of leg A.
+    LowSideA,
+    /// Low-side switch of leg B.
+    LowSideB,
+    /// High-side switch of leg A.
+    HighSideA,
+    /// High-side switch of leg B.
+    HighSideB,
+}
+
+impl BridgeTestStep {
+    /// Every step, in the order the self-test runs them.
+    pub const ALL: [BridgeTestStep; 4] = [
+        BridgeTestStep::LowSideA,
+        BridgeTestStep::LowSideB,
+        BridgeTestStep::HighSideA,
+        BridgeTestStep::HighSideB,
+    ];
+}
+
+/// What one bridge test step found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeTestOutcome {
+    /// The switch turned on and off as commanded.
+    Pass,
+    /// Commanded on, it did not conduct (failed open, or its drive failed).
+    DoesNotTurnOn,
+    /// Commanded off, it still conducted (shorted, or its drive is stuck on).
+    DoesNotTurnOff,
+    /// The hardware could not run the step: the test rail was not up (no
+    /// test permit, capacitor above the test limit) or a sequence was
+    /// running.
     Refused,
-    /// The output stage reported a fault while delivering.
-    Fault,
+}
+
+/// The result of one bridge test step, as the board layer measures it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BridgeTestResult {
+    /// Pass or the kind of failure.
+    pub outcome: BridgeTestOutcome,
+    /// The board layer's measurement for the record (for example the
+    /// test-load current in milliamperes). Its meaning is set by the board
+    /// layer; the firmware only records it.
+    pub measurement: u16,
 }
 
 /// Everything the MAIN controller can see and do.
@@ -77,17 +186,39 @@ pub trait MainHardware {
     /// Hold the discharge path open (`true`, capacitor may stay charged) or
     /// release it (`false`, capacitor empties into the internal load).
     fn set_discharge_hold(&mut self, hold: bool);
-    /// Raise the shock request line, with the plan's phase timings loaded into
-    /// the output stage. Called once per shock.
-    fn request_shock(&mut self, plan: &ShockPlan);
+    /// Raise the shock request line. With `Some(plan)` the plan's phase
+    /// timings are loaded into the main controller's phase timer, which the
+    /// hardware starts by itself once the interlock rail is up and the
+    /// patient relay reads [`RelayPosition::Bridge`] (or, under a test
+    /// permit, once the rail is up). With `None` the line is raised with no
+    /// sequence loaded: the self-test uses that to probe the interlock and
+    /// to hold the test rail up for the bridge switch steps. Called once per
+    /// shock.
+    fn request_shock(&mut self, plan: Option<&ShockPlan>);
     /// Lower the shock request line. Safe to call at any time, repeatedly.
+    /// Has no effect on a sequence the hardware has already latched (D-59).
     fn withdraw_shock_request(&mut self);
-    /// What the shock hardware reports about the current request.
-    fn shock_status(&mut self) -> ShockStatus;
+    /// The hardware's sequence status, read from the bridge sheet directly
+    /// (not through the supervisor).
+    fn sequence_status(&mut self) -> SequenceStatus;
+    /// The patient relay's position sense.
+    fn patient_relay(&mut self) -> RelayPosition;
+    /// Run one bridge switch test step (D-61) and report the result. Only
+    /// meaningful while the test rail is up: request raised with no
+    /// sequence (`request_shock(None)`) under the supervisor's test permit.
+    /// Otherwise the board layer returns [`BridgeTestOutcome::Refused`].
+    /// The step's drive is separate from the phase timer and must not set
+    /// the sequence latch (a hardware requirement; see the crate README).
+    fn bridge_test_step(&mut self, step: BridgeTestStep) -> BridgeTestResult;
     /// True while the cancel control is pressed.
     fn cancel_pressed(&mut self) -> bool;
-    /// The position of the adult/child switch.
+    /// The position of the adult/child switch, from its primary contact
+    /// (the one the firmware has always read).
     fn patient_mode(&mut self) -> PatientMode;
+    /// The position the switch's SECOND contact reports: the one that sets
+    /// the charger's hardware voltage ceiling, read back (D-60, review
+    /// R-8). It should always equal [`MainHardware::patient_mode`].
+    fn patient_mode_ceiling(&mut self) -> PatientMode;
     /// The battery as the power monitor sees it now.
     fn battery(&mut self) -> BatteryStatus;
     /// Put the battery under a realistic load briefly and report the result
@@ -130,6 +261,14 @@ pub trait SupervisorHardware {
     fn temperature(&mut self) -> Option<DeciC>;
     /// Raise (`true`) or lower (`false`) the shock permit line.
     fn set_permit(&mut self, permit: bool);
+    /// Raise (`true`) or lower (`false`) the TEST permit line (D-61). It
+    /// lets the interlock rail rise for the self-test only while the
+    /// capacitor is below the hardware's own test-voltage limit, never
+    /// powers the patient relay, and with the shock permit also present
+    /// gives neither (a hardware requirement).
+    fn set_test_permit(&mut self, on: bool);
+    /// The hardware's sequence status, on the supervisor's own input.
+    fn sequence_status(&mut self) -> SequenceStatus;
     /// Hold the discharge path open (`true`) or release it (`false`).
     fn set_discharge_hold(&mut self, hold: bool);
     /// The latest status message from the main controller not yet read, if any.

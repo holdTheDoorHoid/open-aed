@@ -11,5 +11,6 @@ mod mock;
 mod parts_tests;
 mod rescue_tests;
 mod schedule_tests;
+mod sequence_tests;
 mod supervisor_tests;
 mod walk_tests;

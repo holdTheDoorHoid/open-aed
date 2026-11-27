@@ -13,8 +13,9 @@
 //!   defibrillator (decision D-06).
 //! * [`supervisor`]: the second, independent controller that must give a
 //!   permit before any shock and can empty the capacitor on its own.
-//! * [`interlock`]: the hardware gate (the third check), written down as a
-//!   pure function for the simulator to model.
+//! * [`interlock`]: the hardware gate (the third check) and the shock
+//!   sequence latch (D-59), written down as pure functions for the
+//!   simulator to model and the hardware designer to check against.
 //! * [`selftest`]: the self-test sequence.
 //! * [`schedule`]: the periodic self-tests while the device is off
 //!   (decision D-15): when to run them, the record, and the ready indicator.
@@ -51,8 +52,11 @@ pub mod supervisor;
 
 pub use config::{Config, ConfigError};
 pub use events::{Event, EventRecord, TimedEvent};
-pub use hal::{BatteryStatus, MainHardware, PadCartridge, ShockStatus, SupervisorHardware};
-pub use link::{MainStatus, SupervisorFault, SupervisorReport};
+pub use hal::{
+    BatteryStatus, BridgeTestOutcome, BridgeTestResult, BridgeTestStep, MainHardware,
+    PadCartridge, RelayPosition, SequenceEnd, SequenceStatus, SupervisorHardware,
+};
+pub use link::{MainStatus, ShockCheck, SupervisorFault, SupervisorReport, TestRequest};
 pub use export::{crc32_update, write_record, EXPORT_FORMAT_VERSION};
 pub use heat::{
     Assessment, ChargeContext, DeciC, HeatBand, HeatInhibit, HeatMonitor, SensorFault, SensorSet,
@@ -70,7 +74,9 @@ pub use standby::{
     StoreError, WearStatus,
 };
 pub use selftest::{SelfTest, SelfTestFailure, SelfTestPass, SelfTestProgress};
-pub use supervisor::{PermitRefusal, ReleaseReason, Supervisor, TempIgnored};
+pub use supervisor::{
+    PermitRefusal, PermitWithdrawal, ReleaseReason, Supervisor, TempIgnored, TestPermitRefusal,
+};
 
 #[cfg(test)]
 #[allow(

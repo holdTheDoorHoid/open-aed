@@ -8,13 +8,29 @@
 //! sensors and its own clock. Nothing a controller does reaches the other
 //! controller except through the plant's physics or the message wire.
 //!
+//! **The shock is a process in time, not an event** (D-59, review R-1).
+//! While anything in the shock path is moving, the plant steps in
+//! [`PlantConfig::shock_step_us`] (10 µs) instead of 1 ms: the interlock
+//! rail rising, the patient relay's contacts breaking, travelling and
+//! bouncing, both front ends reading open while the pads are off them, the
+//! sequence latch ([`aed_core::interlock::Latch`]), each phase discharging
+//! the capacitor continuously into the patient (the same exponential as the
+//! aed-waveform model, integrated step by step), the hardware time cap and
+//! over-current trip, the relay returning, the front ends recovering, the
+//! lockout, and the permit-duration cap. The consent lines are sampled at
+//! every step: withdrawn before the latch, nothing happens; after it, the
+//! pulse completes.
+//!
 //! SIMULATION ONLY. Every electrical figure is a model figure from simple
 //! arithmetic. See the crate README for what is not modelled.
 
 use std::collections::VecDeque;
 
-use aed_core::interlock::{bridge_may_fire, charger_may_run, discharge_path_active};
-use aed_core::{BatteryStatus, MainStatus, PadCartridge, Prompt, ShockStatus, SupervisorReport};
+use aed_core::interlock::{charger_may_run, discharge_path_active, Latch, LatchInputs, LatchTiming};
+use aed_core::{
+    BatteryStatus, BridgeTestOutcome, BridgeTestStep, MainStatus, PadCartridge, Prompt,
+    RelayPosition, SequenceEnd, SequenceStatus, SupervisorReport,
+};
 use aed_rhythm::synth::{Rhythm, Synth, Xorshift32};
 use aed_types::{EcgSample, ImpedanceSample, ShockPlan, Volts};
 use aed_waveform::{discharge, DischargeResult, WaveformConfig};
@@ -71,10 +87,15 @@ pub struct PlantConfig {
     /// Highest voltage the charger circuit can physically reach if its
     /// regulation fails (only used by the "runaway" fault). Default 2,600 V.
     pub charger_runaway_volts: f64,
-    /// Resistance of the internal discharge load, ohms. Default 2,000 Ω:
-    /// with 100 µF that empties the capacitor with a 0.2 s time constant,
-    /// so 1,950 V falls below 50 V in about 0.75 s. Model choice.
-    pub dump_ohms: f64,
+    /// Resistance of discharge path A (let go by the main controller),
+    /// ohms. Default 4,000 Ω, and the same for path B: together 2,000 Ω,
+    /// which with 100 µF empties the capacitor with a 0.2 s time constant,
+    /// so 1,950 V falls below 50 V in about 0.75 s, as before the split;
+    /// one path alone takes twice as long. Model choice (the hardware
+    /// design proposes 4.5 kΩ per path, HARDWARE_DESIGN.md §B5.3).
+    pub path_a_ohms: f64,
+    /// Resistance of discharge path B (let go by the supervisor), ohms.
+    pub path_b_ohms: f64,
     /// The capacitor's own slow leakage (bleeder), ohms. Default 50 MΩ
     /// (time constant about 80 minutes). Model choice.
     pub bleed_ohms: f64,
@@ -122,6 +143,66 @@ pub struct PlantConfig {
     pub impedance_shock_offset_ohms: f64,
     /// Time constant of that recovery, ms. Default 1,500 ms. Model choice.
     pub impedance_shock_recovery_ms: f64,
+
+    // ----- the shock as a process in time (D-59) ---------------------------
+    /// Time step while anything in the shock path is moving, µs. Default
+    /// 10 µs: phase 1 at 25 Ω has a 3 ms time constant, so each step moves
+    /// the capacitor by about 0.3 %. The rest of the simulation steps in 1 ms.
+    pub shock_step_us: u32,
+    /// The hardware's time cap, permit-duration cap and re-arm time.
+    /// Default: the proposed figures ([`LatchTiming::PROPOSED`]).
+    pub latch_timing: LatchTiming,
+    /// True (default): the hardware latches the sequence at the first
+    /// conducting moment (D-59). False: the hardware of the first design
+    /// (review R-1), where removing any consent cuts the drive at once,
+    /// mid-pulse. Only to demonstrate the old problem.
+    pub sequence_latch: bool,
+    /// From the rail rising to the relay coil and drivers being powered, µs.
+    /// Default 1 ms (HARDWARE_DESIGN.md §B8.4: ≤ 2 ms). Model choice.
+    pub rail_rise_us: u32,
+    /// From the coil powered to the front-end (rest) contact opening, µs.
+    /// Default 2 ms. Model choice; no relay is chosen.
+    pub relay_break_us: u32,
+    /// From the coil powered to the bridge contact first closing, µs.
+    /// Default 6 ms (§B8.4: ≤ 10 ms, unverified). Model choice.
+    pub relay_transfer_us: u32,
+    /// How long the bridge contact bounces after first closing, µs.
+    /// Default 1 ms. Model choice.
+    pub relay_bounce_us: u32,
+    /// From the coil released to the front-end contact closing again, µs.
+    /// Default 5 ms (§B8.4: ≤ 10 ms, unverified). Model choice.
+    pub relay_return_us: u32,
+    /// The phase timer starts once the position sense has read "bridge"
+    /// without a break for this long, µs. Default 500 µs. Model choice.
+    pub relay_settle_us: u32,
+    /// Under a test permit (the relay does not move) the timer starts this
+    /// long after the rail rises, µs. Default 1 ms.
+    pub test_start_us: u32,
+    /// The over-current trip, amperes. Default 90 A (§B6.4).
+    pub over_current_a: f64,
+    /// The hardware's own limit for the test permit: the test rail rises
+    /// only below this capacitor voltage. Default 100 V (§B6.6).
+    pub test_voltage_limit_v: f64,
+    /// The bridge test load, ohms. Default 2 kΩ (§B6.6).
+    pub test_load_ohms: f64,
+    /// After the relay returns, both pad-resistance readings read open for
+    /// this long while the front ends recover, ms. Default 300 ms (the same
+    /// as the impedance saturation). Model choice, not measured.
+    pub pad_reading_recovery_ms: u32,
+    /// Each controller's voltage converter delivers a new reading every
+    /// this many ms (sample and hold). Default 1 (a fresh reading every
+    /// step). The review quotes 8 ms for the converter in the hardware
+    /// design (AD7171, 125 samples/s).
+    pub voltage_sample_ms: u32,
+    /// Each controller's pad-resistance reading is refreshed every this many
+    /// ms. Default 1. No figure is known for the chosen parts.
+    pub pad_sample_ms: u32,
+    /// Offset of the sampling grid, ms (to sweep where the samples fall
+    /// relative to a shock).
+    pub sample_phase_ms: u32,
+    /// Half-period of a toggling consent line or phase timer fault, µs.
+    /// Default 500 µs (a 1 kHz square wave).
+    pub toggle_half_period_us: u32,
 }
 
 impl Default for PlantConfig {
@@ -131,7 +212,8 @@ impl Default for PlantConfig {
             charger_watts: 30.0,
             charger_max_current_a: 0.5,
             charger_runaway_volts: 2_600.0,
-            dump_ohms: 2_000.0,
+            path_a_ohms: 4_000.0,
+            path_b_ohms: 4_000.0,
             bleed_ohms: 50.0e6,
             charger_gated_by_discharge: true,
             charger_set_point_gain: 1.0,
@@ -149,6 +231,24 @@ impl Default for PlantConfig {
             impedance_shock_saturation_ms: 300,
             impedance_shock_offset_ohms: 3.0,
             impedance_shock_recovery_ms: 1_500.0,
+            shock_step_us: 10,
+            latch_timing: LatchTiming::PROPOSED,
+            sequence_latch: true,
+            rail_rise_us: 1_000,
+            relay_break_us: 2_000,
+            relay_transfer_us: 6_000,
+            relay_bounce_us: 1_000,
+            relay_return_us: 5_000,
+            relay_settle_us: 500,
+            test_start_us: 1_000,
+            over_current_a: 90.0,
+            test_voltage_limit_v: 100.0,
+            test_load_ohms: 2_000.0,
+            pad_reading_recovery_ms: 300,
+            voltage_sample_ms: 1,
+            pad_sample_ms: 1,
+            sample_phase_ms: 0,
+            toggle_half_period_us: 500,
         }
     }
 }
@@ -188,6 +288,30 @@ pub enum Fault {
     /// campaign's choices are the same as before compression sensing; it
     /// has its own scenario and tests.
     ImpedanceChannelLost,
+    // The shock-path faults below (D-59, D-61) are not in `Fault::ALL`
+    // either, so the campaign's random choices stay comparable with the
+    // runs before them; each has its own tests.
+    /// The patient relay does not move when its coil is powered.
+    RelayFailsToTransfer,
+    /// The patient relay does not come back from the bridge.
+    RelayFailsToReturn,
+    /// The patient relay is four times slower than its model times.
+    RelaySlow,
+    /// The main controller's phase timer is stuck: phase 1 never ends.
+    MainTimerStuck,
+    /// The phase timer keeps toggling phase 1 on and off (a timer left
+    /// running by a frozen core, review R-4).
+    MainTimerToggling,
+    /// The output is shorted: the over-current trip must end the sequence.
+    OutputShort,
+    /// The request line is stuck on, whatever the main controller does.
+    RequestStuckOn,
+    /// The permit line is stuck on, whatever the supervisor does.
+    PermitStuckOn,
+    /// The request line toggles while the main controller holds it up.
+    RequestToggling,
+    /// The permit line toggles while the supervisor holds it up.
+    PermitToggling,
 }
 
 impl Fault {
@@ -224,6 +348,16 @@ impl Fault {
             Fault::BatteryDepleted => "battery suddenly depleted",
             Fault::BridgeFailsToFire => "output bridge fails to fire",
             Fault::ImpedanceChannelLost => "compression-sensing (impedance) channel stops",
+            Fault::RelayFailsToTransfer => "patient relay does not move to the bridge",
+            Fault::RelayFailsToReturn => "patient relay does not return to the front ends",
+            Fault::RelaySlow => "patient relay four times slower than modelled",
+            Fault::MainTimerStuck => "phase timer stuck in phase 1",
+            Fault::MainTimerToggling => "phase timer keeps toggling",
+            Fault::OutputShort => "output shorted (over-current)",
+            Fault::RequestStuckOn => "request line stuck on",
+            Fault::PermitStuckOn => "permit line stuck on",
+            Fault::RequestToggling => "request line toggling",
+            Fault::PermitToggling => "permit line toggling",
         }
     }
 
@@ -244,8 +378,27 @@ impl Fault {
             Fault::BatteryDepleted => "battery-depleted",
             Fault::BridgeFailsToFire => "bridge-fails",
             Fault::ImpedanceChannelLost => "impedance-lost",
+            Fault::RelayFailsToTransfer => "relay-no-transfer",
+            Fault::RelayFailsToReturn => "relay-no-return",
+            Fault::RelaySlow => "relay-slow",
+            Fault::MainTimerStuck => "timer-stuck",
+            Fault::MainTimerToggling => "timer-toggling",
+            Fault::OutputShort => "output-short",
+            Fault::RequestStuckOn => "request-stuck",
+            Fault::PermitStuckOn => "permit-stuck",
+            Fault::RequestToggling => "request-toggling",
+            Fault::PermitToggling => "permit-toggling",
         }
     }
+}
+
+/// A consent line, for forcing one low at a chosen instant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsentLine {
+    /// The main controller's request.
+    Request,
+    /// The supervisor's permit (and test permit).
+    Permit,
 }
 
 /// True if a scripted rhythm is one a shock is meant for (ground truth).
@@ -275,50 +428,153 @@ pub fn rhythm_name(r: Rhythm) -> String {
     }
 }
 
-/// One shock the bridge actually fired, with its modelled result.
+/// How a sequence ended in the plant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShockEnd {
+    /// The last phase ended normally.
+    Completed,
+    /// The hardware time cap cut it.
+    TimeCap,
+    /// The over-current trip cut it.
+    OverCurrent,
+    /// Only with [`PlantConfig::sequence_latch`] off (the first design): a
+    /// consent was removed mid-pulse and the drive was cut there.
+    ConsentCut,
+}
+
+/// One shock sequence the bridge ran, computed step by step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShockRecord {
-    /// When it fired (simulation time, ms).
+    /// When it started (the first conducting moment), simulation ms.
     pub at_ms: u32,
+    /// When it started, simulation µs.
+    pub start_us: u64,
+    /// When it ended, simulation µs.
+    pub end_us: u64,
+    /// When the interlock rail rose (both consents present), simulation µs.
+    pub rail_us: u64,
+    /// When the main controller last raised its request, simulation µs.
+    pub request_us: Option<u64>,
     /// The plan the main controller loaded.
     pub plan: ShockPlan,
-    /// The true capacitor voltage when it fired.
+    /// The true capacitor voltage when it started.
     pub capacitor_v: f64,
-    /// The true pad resistance, or `None` if the pads were off.
+    /// The true pad resistance at the start, or `None` if the pads were off.
     pub patient_ohms: Option<f64>,
-    /// The waveform model's result (None if the pads were off: no current flowed).
+    /// The aed-waveform model's result for the plan from the true starting
+    /// voltage: what the shock SHOULD deliver (None if the pads were off).
     pub result: Option<DischargeResult>,
-    /// The rhythm the patient actually had at that moment.
+    /// Energy actually delivered to the patient, integrated step by step, J.
+    pub integrated_j: f64,
+    /// Highest patient current actually reached, A.
+    pub integrated_peak_a: f64,
+    /// Highest current in the output wherever it went (into a short too), A.
+    pub output_peak_a: f64,
+    /// The true capacitor voltage when it ended.
+    pub final_v: f64,
+    /// How it ended.
+    pub end: ShockEnd,
+    /// The rhythm the patient actually had at the start.
     pub rhythm: Rhythm,
     /// When that rhythm started (simulation time, ms).
     pub rhythm_since_ms: u32,
-    /// Whether the cancel control was pressed at that moment.
+    /// Whether the cancel control was pressed at the start.
     pub cancel_pressed: bool,
 }
 
 impl ShockRecord {
-    /// Modelled energy delivered to the patient, joules.
+    /// Energy delivered to the patient, joules (integrated, model).
     #[must_use]
     pub fn delivered_j(&self) -> f64 {
+        self.integrated_j
+    }
+    /// What the plan should have delivered from the true starting voltage,
+    /// joules (aed-waveform model; 0 with the pads off).
+    #[must_use]
+    pub fn planned_j(&self) -> f64 {
         self.result.map_or(0.0, |r| r.patient_energy_j)
     }
-    /// Modelled peak current, amperes.
+    /// Highest patient current, amperes.
     #[must_use]
     pub fn peak_a(&self) -> f64 {
-        self.result.map_or(0.0, |r| r.peak_current_a)
+        self.integrated_peak_a
     }
     /// Voltage left on the capacitor after the shock.
     #[must_use]
     pub fn residual_v(&self) -> f64 {
-        self.result.map_or(self.capacitor_v, |r| r.final_capacitor_v)
+        self.final_v
     }
+    /// How long the pulse ran, first conducting moment to end, µs.
+    #[must_use]
+    pub fn duration_us(&self) -> u64 {
+        self.end_us.saturating_sub(self.start_us)
+    }
+    /// From both consents present (rail up) to the energy delivered, µs.
+    #[must_use]
+    pub fn consent_to_delivered_us(&self) -> u64 {
+        self.end_us.saturating_sub(self.rail_us)
+    }
+    /// From the main controller's request to the energy delivered, µs.
+    #[must_use]
+    pub fn request_to_delivered_us(&self) -> Option<u64> {
+        self.request_us.map(|t| self.end_us.saturating_sub(t))
+    }
+}
+
+/// A self-test sequence into the internal test load (D-61).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TestSequenceRecord {
+    /// Start, simulation µs.
+    pub start_us: u64,
+    /// End, simulation µs.
+    pub end_us: u64,
+    /// How it ended.
+    pub end: ShockEnd,
+    /// Energy into the test load, J.
+    pub load_j: f64,
+}
+
+/// The patient relay's contacts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Relay {
+    coil: bool,
+    /// µs since the coil last changed.
+    since_us: u32,
+    front_closed: bool,
+    bridge_closed: bool,
+    /// µs the contacts have been on the bridge without a break.
+    bridge_stable_us: u32,
+}
+
+/// The sequence the timer is running.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Running {
+    t_us: u32,
+    record: ShockRecord,
+    test: bool,
+    load_j: f64,
 }
 
 /// Something physical that happened in one plant step, for the timeline.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlantEvent {
-    /// The bridge fired.
+    /// A shock sequence ended (the record is complete).
     Shock(Box<ShockRecord>),
+    /// The interlock rail rose.
+    RailUp {
+        /// Under a test permit.
+        test: bool,
+    },
+    /// A sequence started (the latch was set).
+    SequenceStarted,
+    /// The patient relay reached the bridge and settled.
+    RelayOnBridge,
+    /// The patient relay is back on the front ends.
+    RelayBack,
+    /// The rail dropped before any sequence started.
+    RailDropped,
+    /// The hardware's permit-duration cap removed the rail.
+    PermitCapTripped,
     /// The bridge was allowed to fire but the injected fault stopped it.
     BridgeDidNotFire,
     /// The patient's rhythm changed.
@@ -344,10 +600,29 @@ pub struct Plant {
     pub charger_target: Option<Volts>,
     /// The shock request line, with the loaded plan.
     pub request: Option<ShockPlan>,
+    /// The request line raised with no sequence loaded (self-test probes).
+    pub request_bare: bool,
+    /// When the request was last raised, µs.
+    pub request_raised_us: Option<u64>,
     /// The supervisor's permit line.
     pub permit: bool,
-    /// What the output stage reports.
-    pub shock_status: ShockStatus,
+    /// The supervisor's test permit line (D-61).
+    pub test_permit: bool,
+    /// The sequence logic (D-59).
+    pub latch: Latch,
+    /// For a sweep: force this consent line low from this instant (µs) on.
+    pub consent_cut: Option<(ConsentLine, u64)>,
+    /// A bridge test step that fails, and how (D-61 tests).
+    pub bridge_switch_fault: Option<(BridgeTestStep, BridgeTestOutcome)>,
+    /// What the adult/child switch's second contact reads, if it differs
+    /// from [`Plant::mode`] (D-60).
+    pub mode_ceiling: Option<aed_types::PatientMode>,
+    /// Every self-test sequence into the internal test load.
+    pub test_sequences: Vec<TestSequenceRecord>,
+    /// Discharge path A failed open.
+    pub path_a_open: bool,
+    /// Discharge path B failed open.
+    pub path_b_open: bool,
     /// True pad resistance, `None` when the pads are not on the patient.
     pub pad_ohms: Option<f64>,
     /// The cancel control is held down until this time (exclusive), if set.
@@ -429,6 +704,12 @@ pub struct Plant {
     last_shock_ms: Option<u32>,
     events: Vec<PlantEvent>,
     bridge_fail_reported: bool,
+    relay: Relay,
+    running: Option<Running>,
+    rail_since_us: Option<u64>,
+    relay_back_ms: Option<u32>,
+    held_v: (f64, f64),
+    held_ohms: (Option<f64>, Option<f64>),
     /// The device's inside temperature and its six sensors (D-48).
     pub thermal: crate::thermal::Thermal,
     /// The electronics are on (they warm the inside); true in a rescue.
@@ -450,8 +731,17 @@ impl Plant {
             supervisor_hold: false,
             charger_target: None,
             request: None,
+            request_bare: false,
+            request_raised_us: None,
             permit: false,
-            shock_status: ShockStatus::Idle,
+            test_permit: false,
+            latch: Latch::IDLE,
+            consent_cut: None,
+            bridge_switch_fault: None,
+            mode_ceiling: None,
+            test_sequences: Vec::new(),
+            path_a_open: false,
+            path_b_open: false,
             pad_ohms: None,
             cancel_until_ms: None,
             mode: aed_types::PatientMode::Adult,
@@ -491,6 +781,18 @@ impl Plant {
             last_shock_ms: None,
             events: Vec::new(),
             bridge_fail_reported: false,
+            relay: Relay {
+                coil: false,
+                since_us: 0,
+                front_closed: true,
+                bridge_closed: false,
+                bridge_stable_us: 0,
+            },
+            running: None,
+            rail_since_us: None,
+            relay_back_ms: None,
+            held_v: (0.0, 0.0),
+            held_ohms: (None, None),
             thermal: crate::thermal::Thermal::at(20.0),
             electronics_on: true,
             heat_accounted_j: (0.0, 0.0),
@@ -566,7 +868,17 @@ impl Plant {
             | Fault::MainFreeze
             | Fault::LinkDrop
             | Fault::BridgeFailsToFire
-            | Fault::ImpedanceChannelLost => {}
+            | Fault::ImpedanceChannelLost
+            | Fault::RelayFailsToTransfer
+            | Fault::RelayFailsToReturn
+            | Fault::RelaySlow
+            | Fault::MainTimerStuck
+            | Fault::MainTimerToggling
+            | Fault::OutputShort
+            | Fault::RequestStuckOn
+            | Fault::PermitStuckOn
+            | Fault::RequestToggling
+            | Fault::PermitToggling => {}
         }
     }
 
@@ -589,23 +901,112 @@ impl Plant {
         self.clock(self.config.supervisor_clock_ppm)
     }
 
-    /// A voltage reading through a sensor, rounded and kept in range.
+    /// A voltage reading through a sensor, rounded and kept in range, of
+    /// the true voltage now.
     #[must_use]
     pub fn read_volts(&self, sensor: SensorModel) -> Volts {
-        let v = sensor.read(self.cap_v).round().clamp(0.0, f64::from(u16::MAX));
+        Self::volts_of(sensor, self.cap_v)
+    }
+
+    fn volts_of(sensor: SensorModel, v: f64) -> Volts {
+        let v = sensor.read(v).round().clamp(0.0, f64::from(u16::MAX));
         // Clamped into the u16 range above.
         Volts(v as u16)
     }
 
-    /// A pad-resistance reading through a sensor.
+    /// The main controller's voltage reading (its converter's latest sample).
+    #[must_use]
+    pub fn main_volts(&self) -> Volts {
+        Self::volts_of(self.config.main_voltage_sensor, self.held_v.0)
+    }
+
+    /// The supervisor's voltage reading (its converter's latest sample).
+    #[must_use]
+    pub fn supervisor_volts(&self) -> Volts {
+        Self::volts_of(self.config.supervisor_voltage_sensor, self.held_v.1)
+    }
+
+    /// The true pad resistance as the front ends can see it now: `None`
+    /// (open) with the pads off, while the relay has them away from the
+    /// front ends, or while the front ends recover after it returns.
+    #[must_use]
+    pub fn front_end_ohms(&self) -> Option<f64> {
+        let recovering = self
+            .relay_back_ms
+            .is_some_and(|t| self.now_ms < t.saturating_add(self.config.pad_reading_recovery_ms));
+        if !self.relay.front_closed || recovering {
+            None
+        } else {
+            self.pad_ohms
+        }
+    }
+
+    /// True while the pads are connected to the front ends (relay at rest).
+    #[must_use]
+    pub fn pads_on_front_ends(&self) -> bool {
+        self.relay.front_closed
+    }
+
+    /// A pad-resistance reading through a sensor, of what the front ends
+    /// see now.
     #[must_use]
     pub fn read_ohms(&self, sensor: SensorModel) -> aed_types::Ohms {
-        let v = match self.pad_ohms {
+        Self::ohms_of(sensor, self.front_end_ohms(), self.config.open_circuit_reading)
+    }
+
+    fn ohms_of(sensor: SensorModel, r: Option<f64>, open: u16) -> aed_types::Ohms {
+        let v = match r {
             Some(r) => sensor.read(r),
-            None => f64::from(self.config.open_circuit_reading),
+            None => f64::from(open),
         };
         let v = v.round().clamp(0.0, f64::from(u16::MAX));
+        // Clamped into the u16 range above.
         aed_types::Ohms(v as u16)
+    }
+
+    /// The main controller's pad reading (latest sample).
+    #[must_use]
+    pub fn main_ohms(&self) -> aed_types::Ohms {
+        Self::ohms_of(
+            self.config.main_resistance_sensor,
+            self.held_ohms.0,
+            self.config.open_circuit_reading,
+        )
+    }
+
+    /// The supervisor's pad reading (latest sample).
+    #[must_use]
+    pub fn supervisor_ohms(&self) -> aed_types::Ohms {
+        Self::ohms_of(
+            self.config.supervisor_resistance_sensor,
+            self.held_ohms.1,
+            self.config.open_circuit_reading,
+        )
+    }
+
+    /// The patient relay's position sense.
+    #[must_use]
+    pub fn relay_position(&self) -> RelayPosition {
+        if self.relay.front_closed {
+            RelayPosition::FrontEnds
+        } else if self.relay.bridge_closed {
+            RelayPosition::Bridge
+        } else {
+            RelayPosition::Between
+        }
+    }
+
+    /// One bridge test step (D-61): only with the test rail up and no
+    /// sequence running.
+    #[must_use]
+    pub fn bridge_test_step(&self, step: BridgeTestStep) -> BridgeTestOutcome {
+        if !(self.latch.status == SequenceStatus::Armed && self.latch.test) {
+            return BridgeTestOutcome::Refused;
+        }
+        match self.bridge_switch_fault {
+            Some((s, o)) if s == step => o,
+            _ => BridgeTestOutcome::Pass,
+        }
     }
 
     /// Put a message on a wire, unless the wire is down or it is randomly lost.
@@ -676,8 +1077,30 @@ impl Plant {
         }
     }
 
+    /// Simulation time now, µs.
+    #[must_use]
+    pub fn now_us(&self) -> u64 {
+        u64::from(self.now_ms) * 1_000
+    }
+
+    /// True while anything in the shock path is moving or could move: the
+    /// plant then steps in [`PlantConfig::shock_step_us`].
+    fn shock_path_busy(&self) -> bool {
+        self.latch.status != SequenceStatus::Idle
+            || self.relay.coil
+            || !self.relay.front_closed
+            || self.relay.bridge_closed
+            || self.request.is_some()
+            || self.request_bare
+            || self.permit
+            || self.test_permit
+            || self.has_fault(Fault::RequestStuckOn)
+            || self.has_fault(Fault::PermitStuckOn)
+    }
+
     /// Advance the physics by one millisecond. Returns what happened.
     pub fn step(&mut self) -> Vec<PlantEvent> {
+        let start_us = self.now_us();
         self.now_ms = self.now_ms.saturating_add(1);
         let dt = 1e-3;
         let c = self.farads();
@@ -692,30 +1115,22 @@ impl Plant {
                 self.charger_energy_j += 0.5 * c * (self.cap_v * self.cap_v - before * before);
             }
         }
-        // Discharge path (unless stuck), then the slow leakage, always.
-        if self.discharge_active() && !self.has_fault(Fault::DischargeStuck) {
-            let before = self.cap_v;
-            self.cap_v *= (-dt / (self.config.dump_ohms * c)).exp();
-            self.dump_energy_j += 0.5 * c * (before * before - self.cap_v * self.cap_v);
+        // The discharge paths, the bleed, the interlock, the relay and the
+        // bridge: in fine steps while the shock path is busy.
+        let (n, step_us) = if self.shock_path_busy() {
+            let step = self.config.shock_step_us.clamp(1, 1_000);
+            (1_000 / step, step)
+        } else {
+            (1, 1_000)
+        };
+        for k in 1..=n {
+            self.substep(step_us, start_us + u64::from(k * step_us));
         }
-        self.cap_v *= (-dt / (self.config.bleed_ohms * c)).exp();
         if self.cap_v < 0.01 {
             self.cap_v = 0.0;
         }
-
-        // The hardware interlock and the bridge.
-        let may_fire = bridge_may_fire(self.request.is_some(), self.permit, self.discharge_active());
-        if may_fire && self.shock_status == ShockStatus::Pending {
-            if self.has_fault(Fault::BridgeFailsToFire) {
-                if !self.bridge_fail_reported {
-                    self.bridge_fail_reported = true;
-                    self.events.push(PlantEvent::BridgeDidNotFire);
-                }
-            } else if let Some(plan) = self.request {
-                self.fire(plan);
-            }
-        }
         self.max_cap_v = self.max_cap_v.max(self.cap_v);
+        self.sample_sensors();
         // Heat: what was burned in the load stays inside, and the charger's
         // own losses (thermal model, parts study §4).
         let (charged, dumped) = self.heat_accounted_j;
@@ -726,31 +1141,309 @@ impl Plant {
         std::mem::take(&mut self.events)
     }
 
-    /// Deliver the shock into the patient using the waveform model.
-    fn fire(&mut self, plan: ShockPlan) {
-        // The model starts from the voltage actually on the capacitor, which
-        // can differ a little from the plan's nominal charge voltage.
+    /// The converters take a new sample on their grid.
+    fn sample_sensors(&mut self) {
+        let t = self.now_ms.wrapping_add(self.config.sample_phase_ms);
+        if t.is_multiple_of(self.config.voltage_sample_ms.max(1)) {
+            self.held_v = (self.cap_v, self.cap_v);
+        }
+        if t.is_multiple_of(self.config.pad_sample_ms.max(1)) {
+            let r = self.front_end_ohms();
+            self.held_ohms = (r, r);
+        }
+    }
+
+    /// The level of a toggling line at `t_us`.
+    fn toggle_high(&self, t_us: u64) -> bool {
+        let half = u64::from(self.config.toggle_half_period_us.max(1));
+        (t_us / half).is_multiple_of(2)
+    }
+
+    /// The consent lines as the hardware sees them at `t_us`, faults applied.
+    fn lines(&self, t_us: u64) -> (bool, bool, bool) {
+        let cut = |line: ConsentLine| {
+            self.consent_cut
+                .is_some_and(|(l, at)| l == line && t_us >= at)
+        };
+        let mut request = self.request.is_some() || self.request_bare;
+        if self.has_fault(Fault::RequestToggling) && request {
+            request = self.toggle_high(t_us);
+        }
+        if self.has_fault(Fault::RequestStuckOn) {
+            request = true;
+        }
+        if cut(ConsentLine::Request) {
+            request = false;
+        }
+        let mut permit = self.permit;
+        if self.has_fault(Fault::PermitToggling) && permit {
+            permit = self.toggle_high(t_us);
+        }
+        if self.has_fault(Fault::PermitStuckOn) {
+            permit = true;
+        }
+        if cut(ConsentLine::Permit) {
+            permit = false;
+        }
+        let test = self.test_permit && !cut(ConsentLine::Permit);
+        (request, permit, test)
+    }
+
+    /// Advance the fast parts of the plant by `dt_us`, ending at `t_us`.
+    #[allow(clippy::too_many_lines)]
+    fn substep(&mut self, dt_us: u32, t_us: u64) {
+        let dt = f64::from(dt_us) * 1e-6;
+        let c = self.farads();
+        // Discharge paths (unless stuck), then the slow leakage, always.
+        let stuck = self.has_fault(Fault::DischargeStuck);
+        let mut g = 0.0;
+        if !self.main_hold && !stuck && !self.path_a_open {
+            g += 1.0 / self.config.path_a_ohms;
+        }
+        if !self.supervisor_hold && !stuck && !self.path_b_open {
+            g += 1.0 / self.config.path_b_ohms;
+        }
+        if g > 0.0 {
+            let before = self.cap_v;
+            self.cap_v *= (-dt * g / c).exp();
+            self.dump_energy_j += 0.5 * c * (before * before - self.cap_v * self.cap_v);
+        }
+        self.cap_v *= (-dt / (self.config.bleed_ohms * c)).exp();
+
+        // The consent lines and the sequence logic.
+        let (request, permit, test_permit) = self.lines(t_us);
+        let status = self.latch.status;
+        let rail_age = self.rail_since_us.map_or(0, |t| t_us.saturating_sub(t));
+        let powered = rail_age >= u64::from(self.config.rail_rise_us);
+        let ready = if self.latch.test {
+            rail_age >= u64::from(self.config.test_start_us)
+        } else {
+            self.relay.bridge_stable_us >= self.config.relay_settle_us
+        };
+        let plan = self.request;
+        let timer_drive = match (status, self.running) {
+            (SequenceStatus::Armed, _) => {
+                let fires = ready && powered && plan.is_some();
+                if fires && self.has_fault(Fault::BridgeFailsToFire) && !self.latch.test {
+                    if !self.bridge_fail_reported {
+                        self.bridge_fail_reported = true;
+                        self.events.push(PlantEvent::BridgeDidNotFire);
+                    }
+                    false
+                } else {
+                    fires
+                }
+            }
+            (SequenceStatus::Active, Some(r)) => self.phase_drive(&r),
+            _ => false,
+        };
+        let phases_done = match self.running {
+            Some(r) if status == SequenceStatus::Active => {
+                let p = r.record.plan;
+                let total = p.phase1.0 + p.interphase.0 + p.phase2.0;
+                r.t_us >= total && !self.timer_stuck_for(&r) && !self.timer_toggling_for(&r)
+            }
+            _ => false,
+        };
+        // The load the bridge would drive this step, and the current.
+        let load = self.running.and_then(|r| self.load_ohms(&r));
+        let ri = self.config.waveform.internal_ohms;
+        let current = match load {
+            Some(rl) if timer_drive && status == SequenceStatus::Active => self.cap_v / (rl + ri),
+            _ => 0.0,
+        };
+        let inputs = LatchInputs {
+            request,
+            permit,
+            test_permit,
+            discharge_active: discharge_path_active(self.main_hold, self.supervisor_hold),
+            below_test_voltage: self.cap_v < self.config.test_voltage_limit_v,
+            relay_on_bridge: self.relay_position() == RelayPosition::Bridge,
+            drive: timer_drive,
+            phases_done,
+            over_current: current > self.config.over_current_a,
+        };
+        let mut next = self.latch.step(inputs, self.config.latch_timing, dt_us);
+        // The first design (review R-1): consent is continuous power; losing
+        // it mid-pulse cuts the drive there, with no lockout.
+        let consent_cut = !self.config.sequence_latch
+            && status == SequenceStatus::Active
+            && next.status == SequenceStatus::Active
+            && Latch::consent(&inputs).is_none();
+        if consent_cut {
+            next = Latch::IDLE;
+        }
+        self.latch = next;
+
+        match (status, self.latch.status) {
+            (SequenceStatus::Idle, SequenceStatus::Armed) => {
+                self.rail_since_us = Some(t_us);
+                self.events.push(PlantEvent::RailUp {
+                    test: self.latch.test,
+                });
+            }
+            (SequenceStatus::Armed, SequenceStatus::Idle) => {
+                self.rail_since_us = None;
+                self.events.push(PlantEvent::RailDropped);
+            }
+            (SequenceStatus::Armed, SequenceStatus::LockedOut) => {
+                self.rail_since_us = None;
+                self.events.push(PlantEvent::PermitCapTripped);
+            }
+            (SequenceStatus::Armed, SequenceStatus::Active) => {
+                self.start_sequence(t_us, plan);
+            }
+            (SequenceStatus::Active, SequenceStatus::Active) => {
+                // The pulse: the capacitor discharges into the load, exactly
+                // exponentially over this step.
+                let short = self.has_fault(Fault::OutputShort);
+                if let (Some(rl), true, Some(r)) = (load, timer_drive, self.running.as_mut()) {
+                    let tau = c * (rl + ri);
+                    let before = self.cap_v;
+                    self.cap_v *= (-dt / tau).exp();
+                    let taken = 0.5 * c * (before * before - self.cap_v * self.cap_v);
+                    let share = rl / (rl + ri);
+                    if r.test {
+                        r.load_j += taken * share;
+                    } else if short {
+                        r.record.output_peak_a = r.record.output_peak_a.max(current);
+                        self.dump_energy_j += taken;
+                    } else {
+                        r.record.integrated_j += taken * share;
+                        r.record.integrated_peak_a = r.record.integrated_peak_a.max(current);
+                        r.record.output_peak_a = r.record.output_peak_a.max(current);
+                    }
+                }
+                if let Some(r) = self.running.as_mut() {
+                    r.t_us = r.t_us.saturating_add(dt_us);
+                }
+            }
+            (SequenceStatus::Active, SequenceStatus::Ended(end)) => {
+                let end = match end {
+                    SequenceEnd::Completed => ShockEnd::Completed,
+                    SequenceEnd::TimeCapTripped => ShockEnd::TimeCap,
+                    SequenceEnd::OverCurrentTripped => ShockEnd::OverCurrent,
+                };
+                if end == ShockEnd::OverCurrent {
+                    if let Some(r) = self.running.as_mut() {
+                        r.record.output_peak_a = r.record.output_peak_a.max(current);
+                    }
+                }
+                self.finish_sequence(t_us, end);
+                self.rail_since_us = None;
+            }
+            (SequenceStatus::Active, SequenceStatus::Idle) if consent_cut => {
+                self.finish_sequence(t_us, ShockEnd::ConsentCut);
+                self.rail_since_us = None;
+            }
+            _ => {}
+        }
+        self.step_relay(dt_us, t_us);
+    }
+
+    /// True if the timer for this run is stuck in phase 1.
+    fn timer_stuck_for(&self, r: &Running) -> bool {
+        !r.test && self.has_fault(Fault::MainTimerStuck)
+    }
+
+    /// True if the timer for this run keeps toggling.
+    fn timer_toggling_for(&self, r: &Running) -> bool {
+        !r.test && self.has_fault(Fault::MainTimerToggling)
+    }
+
+    /// Whether the phase timer drives a conducting phase now.
+    fn phase_drive(&self, r: &Running) -> bool {
+        let p = r.record.plan;
+        let t = r.t_us;
+        if self.timer_stuck_for(r) {
+            return true;
+        }
+        if self.timer_toggling_for(r) {
+            // Phase 1 toggling on and off for ever (a retriggerable window
+            // would be held open by this; the latch's cap is not).
+            return self.toggle_high(u64::from(t));
+        }
+        let p2_start = p.phase1.0 + p.interphase.0;
+        t < p.phase1.0 || (t >= p2_start && t < p2_start + p.phase2.0)
+    }
+
+    /// The resistance the bridge drives in this run, if anything conducts.
+    fn load_ohms(&self, r: &Running) -> Option<f64> {
+        if r.test {
+            return Some(self.config.test_load_ohms);
+        }
+        if !self.relay.bridge_closed {
+            return None;
+        }
+        if self.has_fault(Fault::OutputShort) {
+            return Some(0.1);
+        }
+        self.pad_ohms
+    }
+
+    fn start_sequence(&mut self, t_us: u64, plan: Option<ShockPlan>) {
+        let Some(plan) = plan else {
+            return;
+        };
         let actual = ShockPlan {
+            // Clamped into the u16 range.
             charge_voltage: Volts(self.cap_v.round().clamp(0.0, f64::from(u16::MAX)) as u16),
             ..plan
         };
-        let result = self
-            .pad_ohms
-            .and_then(|r| discharge(&actual, r, &self.config.waveform));
+        let test = self.latch.test;
+        let result = if test {
+            None
+        } else {
+            self.pad_ohms
+                .and_then(|r| discharge(&actual, r, &self.config.waveform))
+        };
         let record = ShockRecord {
             at_ms: self.now_ms,
+            start_us: t_us,
+            end_us: t_us,
+            rail_us: self.rail_since_us.unwrap_or(t_us),
+            request_us: self.request_raised_us,
             plan,
             capacitor_v: self.cap_v,
             patient_ohms: self.pad_ohms,
             result,
+            integrated_j: 0.0,
+            integrated_peak_a: 0.0,
+            output_peak_a: 0.0,
+            final_v: self.cap_v,
+            end: ShockEnd::Completed,
             rhythm: self.rhythm,
             rhythm_since_ms: self.rhythm_since_ms,
             cancel_pressed: self.cancel_pressed(),
         };
-        if let Some(r) = result {
-            self.cap_v = r.final_capacitor_v;
+        self.running = Some(Running {
+            t_us: 0,
+            record,
+            test,
+            load_j: 0.0,
+        });
+        self.events.push(PlantEvent::SequenceStarted);
+    }
+
+    fn finish_sequence(&mut self, t_us: u64, end: ShockEnd) {
+        let Some(r) = self.running.take() else {
+            return;
+        };
+        if r.test {
+            self.test_sequences.push(TestSequenceRecord {
+                start_us: r.record.start_us,
+                end_us: t_us,
+                end,
+                load_j: r.load_j,
+            });
+            return;
         }
-        self.shock_status = ShockStatus::Delivered;
+        let record = ShockRecord {
+            end_us: t_us,
+            final_v: self.cap_v,
+            end,
+            ..r.record
+        };
         self.shocks.push(record);
         self.events.push(PlantEvent::Shock(Box::new(record)));
         self.blank_until_ms = self
@@ -758,8 +1451,8 @@ impl Plant {
             .saturating_add(self.config.post_shock_blanking_ms);
         self.last_shock_ms = Some(self.now_ms);
         // Only a shock that reached the patient can change the rhythm.
-        if result.is_some() {
-            let index = self.shocks.iter().filter(|s| s.result.is_some()).count();
+        if record.integrated_j > 1.0 {
+            let index = self.shocks.iter().filter(|s| s.integrated_j > 1.0).count();
             if let Some(Some(next)) = index
                 .checked_sub(1)
                 .and_then(|i| self.after_shock.get(i))
@@ -770,11 +1463,75 @@ impl Plant {
         }
     }
 
+    /// The relay contacts follow the coil (powered once the rail has risen)
+    /// with their operate, bounce and release times.
+    fn step_relay(&mut self, dt_us: u32, t_us: u64) {
+        let rise = u64::from(self.config.rail_rise_us);
+        let coil = self.latch.relay_coil()
+            && self
+                .rail_since_us
+                .is_some_and(|t| t_us >= t.saturating_add(rise));
+        let slow = if self.has_fault(Fault::RelaySlow) { 4 } else { 1 };
+        let no_transfer = self.has_fault(Fault::RelayFailsToTransfer);
+        let no_return = self.has_fault(Fault::RelayFailsToReturn);
+        let (break_us, transfer_us, bounce_us, return_us) = (
+            self.config.relay_break_us.saturating_mul(slow),
+            self.config.relay_transfer_us.saturating_mul(slow),
+            self.config.relay_bounce_us,
+            self.config.relay_return_us.saturating_mul(slow),
+        );
+        let r = &mut self.relay;
+        if coil == r.coil {
+            r.since_us = r.since_us.saturating_add(dt_us);
+        } else {
+            r.coil = coil;
+            r.since_us = 0;
+        }
+        let (was_front, was_bridge) = (r.front_closed, r.bridge_closed);
+        if r.coil {
+            if !no_transfer {
+                if r.since_us >= break_us {
+                    r.front_closed = false;
+                }
+                if r.since_us >= transfer_us {
+                    let into = r.since_us - transfer_us;
+                    // Bouncing: open and closed in turn every 250 µs.
+                    r.bridge_closed = into >= bounce_us || (into / 250).is_multiple_of(2);
+                }
+            }
+        } else if !(r.front_closed && !r.bridge_closed) && !no_return {
+            // Releasing: break the bridge contact first, then make the
+            // front-end contact.
+            if r.since_us >= 1_000_u32.min(return_us) {
+                r.bridge_closed = false;
+            }
+            if r.since_us >= return_us {
+                r.front_closed = true;
+            }
+        }
+        if r.bridge_closed && !r.front_closed {
+            r.bridge_stable_us = r.bridge_stable_us.saturating_add(dt_us);
+        } else {
+            r.bridge_stable_us = 0;
+        }
+        let (front, bridge) = (r.front_closed, r.bridge_closed);
+        let settle = self.config.relay_settle_us;
+        let stable = self.relay.bridge_stable_us;
+        if bridge && stable >= settle && stable.saturating_sub(dt_us) < settle {
+            self.events.push(PlantEvent::RelayOnBridge);
+        }
+        let _ = was_bridge;
+        if front && !was_front {
+            self.relay_back_ms = Some(self.now_ms);
+            self.events.push(PlantEvent::RelayBack);
+        }
+    }
+
     /// The next heart-signal sample as the pads see it (call 250 times a second).
     pub fn ecg_sample(&mut self) -> EcgSample {
         // The heart keeps beating whether or not anyone is looking.
         let heart = f64::from(self.synth.next_uv());
-        if self.pad_ohms.is_none() {
+        if self.pad_ohms.is_none() || !self.relay.front_closed {
             // Lead-off: front ends typically rail.
             return EcgSample::MAX;
         }
@@ -840,6 +1597,10 @@ impl Plant {
             return None;
         }
         let noise = self.config.impedance_noise_ohms * f64::from(self.imp_rng.next_gaussian());
+        if !self.relay.front_closed {
+            // The pads are on the bridge: the front end sees nothing it can measure.
+            return Some(ImpedanceSample::Saturated);
+        }
         let Some(base) = self.pad_ohms else {
             let open = f64::from(self.config.open_circuit_reading) * 1000.0;
             return Some(ImpedanceSample::Milliohms(open.clamp(0.0, f64::from(u32::MAX)) as u32));

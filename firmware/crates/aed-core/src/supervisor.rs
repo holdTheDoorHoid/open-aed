@@ -14,8 +14,51 @@
 //!    countdown time, measured on the supervisor's own clock; the supervisor's
 //!    own voltage reading agrees with the main controller's claim and with the
 //!    planned voltage, and is under the overvoltage limit; its own pad
-//!    reading is in the patient range; cancel is not pressed. The permit lasts
-//!    only a short window and is given at most once per arming.
+//!    reading is in the patient range; cancel is not pressed; it is not too
+//!    hot; and the hardware's sequence status is idle (not locked out). The
+//!    permit is given at most once per arming.
+//!
+//!    **Consent starts the shock; it does not have to last through it
+//!    (D-59, review R-1).** Once the permit is up, the patient relay moves
+//!    the pads from the front ends to the bridge, so the supervisor's own pad
+//!    reading goes open, and in the pulse the capacitor voltage falls out of
+//!    the "at plan" window within tens of microseconds. Those changes are
+//!    caused by the shock and are never reasons to withdraw. Before the
+//!    hardware reports the sequence started, the permit is taken back only
+//!    for: a latched fault (over-voltage is one, at all times), a stale
+//!    heartbeat, cancel, its own heat limit, or the main controller no
+//!    longer saying "delivering" (it withdrew). If no sequence starts within
+//!    [`Config::permit_window_ms`] the permit is released and the event
+//!    recorded; that is not a fault (the main controller reports "shock not
+//!    delivered", the permit is spent for this arming, and the hardware's
+//!    own permit-duration cap is a backstop). While the hardware reports the
+//!    sequence active the permit is simply held (withdrawing would have no
+//!    effect by design) until the hardware reports the end.
+//!
+//!    **After the end** it waits [`Config::post_shock_settle_ms`] for a
+//!    fresh reading of its own and gives its verdict
+//!    ([`Config::check_shock_residual`]): the voltage fell into the range a
+//!    planned shock leaves: delivered; it hardly fell: not delivered (no
+//!    fault: open pads do that); it fell further than any plan or stopped
+//!    part-way, or the hardware reports its time cap or over-current trip:
+//!    a latched fault. The verdict goes to the main controller in its
+//!    report. Its "readings disagree with the main controller" check is
+//!    suspended from the permit for a bounded time (the permit window, the
+//!    end timeout, the settling time and a heartbeat timeout), because the
+//!    main controller's claim is up to a heartbeat old while the voltage
+//!    falls by over a thousand volts.
+//!
+//!    It also latches a fault if the hardware reports a sequence running
+//!    that it never permitted (a shorted consent path).
+//!
+//!    **Test permit** (D-61). While the main controller reports its
+//!    self-test and asks for it, it gives a separate, bounded test permit
+//!    ([`Config::test_permit_window_ms`], at most
+//!    [`Config::test_permits_per_self_test`] per self-test, one per request)
+//!    only with its own reading below [`Config::test_permit_max_voltage`],
+//!    and withdraws it above. The hardware never lets the patient relay
+//!    move on a test permit. When the self-test asks, it also lets go of
+//!    its discharge path for a moment so that path B can be timed alone.
 //! 2. **Emptying.** It holds the discharge path open only while the main
 //!    controller says it is charging or armed. It lets go, which empties the
 //!    capacitor, on its own if: the heartbeat stops; the capacitor stays
@@ -72,9 +115,9 @@
 
 use crate::config::{Config, ConfigError};
 use crate::events::{Event, EventRecord, SUPERVISOR_EVENT_CAPACITY};
-use crate::hal::SupervisorHardware;
+use crate::hal::{SequenceEnd, SequenceStatus, SupervisorHardware};
 use crate::heat::DeciC;
-use crate::link::{MainStatus, SupervisorFault, SupervisorReport};
+use crate::link::{MainStatus, ShockCheck, SupervisorFault, SupervisorReport, TestRequest};
 use crate::rescue::RescueState;
 use aed_types::{in_shock_range, Millis, Ohms, Volts};
 
@@ -105,6 +148,57 @@ pub enum PermitRefusal {
     PadsOutOfRange,
     /// The supervisor's own temperature reading is over its limit.
     TooHot,
+    /// The hardware's sequence logic was not idle (still locked out after
+    /// an earlier sequence, or a consent line stuck on), so a permit could
+    /// not start a sequence of its own.
+    SequenceNotIdle,
+}
+
+/// Why the supervisor took back a permit before the shock sequence started
+/// (D-59). Once the hardware reports the sequence active, nothing the
+/// supervisor does can stop it, by design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermitWithdrawal {
+    /// A fault was latched.
+    Fault,
+    /// The main controller's heartbeat went stale.
+    HeartbeatStale,
+    /// The cancel control was pressed.
+    Cancel,
+    /// Its own temperature reading went over its limit.
+    TooHot,
+    /// Its own voltage reading went over the overvoltage limit.
+    Overvoltage,
+    /// The main controller no longer says it is delivering (it withdrew).
+    MainNotDelivering,
+}
+
+/// Why the supervisor refused the self-test's test permit (D-61).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestPermitRefusal {
+    /// A fault is latched.
+    Faulted,
+    /// Its own capacitor reading is at or above
+    /// [`Config::test_permit_max_voltage`].
+    VoltageTooHigh,
+    /// This self-test has already had [`Config::test_permits_per_self_test`].
+    TooMany,
+}
+
+/// The supervisor's record of one shock sequence it permitted, from the
+/// permit to its own verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SequenceWatch {
+    /// The planned voltage the main controller reported at the permit.
+    plan: Volts,
+    /// The hardware showed the sequence running (or ended).
+    started: bool,
+    /// When the hardware first showed it ended, and how.
+    ended: Option<(Millis, SequenceEnd)>,
+    /// When the permit was released.
+    released_at: Option<Millis>,
+    /// The verdict has been given.
+    judged: bool,
 }
 
 /// Why the supervisor is not acting on its own temperature reading.
@@ -129,6 +223,9 @@ pub enum ReleaseReason {
     Fault(SupervisorFault),
     /// Its own temperature reading is over its limit.
     TooHot,
+    /// The main controller's self-test asked it to let go of path B for a
+    /// moment, to time that path on its own (D-61).
+    SelfTestPathB,
 }
 
 /// The supervisor controller.
@@ -152,12 +249,25 @@ pub struct Supervisor {
     disagree_since: Option<Millis>,
     report_sequence: u32,
     last_report_at: Option<Millis>,
-    last_report_flags: (bool, bool, Option<SupervisorFault>, bool),
+    last_report_flags: ReportFlags,
     too_hot: bool,
     own_temp: Option<DeciC>,
     temp_ignored: Option<TempIgnored>,
+    seq: Option<SequenceWatch>,
+    shock_check: Option<ShockCheck>,
+    disagree_suspended_until: Option<Millis>,
+    emptying_claim_since: Option<Millis>,
+    test_permit_until: Option<Millis>,
+    test_permit_released_at: Option<Millis>,
+    test_permits_given: u8,
+    test_request_cleared: bool,
+    last_test_refusal: Option<TestPermitRefusal>,
     events: EventRecord<SUPERVISOR_EVENT_CAPACITY>,
 }
+
+/// The report fields whose change sends a report at once: permit, holding,
+/// fault, too hot, test permit, shock verdict.
+type ReportFlags = (bool, bool, Option<SupervisorFault>, bool, bool, Option<ShockCheck>);
 
 /// True for the states in which the main controller may want the capacitor charged.
 const fn holdable(state: RescueState) -> bool {
@@ -196,10 +306,19 @@ impl Supervisor {
             disagree_since: None,
             report_sequence: 0,
             last_report_at: None,
-            last_report_flags: (false, false, None, false),
+            last_report_flags: (false, false, None, false, false, None),
             too_hot: false,
             own_temp: None,
             temp_ignored: None,
+            seq: None,
+            shock_check: None,
+            disagree_suspended_until: None,
+            emptying_claim_since: None,
+            test_permit_until: None,
+            test_permit_released_at: None,
+            test_permits_given: 0,
+            test_request_cleared: true,
+            last_test_refusal: None,
             events: EventRecord::new(),
         })
     }
@@ -214,6 +333,19 @@ impl Supervisor {
     #[must_use]
     pub const fn permit_active(&self) -> bool {
         self.permit_until.is_some()
+    }
+
+    /// True while the self-test's test permit is being given (D-61).
+    #[must_use]
+    pub const fn test_permit_active(&self) -> bool {
+        self.test_permit_until.is_some()
+    }
+
+    /// The supervisor's verdict on the most recent shock sequence it
+    /// permitted, if it has given one.
+    #[must_use]
+    pub const fn shock_check(&self) -> Option<ShockCheck> {
+        self.shock_check
     }
 
     /// True while the supervisor's own fault alarm is on.
@@ -278,9 +410,20 @@ impl Supervisor {
         // Ignored during the main controller's switch-on self-test (D-31).
         let cancel = raw_cancel && claim != Some(RescueState::SelfTest);
 
+        // The self-test asking to time path B on its own (D-61).
+        let test_request = self
+            .last_status
+            .filter(|s| fresh && s.state == RescueState::SelfTest)
+            .map_or(TestRequest::None, |s| s.test_request);
+        let path_b_test = test_request == TestRequest::ReleasePathB;
+
         // Decide whether to hold the discharge path open.
-        let hold =
-            self.fault.is_none() && fresh && claim.is_some_and(holdable) && !cancel && !self.too_hot;
+        let hold = self.fault.is_none()
+            && fresh
+            && claim.is_some_and(holdable)
+            && !cancel
+            && !self.too_hot
+            && !path_b_test;
         if self.holding && !hold {
             let reason = if let Some(f) = self.fault {
                 ReleaseReason::Fault(f)
@@ -290,6 +433,8 @@ impl Supervisor {
                 ReleaseReason::TooHot
             } else if !fresh {
                 ReleaseReason::HeartbeatStale
+            } else if path_b_test {
+                ReleaseReason::SelfTestPathB
             } else {
                 ReleaseReason::MainNotArmed
             };
@@ -302,18 +447,68 @@ impl Supervisor {
             self.permit_used = true;
         }
 
-        // Decide the permit.
-        if self.permit_until.is_some() {
-            let expired = self.permit_until.is_some_and(|until| now >= until);
-            let still_ok = self.check_permit(now, fresh, voltage, pads, cancel).is_ok();
-            if expired || !still_ok {
-                self.permit_until = None;
+        // Decide the permit (D-59: consent is needed to START a shock).
+        let status = hw.sequence_status();
+        self.watch_sequence(now, status, voltage);
+        if let Some(until) = self.permit_until {
+            let started = self.seq.is_some_and(|w| w.started);
+            match status {
+                // Running: nothing the supervisor does now has any effect,
+                // and nothing it reads now (its pad reading is open, the
+                // voltage is falling) is a reason to try. Held until the
+                // hardware reports the end, at most the end timeout past
+                // the window.
+                SequenceStatus::Active => {
+                    let limit = until.0.saturating_add(self.config.sequence_end_timeout_ms);
+                    if now.0 >= limit {
+                        self.release_permit(now);
+                    }
+                }
+                SequenceStatus::Ended(_) | SequenceStatus::LockedOut => self.release_permit(now),
+                SequenceStatus::Idle | SequenceStatus::Armed if started => self.release_permit(now),
+                SequenceStatus::Idle | SequenceStatus::Armed => {
+                    // Before the first conducting moment: only these take
+                    // the permit back. NOT the pad reading (it reads open
+                    // as soon as the relay moves) and NOT the at-plan
+                    // window (checked when the permit was given).
+                    let reason = if self.fault.is_some() {
+                        Some(PermitWithdrawal::Fault)
+                    } else if !fresh {
+                        Some(PermitWithdrawal::HeartbeatStale)
+                    } else if cancel {
+                        Some(PermitWithdrawal::Cancel)
+                    } else if self.too_hot {
+                        Some(PermitWithdrawal::TooHot)
+                    } else if voltage > self.config.overvoltage_limit {
+                        Some(PermitWithdrawal::Overvoltage)
+                    } else if claim != Some(RescueState::Delivering) {
+                        Some(PermitWithdrawal::MainNotDelivering)
+                    } else {
+                        None
+                    };
+                    if let Some(r) = reason {
+                        self.events.push(now, Event::SupervisorPermitWithdrawn(r));
+                        self.release_permit(now);
+                    } else if now >= until {
+                        // No sequence in the whole window (the hardware's
+                        // own permit-duration cap is longer). Recorded, not
+                        // a fault: the main controller reports the shock not
+                        // delivered, and the permit is spent for this arming.
+                        self.events.push(now, Event::SupervisorPermitUnused);
+                        self.release_permit(now);
+                    }
+                }
             }
         } else if fresh && claim == Some(RescueState::Delivering) {
             let result = if self.permit_used {
                 Err(PermitRefusal::AlreadyUsed)
             } else {
                 self.check_permit(now, fresh, voltage, pads, cancel)
+                    .and(if status == SequenceStatus::Idle {
+                        Ok(())
+                    } else {
+                        Err(PermitRefusal::SequenceNotIdle)
+                    })
             };
             match result {
                 Ok(()) => {
@@ -321,6 +516,24 @@ impl Supervisor {
                         Some(Millis(now.0.saturating_add(self.config.permit_window_ms)));
                     self.permit_used = true;
                     self.permit_given_at = Some(now);
+                    self.seq = Some(SequenceWatch {
+                        plan: self.last_status.map_or(Volts(0), |s| s.planned_voltage),
+                        started: false,
+                        ended: None,
+                        released_at: None,
+                        judged: false,
+                    });
+                    self.shock_check = None;
+                    // The voltage falls fast through the pulse while the
+                    // main controller's claim is up to a heartbeat old: do
+                    // not compare the two until that is over (bounded).
+                    let c = &self.config;
+                    let suspend = c
+                        .permit_window_ms
+                        .saturating_add(c.sequence_end_timeout_ms)
+                        .saturating_add(c.post_shock_settle_ms)
+                        .saturating_add(c.heartbeat_timeout_ms);
+                    self.disagree_suspended_until = Some(Millis(now.0.saturating_add(suspend)));
                     self.events.push(now, Event::SupervisorPermitted);
                 }
                 Err(reason) => {
@@ -343,9 +556,11 @@ impl Supervisor {
                 }
             }
         }
+        self.decide_test_permit(now, fresh, claim, test_request, voltage);
 
         // Lower the permit before letting go of the hold.
         hw.set_permit(self.permit_until.is_some());
+        hw.set_test_permit(self.test_permit_until.is_some());
         hw.set_discharge_hold(self.holding);
 
         // The supervisor's own voice: on for any latched fault, and if the
@@ -356,6 +571,141 @@ impl Supervisor {
         hw.set_fault_alarm(self.alarm);
 
         self.send_report_if_due(hw, now, voltage);
+    }
+
+    fn release_permit(&mut self, now: Millis) {
+        self.permit_until = None;
+        if let Some(w) = self.seq.as_mut() {
+            w.released_at.get_or_insert(now);
+        }
+    }
+
+    /// Follow the hardware's sequence status: note when a permitted
+    /// sequence starts and ends, give the verdict from its own voltage
+    /// reading once it has settled, and latch a fault for a sequence it
+    /// never permitted.
+    fn watch_sequence(&mut self, now: Millis, status: SequenceStatus, voltage: Volts) {
+        let c = self.config;
+        // How long after a permit (or test permit) is released a sequence
+        // may still show: a start racing the release, then the pulse.
+        let grace = c
+            .sequence_start_timeout_ms
+            .saturating_add(c.sequence_end_timeout_ms);
+        let test_window = self.test_permit_until.is_some()
+            || self
+                .test_permit_released_at
+                .is_some_and(|t| now.since(t) <= grace);
+        let Some(mut w) = self.seq else {
+            if status == SequenceStatus::Active && !test_window {
+                self.latch(now, SupervisorFault::SequenceWithoutPermit);
+            }
+            return;
+        };
+        if status.started() && !w.started {
+            w.started = true;
+            self.events.push(now, Event::SupervisorSequenceStarted);
+        }
+        if let SequenceStatus::Ended(end) = status {
+            if w.ended.is_none() {
+                w.ended = Some((now, end));
+                self.events.push(now, Event::SupervisorSequenceEnded(end));
+            }
+        }
+        if let Some((at, end)) = w.ended {
+            if !w.judged && now.since(at) >= c.post_shock_settle_ms {
+                w.judged = true;
+                let check = match end {
+                    SequenceEnd::Completed => c.check_shock_residual(voltage, w.plan),
+                    SequenceEnd::TimeCapTripped | SequenceEnd::OverCurrentTripped => {
+                        ShockCheck::HardwareTrip
+                    }
+                };
+                self.shock_check = Some(check);
+                self.events.push(now, Event::SupervisorShockCheck(check));
+                match check {
+                    ShockCheck::Implausible => self.latch(now, SupervisorFault::ShockImplausible),
+                    ShockCheck::HardwareTrip => self.latch(now, SupervisorFault::SequenceTripped),
+                    ShockCheck::Delivered | ShockCheck::NotDelivered => {}
+                }
+            }
+        }
+        // The watch ends once the verdict is given and the hardware is back
+        // at rest, or, if the sequence never started, once the release is
+        // past the grace time. A sequence that starts after that was never
+        // permitted.
+        let over = match (w.started, w.released_at) {
+            (true, _) => w.judged && status == SequenceStatus::Idle,
+            (false, Some(r)) => now.since(r) > grace,
+            (false, None) => false,
+        };
+        let bounded = w.released_at.is_some_and(|r| {
+            now.since(r) > grace.saturating_add(c.post_shock_settle_ms).saturating_add(c.heartbeat_timeout_ms)
+        }) && (!w.started || w.judged);
+        self.seq = if over || bounded { None } else { Some(w) };
+    }
+
+    /// Give, keep or withdraw the self-test's test permit (D-61).
+    fn decide_test_permit(
+        &mut self,
+        now: Millis,
+        fresh: bool,
+        claim: Option<RescueState>,
+        test_request: TestRequest,
+        voltage: Volts,
+    ) {
+        let c = self.config;
+        if claim != Some(RescueState::SelfTest) {
+            // A new self-test gets a fresh allowance.
+            self.test_permits_given = 0;
+            self.last_test_refusal = None;
+        }
+        let wanted = fresh && test_request == TestRequest::TestPermit;
+        if let Some(until) = self.test_permit_until {
+            let expired = now >= until;
+            if !wanted
+                || expired
+                || self.fault.is_some()
+                || voltage >= c.test_permit_max_voltage
+                || self.permit_until.is_some()
+            {
+                if expired && wanted {
+                    self.events.push(now, Event::SupervisorTestPermitExpired);
+                }
+                self.test_permit_until = None;
+                self.test_permit_released_at = Some(now);
+            }
+        } else if wanted && self.test_request_cleared {
+            let refusal = if self.fault.is_some() {
+                Some(TestPermitRefusal::Faulted)
+            } else if voltage >= c.test_permit_max_voltage {
+                Some(TestPermitRefusal::VoltageTooHigh)
+            } else if self.test_permits_given >= c.test_permits_per_self_test {
+                Some(TestPermitRefusal::TooMany)
+            } else {
+                None
+            };
+            match refusal {
+                None => {
+                    self.test_permit_until =
+                        Some(Millis(now.0.saturating_add(c.test_permit_window_ms)));
+                    self.test_permits_given = self.test_permits_given.saturating_add(1);
+                    self.test_request_cleared = false;
+                    self.last_test_refusal = None;
+                    self.events.push(now, Event::SupervisorTestPermitted);
+                }
+                Some(r) => {
+                    if self.last_test_refusal != Some(r) {
+                        self.last_test_refusal = Some(r);
+                        self.events.push(now, Event::SupervisorTestPermitRefused(r));
+                    }
+                }
+            }
+        }
+        if test_request != TestRequest::TestPermit {
+            // One grant per request: the main controller must stop asking
+            // before it can be given another.
+            self.test_request_cleared = true;
+        }
     }
 
     fn on_status(&mut self, status: MainStatus, now: Millis) {
@@ -403,8 +753,19 @@ impl Supervisor {
         // changes slowly then). While emptying, it falls too fast for a
         // heartbeat-old claim to be comparable.
         let claim = self.last_status.map(|s| s.capacitor_voltage);
+        // The main controller says it is emptying: the voltage falls too fast
+        // for its claim to be comparable (bounded by the emptying limit).
+        if self.last_status.is_some_and(|s| s.emptying) {
+            self.emptying_claim_since.get_or_insert(now);
+        } else {
+            self.emptying_claim_since = None;
+        }
+        let emptying = self
+            .emptying_claim_since
+            .is_some_and(|t| now.since(t) <= self.config.disarm_time_limit_ms);
+        let suspended = emptying || self.disagree_suspended_until.is_some_and(|t| now < t);
         match claim {
-            Some(claimed) if self.holding && fresh => {
+            Some(claimed) if self.holding && fresh && !suspended => {
                 if self.config.readings_agree(voltage, claimed) {
                     self.disagree_since = None;
                 } else {
@@ -505,7 +866,14 @@ impl Supervisor {
     }
 
     fn send_report_if_due(&mut self, hw: &mut impl SupervisorHardware, now: Millis, v: Volts) {
-        let flags = (self.permit_until.is_some(), self.holding, self.fault, self.too_hot);
+        let flags = (
+            self.permit_until.is_some(),
+            self.holding,
+            self.fault,
+            self.too_hot,
+            self.test_permit_until.is_some(),
+            self.shock_check,
+        );
         let due = self
             .last_report_at
             .is_none_or(|t| now.since(t) >= self.config.heartbeat_period_ms);
@@ -519,6 +887,8 @@ impl Supervisor {
                 capacitor_voltage: v,
                 too_hot: self.too_hot,
                 temperature: self.own_temp,
+                test_permit: flags.4,
+                shock_check: self.shock_check,
             });
             self.last_report_at = Some(now);
             self.last_report_flags = flags;

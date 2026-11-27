@@ -231,6 +231,11 @@ pub struct CampaignSummary {
     pub hands_on_aborts: u64,
     /// Simulated time over all runs, ms.
     pub simulated_ms: u64,
+    /// For every shock that ran its course: (request to energy delivered,
+    /// consent to energy delivered), µs (D-59).
+    pub shock_times_us: Vec<(u64, u64)>,
+    /// Shock sequences that did not end by completing their phases.
+    pub sequences_not_completed: usize,
 }
 
 impl CampaignSummary {
@@ -256,6 +261,14 @@ fn tally(sum: &mut CampaignSummary, seed: u32, r: &RunResult) {
         sum.hands_on_fires.push((seed, ms));
     }
     sum.compressions_counted += u64::from(r.compressions_counted);
+    for sh in &r.shocks {
+        if sh.end == crate::plant::ShockEnd::Completed {
+            sum.shock_times_us
+                .push((sh.request_to_delivered_us().unwrap_or(0), sh.consent_to_delivered_us()));
+        } else {
+            sum.sequences_not_completed += 1;
+        }
+    }
     sum.hands_on_aborts += u64::from(r.hands_on_aborts);
     if !r.shocks.is_empty() {
         sum.runs_with_shock += 1;
@@ -402,6 +415,22 @@ pub fn campaign_text(s: &CampaignSummary) -> String {
         out,
         "  Compression sensing: {} compressions counted; {} shocks held back because the chest was not still",
         s.compressions_counted, s.hands_on_aborts
+    );
+    let mut req: Vec<u64> = s.shock_times_us.iter().map(|&(r, _)| r).collect();
+    let mut con: Vec<u64> = s.shock_times_us.iter().map(|&(_, c)| c).collect();
+    req.sort_unstable();
+    con.sort_unstable();
+    let mid = |v: &[u64]| v.get(v.len() / 2).copied().unwrap_or(0) as f64 / 1e3;
+    let top = |v: &[u64]| v.last().copied().unwrap_or(0) as f64 / 1e3;
+    let _ = writeln!(
+        out,
+        "  Shock sequence (D-59, time-resolved): request to energy delivered median {:.1} ms, longest {:.1} ms; \
+         both consents to energy delivered median {:.1} ms, longest {:.1} ms; sequences not completed: {}",
+        mid(&req),
+        top(&req),
+        mid(&con),
+        top(&con),
+        s.sequences_not_completed
     );
     let mut exposures: Vec<u32> = s.hands_on_fires.iter().map(|&(_, ms)| ms).collect();
     exposures.sort_unstable();

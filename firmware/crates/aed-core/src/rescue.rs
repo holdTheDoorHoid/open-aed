@@ -61,9 +61,42 @@
 //!   read above the shock range (175 to 250 Ω, D-32) are analysed as normal
 //!   and the responder is asked to press them firmly; at delivery, if they
 //!   still read above the shock range: "Poor pad contact. No shock." and CPR.
-//! * The shock is requested once. Its outcome is recorded. Afterwards the
-//!   rhythm analysis is reset, the remaining charge is emptied and checked,
-//!   and the device goes to CPR.
+//! * The shock is requested once, only with the hardware's sequence logic
+//!   idle (otherwise a consent line is stuck or a lockout never cleared: a
+//!   fault). **Consent starts the shock; it need not last through it
+//!   (D-59).** Pad resistance, the plan and the "still shockable"
+//!   confirmation are checked at the request. From the request on, pad,
+//!   heart and impedance readings are not believed (the relay is about to
+//!   take the pads off the front ends), and the device follows the
+//!   hardware's sequence status with a time limit for each stage: the
+//!   permit and the rail ([`Config::delivery_timeout_ms`]), the relay and
+//!   the start ([`Config::sequence_start_timeout_ms`]), the end
+//!   ([`Config::sequence_end_timeout_ms`]). Before the start it still
+//!   withdraws for cancel, over-voltage, the supervisor's heat limit, a
+//!   mode change and, while the rail is not yet up, sensed chest movement
+//!   (D-37); a stale link or a supervisor fault withdraws it through the
+//!   fault path. Once the hardware reports the sequence active it does not
+//!   try. Each outcome has its own event ([`ShockOutcome`]): delivered;
+//!   not delivered, refused by the interlock, timed out, relay did not
+//!   transfer, not started (all "Shock not delivered", CPR); time cap
+//!   tripped, over-current tripped, implausible residual, no end (all
+//!   faults). Afterwards the rhythm analysis is reset, the remaining charge
+//!   is emptied and checked, and the device goes to CPR.
+//! * After any request, in the background: the relay must be back on the
+//!   front ends within [`Config::relay_return_timeout_ms`] (otherwise a
+//!   fault), then readings are ignored for [`Config::front_end_recovery_ms`]
+//!   while the front ends recover; pad contact is neither lost nor regained
+//!   meanwhile, and afterwards the rhythm analysis and compression sensing
+//!   start from scratch. Pads that still read off then lead to the usual
+//!   "Attach pads" (recorded). A sequence that latched just as the request
+//!   was withdrawn completes by design and is recorded and counted.
+//! * The adult/child switch's two contacts are compared all the time
+//!   (D-60). If they disagree for [`Config::mode_contacts_disagree_ms`] the
+//!   device records it, shows "not ready" (ready indicator off) and carries
+//!   on with the mode from the primary contact: the hardware ceiling falls
+//!   back to the adult value, so shocks in both modes are still possible,
+//!   and the child dose is still set by the main controller and checked by
+//!   the supervisor. Nothing is said aloud: the responder cannot fix it.
 //! * Cancel works in every state except the switch-on self-test, where it
 //!   is ignored (D-31). A cancel that reads pressed without a break for
 //!   [`Config::cancel_stuck_ms`] is a stuck-button fault with its own prompt.
@@ -122,9 +155,9 @@ use crate::config::{Config, ConfigError};
 use crate::events::{
     CompressionEntry, CompressionLog, Event, EventRecord, COMPRESSION_LOG_CAPACITY, EVENT_CAPACITY,
 };
-use crate::hal::{BatteryStatus, MainHardware, ShockStatus};
+use crate::hal::{BatteryStatus, MainHardware, RelayPosition, SequenceEnd, SequenceStatus};
 use crate::heat::{self, ChargeContext, ChargeGate, DeciC, TempPoint, TEMP_POINTS};
-use crate::link::{MainStatus, SupervisorFault, SupervisorReport};
+use crate::link::{MainStatus, ShockCheck, SupervisorFault, SupervisorReport, TestRequest};
 use crate::prompts::Prompt;
 use crate::selftest::{LinkSnapshot, SelfTest, SelfTestFailure, SelfTestProgress};
 use aed_types::{
@@ -152,7 +185,8 @@ pub enum RescueState {
     Charging,
     /// Charged; counting down aloud before the automatic shock.
     Countdown,
-    /// The shock has been requested; waiting for the hardware to deliver it.
+    /// The shock has been requested; following the hardware's sequence
+    /// status until it reports the sequence ended (D-59).
     Delivering,
     /// CPR period, with the compression metronome running.
     Cpr,
@@ -210,19 +244,43 @@ pub enum AbortReason {
     TooHot,
 }
 
-/// What happened to a requested shock.
+/// What happened to a requested shock (D-59). Each has its own event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShockOutcome {
-    /// The hardware delivered it.
+    /// The hardware reported the sequence completed and the main
+    /// controller's own reading afterwards fell into the delivered range.
     Delivered,
-    /// The hardware interlock refused it.
+    /// The sequence completed but the capacitor hardly emptied: no energy
+    /// reached anyone (for example the pads came off at the last moment).
+    /// "Shock not delivered", CPR.
+    NotDelivered,
+    /// The interlock did not let a sequence start although the supervisor
+    /// had permitted: the rail never rose, a consent dropped before the
+    /// first conducting moment, or the hardware's permit-duration cap ran
+    /// out. "Shock not delivered", CPR.
     RefusedByInterlock,
-    /// Nothing happened within the delivery time limit (usually: no permit
-    /// from the supervisor). The request was withdrawn.
+    /// Nothing happened within the delivery time limit and no permit was
+    /// seen from the supervisor. "Shock not delivered", CPR.
     TimedOut,
-    /// The output stage reported a fault.
-    Fault,
-    /// The request was withdrawn before delivery, for this reason.
+    /// The rail rose but the patient relay never reached the bridge within
+    /// the start time limit. "Shock not delivered", CPR.
+    RelayDidNotTransfer,
+    /// The rail rose and the relay reached the bridge, but no sequence
+    /// started within the start time limit. "Shock not delivered", CPR.
+    NotStarted,
+    /// The hardware time cap ended the sequence: the phase timing did not
+    /// end it. A fault.
+    TimeCapTripped,
+    /// The over-current trip ended the sequence. A fault.
+    OverCurrentTripped,
+    /// The sequence completed but the capacitor fell further than any plan
+    /// takes it, or stopped part-way. A fault.
+    ResidualImplausible,
+    /// The hardware showed the sequence running for longer than the end
+    /// time limit (its own time cap should have ended it). A fault.
+    DidNotEnd,
+    /// The request was withdrawn before the sequence started, for this
+    /// reason.
     Withdrawn(AbortReason),
 }
 
@@ -240,8 +298,17 @@ pub enum FaultKind {
     ChargeOffTarget,
     /// The capacitor was armed for longer than the limit.
     ArmedTooLong,
-    /// The output stage reported a fault while delivering.
+    /// The output stage did not deliver the shock as planned: its time cap
+    /// or over-current trip ended it, the capacitor fell to a level no
+    /// plan explains, or it never reported an end (see the
+    /// [`ShockOutcome`] recorded with it).
     DeliveryFault,
+    /// The patient relay did not return the pads to the front ends after a
+    /// sequence: nothing can be analysed (D-59).
+    PatientRelayStuck,
+    /// The sequence logic was not idle when a shock was about to be
+    /// requested: a consent line stuck on, or a lockout that never cleared.
+    InterlockNotIdle,
     /// The planner's voltage does not fit the limits or does not match the charge.
     PlanMismatch,
     /// The supervisor latched this fault.
@@ -356,6 +423,37 @@ impl Debounced {
     }
 }
 
+/// How far the hardware sequence for the current request has got (on the
+/// main controller's clock).
+#[derive(Debug, Clone, Copy)]
+struct Delivery {
+    requested_at: Millis,
+    permit_seen: bool,
+    armed_at: Option<Millis>,
+    started_at: Option<Millis>,
+    ended: Option<(Millis, SequenceEnd)>,
+}
+
+/// Watching the hardware after the device has left `Delivering`, in the
+/// background, whatever state it is in: a sequence that raced a withdrawal,
+/// the relay returning, and the front ends recovering.
+#[derive(Debug, Clone, Copy)]
+struct SequenceWatch {
+    /// When the watch's clock last restarted (leaving Delivering, or the
+    /// end of a sequence that started after a withdrawal).
+    since: Millis,
+    /// The relay was (or may have been) moved off the front ends.
+    relay_moved: bool,
+    /// A sequence ran.
+    ran: bool,
+    /// Its end has been recorded.
+    end_recorded: bool,
+    /// When the relay was seen back on the front ends.
+    relay_back_at: Option<Millis>,
+    /// The relay fault has been raised.
+    relay_fault: bool,
+}
+
 /// What ended an armed state early.
 #[derive(Debug, Clone, Copy)]
 enum ArmedExit {
@@ -413,6 +511,11 @@ pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor = NoChestSe
     shocked_this_arming: bool,
     emptying_since: Option<Millis>,
     plan: Option<ShockPlan>,
+    delivery: Option<Delivery>,
+    watch: Option<SequenceWatch>,
+    mode_contacts_since: Option<Millis>,
+    mode_contacts_bad: bool,
+    last_test_request: TestRequest,
     fault: Option<FaultKind>,
     countdown_spoken: u8,
     next_beat: Millis,
@@ -498,6 +601,11 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             shocked_this_arming: false,
             emptying_since: None,
             plan: None,
+            delivery: None,
+            watch: None,
+            mode_contacts_since: None,
+            mode_contacts_bad: false,
+            last_test_request: TestRequest::None,
             fault: None,
             countdown_spoken: 0,
             next_beat: Millis(0),
@@ -681,6 +789,35 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         self.mode
     }
 
+    /// True while the adult/child switch's two contacts disagree (D-60):
+    /// the device shows "not ready" (and still shocks, with the mode from
+    /// the primary contact).
+    #[must_use]
+    pub const fn mode_contacts_disagree(&self) -> bool {
+        self.mode_contacts_bad
+    }
+
+    /// True while pad, heart and impedance readings are not believed: from
+    /// a shock request until the relay is back on the front ends and the
+    /// recovery time is over (D-59).
+    #[must_use]
+    pub fn front_ends_blind(&self, now: Millis) -> bool {
+        self.state == RescueState::Delivering
+            || self.watch.is_some_and(|w| {
+                w.relay_moved
+                    && w.relay_back_at
+                        .is_none_or(|t| now.since(t) < self.config.front_end_recovery_ms)
+            })
+    }
+
+    /// True while the impedance channel is disconnected or recovering:
+    /// once the rail is up in `Delivering`, and in the watch afterwards.
+    fn impedance_blind(&self, now: Millis) -> bool {
+        (self.state == RescueState::Delivering
+            && self.delivery.is_some_and(|d| d.armed_at.is_some()))
+            || (self.state != RescueState::Delivering && self.front_ends_blind(now))
+    }
+
     /// True while the capacitor is being emptied in the background and is
     /// not yet confirmed empty. No new charge starts until it is.
     #[must_use]
@@ -777,6 +914,11 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     /// compression sensing or it is switched off.
     pub fn on_impedance_sample(&mut self, sample: ImpedanceSample, now: Millis) {
         if !(self.config.chest_sensing && self.chest.fitted()) {
+            return;
+        }
+        if self.impedance_blind(now) {
+            // The pads are on the bridge, or the front end is recovering
+            // from a sequence: the samples say nothing about the chest.
             return;
         }
         let event = self.chest.push(sample);
@@ -911,11 +1053,15 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     /// the signal is full of compression movement and is not analysed. With
     /// compression sensing they are passed on only while the chest is still.
     pub fn on_ecg_sample(&mut self, sample: EcgSample, now: Millis) {
+        if self.front_ends_blind(now) {
+            // From the shock request until the front ends have recovered,
+            // the heart signal is disconnected or disturbed: nothing is
+            // analysed or tracked. The decision that led to the request was
+            // already confirmed at the request (D-59).
+            return;
+        }
         let analysing = self.state.is_analysing()
-            || matches!(
-                self.state,
-                RescueState::Charging | RescueState::Countdown | RescueState::Delivering
-            );
+            || matches!(self.state, RescueState::Charging | RescueState::Countdown);
         if !analysing {
             if self.state == RescueState::Cpr && self.pads.on {
                 // Keep the analysis filters running through CPR, so that the
@@ -969,27 +1115,33 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         if let Some(report) = hw.supervisor_report() {
             self.on_report(report, now);
         }
+        self.watch_sequence(hw, now);
 
-        let ohms = hw.pad_resistance();
-        match self
-            .pads
-            .update(pads_sensed(ohms), now, self.config.pad_debounce_ms)
-        {
-            Some(true) => {
-                self.events.push(now, Event::PadsOn);
-                self.chest.reset();
+        // Pad contact is neither lost nor regained while the front ends are
+        // disconnected or recovering (D-59): an open reading then says
+        // nothing about the pads.
+        if !self.front_ends_blind(now) {
+            let ohms = hw.pad_resistance();
+            match self
+                .pads
+                .update(pads_sensed(ohms), now, self.config.pad_debounce_ms)
+            {
+                Some(true) => {
+                    self.events.push(now, Event::PadsOn);
+                    self.chest.reset();
+                }
+                Some(false) => self.events.push(now, Event::PadsOff),
+                None => {}
             }
-            Some(false) => self.events.push(now, Event::PadsOff),
-            None => {}
-        }
-        self.pads_raw_on = pads_sensed(ohms);
-        let poor_raw = pads_sensed(ohms) && ohms > MAX_PATIENT_OHMS;
-        if self
-            .poor_contact
-            .update(poor_raw, now, self.config.pad_debounce_ms)
-            == Some(true)
-        {
-            self.events.push(now, Event::PadContactPoor(ohms));
+            self.pads_raw_on = pads_sensed(ohms);
+            let poor_raw = pads_sensed(ohms) && ohms > MAX_PATIENT_OHMS;
+            if self
+                .poor_contact
+                .update(poor_raw, now, self.config.pad_debounce_ms)
+                == Some(true)
+            {
+                self.events.push(now, Event::PadContactPoor(ohms));
+            }
         }
 
         let cancel = self.read_cancel(hw, now);
@@ -1003,6 +1155,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             self.events.push(now, Event::PatientModeChanged(mode));
             hw.prompt(mode_prompt(mode));
         }
+        self.check_mode_contacts(hw, now, mode);
 
         match hw.battery() {
             BatteryStatus::Good => self.battery_low_announced = false,
@@ -1183,7 +1336,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             hw.prompt(Prompt::LowBattery);
         }
         self.link_required = true;
-        hw.set_ready_indicator(true);
+        hw.set_ready_indicator(!self.mode_contacts_bad);
         if self.self_test.charge_skipped() {
             self.events.push(now, Event::SelfTestChargeSkippedForHeat);
         }
@@ -1562,13 +1715,39 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
                 }
                 self.plan = Some(plan);
                 self.events.push(now, Event::Plan(plan));
-                hw.request_shock(&plan);
+                // The hardware must be at rest with our request down: if it
+                // is not, a consent line is stuck on or a lockout never
+                // cleared, and a request could not start a sequence of its
+                // own (one sequence per permit).
+                let status = hw.sequence_status();
+                if status != SequenceStatus::Idle {
+                    self.events.push(now, Event::SequenceNotIdleAtRequest(status));
+                    self.begin_fault(FaultKind::InterlockNotIdle, hw, now);
+                    return;
+                }
+                hw.request_shock(Some(&plan));
+                self.delivery = Some(Delivery {
+                    requested_at: now,
+                    permit_seen: false,
+                    armed_at: None,
+                    started_at: None,
+                    ended: None,
+                });
                 self.events.push(now, Event::ShockRequested);
                 self.go(RescueState::Delivering, hw, now);
             }
         }
     }
 
+    /// Follow the hardware sequence (D-59). Pad and voltage were checked
+    /// when the request was raised; from then on their expected changes
+    /// (pads read open once the relay moves, the voltage falls) are not
+    /// reasons to withdraw. Before the first conducting moment the request
+    /// is still withdrawn for cancel, over-voltage, the supervisor's heat
+    /// limit, a mode change and, while the pads are still on the front
+    /// ends, sensed chest movement (D-37); a stale link or a supervisor
+    /// fault withdraws it through the fault path. Once the sequence is
+    /// active, withdrawing has no effect and is not tried.
     fn tick_delivering(
         &mut self,
         hw: &mut impl MainHardware,
@@ -1576,47 +1755,287 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         cancel: bool,
         voltage: Volts,
     ) {
-        match hw.shock_status() {
-            ShockStatus::Delivered => {
+        let Some(mut d) = self.delivery else {
+            // Cannot happen: Delivering is only entered with a request.
+            self.begin_fault(FaultKind::DeliveryFault, hw, now);
+            return;
+        };
+        let c = self.config;
+        let status = hw.sequence_status();
+        let relay = hw.patient_relay();
+        if self
+            .link
+            .is_some_and(|l| l.report.permit && l.received_at >= d.requested_at)
+        {
+            d.permit_seen = true;
+        }
+        if status != SequenceStatus::Idle && d.armed_at.is_none() {
+            d.armed_at = Some(now);
+            self.events.push(now, Event::SequenceArmed);
+        }
+        if status.started() && d.started_at.is_none() {
+            d.started_at = Some(now);
+            self.events.push(now, Event::SequenceStarted);
+        }
+        if let SequenceStatus::Ended(end) = status {
+            if d.ended.is_none() {
+                d.ended = Some((now, end));
+                self.events.push(now, Event::SequenceEnded(end));
+                // Consent no longer matters; lowering it lets the lockout
+                // clear once the supervisor lowers its permit too.
                 hw.withdraw_shock_request();
-                self.events.push(now, Event::Shock(ShockOutcome::Delivered));
-                self.counters.shocks_delivered = self.counters.shocks_delivered.saturating_add(1);
-                self.shocked_this_arming = true;
-                self.analyzer.reset();
-                self.last_decision = None;
-                hw.prompt(Prompt::ShockDelivered);
-                self.go(RescueState::Cpr, hw, now);
-            }
-            ShockStatus::Fault => {
-                hw.withdraw_shock_request();
-                self.events.push(now, Event::Shock(ShockOutcome::Fault));
-                self.begin_fault(FaultKind::DeliveryFault, hw, now);
-            }
-            ShockStatus::Refused => {
-                hw.withdraw_shock_request();
-                self.events
-                    .push(now, Event::Shock(ShockOutcome::RefusedByInterlock));
-                self.not_given();
-                hw.prompt(Prompt::ShockNotDelivered);
-                self.go(RescueState::Cpr, hw, now);
-            }
-            ShockStatus::Pending | ShockStatus::Idle => {
-                if let Some(exit) = self.armed_check(now, cancel, voltage) {
-                    hw.withdraw_shock_request();
-                    if let ArmedExit::Abort(reason) = exit {
-                        self.events
-                            .push(now, Event::Shock(ShockOutcome::Withdrawn(reason)));
-                    }
-                    self.handle_armed_exit(exit, hw, now);
-                } else if self.time_in_state_ms(now) > self.config.delivery_timeout_ms {
-                    hw.withdraw_shock_request();
-                    self.events.push(now, Event::Shock(ShockOutcome::TimedOut));
-                    self.not_given();
-                    hw.prompt(Prompt::ShockNotDelivered);
-                    self.go(RescueState::Cpr, hw, now);
-                }
             }
         }
+        self.delivery = Some(d);
+
+        if let Some((at, end)) = d.ended {
+            // Judge the result on a settled reading (a converter may sample
+            // only every few milliseconds). Both controllers still hold.
+            if now.since(at) >= c.post_shock_settle_ms {
+                self.sequence_finished(end, hw, now, voltage);
+            }
+            return;
+        }
+        match status {
+            SequenceStatus::Active => {
+                let running = d.started_at.map_or(0, |t| now.since(t));
+                if running > c.sequence_end_timeout_ms {
+                    self.delivery_fault(ShockOutcome::DidNotEnd, hw, now);
+                }
+            }
+            SequenceStatus::LockedOut => {
+                self.shock_not_delivered(ShockOutcome::RefusedByInterlock, hw, now);
+            }
+            SequenceStatus::Armed => {
+                if let Some(exit) = self.prestart_check(now, cancel, voltage, false) {
+                    self.withdraw_before_start(exit, hw, now);
+                } else if d
+                    .armed_at
+                    .is_some_and(|t| now.since(t) > c.sequence_start_timeout_ms)
+                {
+                    let outcome = if relay == RelayPosition::Bridge {
+                        ShockOutcome::NotStarted
+                    } else {
+                        ShockOutcome::RelayDidNotTransfer
+                    };
+                    self.shock_not_delivered(outcome, hw, now);
+                }
+            }
+            SequenceStatus::Idle => {
+                if d.armed_at.is_some() {
+                    // The rail rose and fell again before any current: a
+                    // consent was taken back before the start.
+                    self.shock_not_delivered(ShockOutcome::RefusedByInterlock, hw, now);
+                } else if let Some(exit) = self.prestart_check(now, cancel, voltage, true) {
+                    self.withdraw_before_start(exit, hw, now);
+                } else if now.since(d.requested_at) > c.delivery_timeout_ms {
+                    let outcome = if d.permit_seen {
+                        ShockOutcome::RefusedByInterlock
+                    } else {
+                        ShockOutcome::TimedOut
+                    };
+                    self.shock_not_delivered(outcome, hw, now);
+                }
+            }
+            SequenceStatus::Ended(_) => {}
+        }
+    }
+
+    /// What may still take a request back before the sequence starts.
+    /// `front_ends_valid`: the rail is not up yet, so the pads are still on
+    /// the front ends and the chest reading still means something.
+    fn prestart_check(
+        &self,
+        now: Millis,
+        cancel: bool,
+        voltage: Volts,
+        front_ends_valid: bool,
+    ) -> Option<ArmedExit> {
+        if cancel {
+            return Some(ArmedExit::Abort(AbortReason::Cancelled));
+        }
+        if front_ends_valid && !self.chest_still(now) {
+            // D-37: never shock a chest that is being compressed.
+            return Some(ArmedExit::Abort(AbortReason::HandsOnChest));
+        }
+        if self.supervisor_too_hot(now) {
+            return Some(ArmedExit::Abort(AbortReason::TooHot));
+        }
+        if self.mode != self.mode_at_arming {
+            return Some(ArmedExit::Abort(AbortReason::ModeChanged));
+        }
+        if voltage > self.config.overvoltage_limit {
+            return Some(ArmedExit::Fault(FaultKind::Overvoltage));
+        }
+        let armed_for = self.armed_since.map_or(0, |t| now.since(t));
+        if armed_for > self.config.max_charged_ms {
+            return Some(ArmedExit::Fault(FaultKind::ArmedTooLong));
+        }
+        None
+    }
+
+    fn withdraw_before_start(&mut self, exit: ArmedExit, hw: &mut impl MainHardware, now: Millis) {
+        hw.withdraw_shock_request();
+        if let ArmedExit::Abort(reason) = exit {
+            self.events
+                .push(now, Event::Shock(ShockOutcome::Withdrawn(reason)));
+        }
+        self.handle_armed_exit(exit, hw, now);
+    }
+
+    /// No shock, no fault: "Shock not delivered", CPR.
+    fn shock_not_delivered(&mut self, outcome: ShockOutcome, hw: &mut impl MainHardware, now: Millis) {
+        hw.withdraw_shock_request();
+        self.events.push(now, Event::Shock(outcome));
+        self.not_given();
+        hw.prompt(Prompt::ShockNotDelivered);
+        self.go(RescueState::Cpr, hw, now);
+    }
+
+    /// The output stage did not behave as planned: a fault.
+    fn delivery_fault(&mut self, outcome: ShockOutcome, hw: &mut impl MainHardware, now: Millis) {
+        hw.withdraw_shock_request();
+        self.events.push(now, Event::Shock(outcome));
+        self.begin_fault(FaultKind::DeliveryFault, hw, now);
+    }
+
+    /// The hardware reported the sequence ended and the reading has settled.
+    fn sequence_finished(
+        &mut self,
+        end: SequenceEnd,
+        hw: &mut impl MainHardware,
+        now: Millis,
+        voltage: Volts,
+    ) {
+        match end {
+            SequenceEnd::TimeCapTripped => self.delivery_fault(ShockOutcome::TimeCapTripped, hw, now),
+            SequenceEnd::OverCurrentTripped => {
+                self.delivery_fault(ShockOutcome::OverCurrentTripped, hw, now);
+            }
+            SequenceEnd::Completed => match self.config.check_shock_residual(voltage, self.target) {
+                ShockCheck::Delivered => {
+                    self.events.push(now, Event::Shock(ShockOutcome::Delivered));
+                    self.counters.shocks_delivered = self.counters.shocks_delivered.saturating_add(1);
+                    self.shocked_this_arming = true;
+                    self.analyzer.reset();
+                    self.last_decision = None;
+                    hw.prompt(Prompt::ShockDelivered);
+                    self.go(RescueState::Cpr, hw, now);
+                }
+                ShockCheck::NotDelivered => {
+                    self.shock_not_delivered(ShockOutcome::NotDelivered, hw, now);
+                }
+                ShockCheck::Implausible | ShockCheck::HardwareTrip => {
+                    self.delivery_fault(ShockOutcome::ResidualImplausible, hw, now);
+                }
+            },
+        }
+    }
+
+    /// The background watch after leaving `Delivering` (see
+    /// [`SequenceWatch`]).
+    fn watch_sequence(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        let Some(mut w) = self.watch else {
+            return;
+        };
+        let c = self.config;
+        let status = hw.sequence_status();
+        let relay = hw.patient_relay();
+        if relay != RelayPosition::FrontEnds || status.started() || status == SequenceStatus::Armed {
+            w.relay_moved = true;
+        }
+        if !w.ran && status.started() {
+            // The hardware latched just as the request was withdrawn: by
+            // design it completes (D-59).
+            w.ran = true;
+            w.relay_back_at = None;
+            self.events.push(now, Event::SequenceStarted);
+        }
+        if w.ran && !w.end_recorded {
+            if let SequenceStatus::Ended(end) = status {
+                w.end_recorded = true;
+                w.since = now;
+                self.events.push(now, Event::SequenceCompletedAfterWithdrawal(end));
+                if end == SequenceEnd::Completed {
+                    self.counters.shocks_delivered = self.counters.shocks_delivered.saturating_add(1);
+                }
+                self.analyzer.reset();
+                self.last_decision = None;
+                self.analysis_result = None;
+            }
+        }
+        let running = status == SequenceStatus::Active;
+        if relay == RelayPosition::FrontEnds {
+            if w.relay_moved && w.relay_back_at.is_none() && !running {
+                w.relay_back_at = Some(now);
+                self.events.push(now, Event::RelayReturned);
+            }
+        } else if !running && !w.relay_fault && now.since(w.since) > c.relay_return_timeout_ms {
+            w.relay_fault = true;
+            if self.state == RescueState::Fault {
+                self.events.push(now, Event::Fault(FaultKind::PatientRelayStuck));
+            } else {
+                self.begin_fault(FaultKind::PatientRelayStuck, hw, now);
+            }
+        }
+        let quiet = c.sequence_start_timeout_ms.saturating_add(c.sequence_end_timeout_ms);
+        let done = match w.relay_back_at {
+            Some(t) => now.since(t) >= c.front_end_recovery_ms,
+            None => !w.relay_moved && now.since(w.since) > quiet,
+        };
+        if done {
+            self.watch = None;
+            if w.relay_moved {
+                self.front_ends_recovered(hw, now);
+            }
+        } else {
+            self.watch = Some(w);
+        }
+    }
+
+    /// The front ends have recovered: start the rhythm analysis and
+    /// compression sensing from scratch, and say if the pads did not come
+    /// back.
+    fn front_ends_recovered(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        self.events.push(now, Event::FrontEndsRecovered);
+        self.analyzer.reset();
+        self.chest.reset();
+        self.chest_last_sample = None;
+        if self.state.is_analysing() {
+            self.analysis_result = None;
+            self.last_decision = None;
+        }
+        if !pads_sensed(hw.pad_resistance()) {
+            self.events.push(now, Event::PadsNotBackAfterShock);
+        }
+    }
+
+    /// D-60: compare the adult/child switch's two contacts.
+    fn check_mode_contacts(&mut self, hw: &mut impl MainHardware, now: Millis, primary: PatientMode) {
+        let ceiling = hw.patient_mode_ceiling();
+        if ceiling == primary {
+            self.mode_contacts_since = None;
+            if self.mode_contacts_bad {
+                self.mode_contacts_bad = false;
+                self.events.push(now, Event::ModeContactsAgree);
+                hw.set_ready_indicator(self.ready());
+            }
+            return;
+        }
+        let since = *self.mode_contacts_since.get_or_insert(now);
+        if !self.mode_contacts_bad && now.since(since) >= self.config.mode_contacts_disagree_ms {
+            self.mode_contacts_bad = true;
+            self.events.push(now, Event::ModeContactsDisagree { primary, ceiling });
+            hw.set_ready_indicator(false);
+        }
+    }
+
+    /// The ready indicator: on once the switch-on self-test has passed,
+    /// unless the device has a fault or the mode switch's contacts disagree.
+    fn ready(&self) -> bool {
+        matches!(self.self_test_result, Some(Ok(())))
+            && self.state != RescueState::Fault
+            && !self.mode_contacts_bad
     }
 
     fn tick_cpr(&mut self, hw: &mut impl MainHardware, now: Millis) {
@@ -1700,6 +2119,19 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
 
     fn go(&mut self, to: RescueState, hw: &mut impl MainHardware, now: Millis) {
         let from = self.state;
+        if from == RescueState::Delivering {
+            // Keep watching the hardware in the background (D-59).
+            if let Some(d) = self.delivery.take() {
+                self.watch = Some(SequenceWatch {
+                    since: d.ended.map_or(now, |(t, _)| t),
+                    relay_moved: d.armed_at.is_some(),
+                    ran: d.started_at.is_some() || d.ended.is_some(),
+                    end_recorded: d.ended.is_some(),
+                    relay_back_at: None,
+                    relay_fault: false,
+                });
+            }
+        }
         self.events.push(now, Event::StateChanged { from, to });
         self.state = to;
         self.state_since = now;
@@ -1938,12 +2370,18 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     }
 
     fn send_status_if_due(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        let test_request = if self.state == RescueState::SelfTest {
+            self.self_test.test_request()
+        } else {
+            TestRequest::None
+        };
         let due = self
             .last_status_at
             .is_none_or(|t| now.since(t) >= self.config.heartbeat_period_ms);
-        if !due && !self.state_changed {
+        if !due && !self.state_changed && test_request == self.last_test_request {
             return;
         }
+        self.last_test_request = test_request;
         self.state_changed = false;
         self.last_status_at = Some(now);
         self.status_sequence = self.status_sequence.wrapping_add(1);
@@ -1968,11 +2406,18 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             planned_voltage,
             armed_for_ms,
             temperature: self.main_temp_claim,
+            test_request,
+            emptying: self.emptying_since.is_some(),
         });
     }
 
     fn on_report(&mut self, report: SupervisorReport, now: Millis) {
         let previous = self.link.map(|l| l.report);
+        if let Some(check) = report.shock_check {
+            if previous.and_then(|p| p.shock_check) != Some(check) {
+                self.events.push(now, Event::SupervisorShockCheckReported(check));
+            }
+        }
         if report.permit && !previous.is_some_and(|p| p.permit) {
             self.events.push(now, Event::SupervisorPermitted);
         }

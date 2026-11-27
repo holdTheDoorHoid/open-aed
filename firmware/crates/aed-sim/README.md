@@ -10,7 +10,7 @@ Read this before reading any result.
 
 - **Real heart signals.** The patient's heart signal comes from the made-up generators in `aed-rhythm`'s `synth` module. Real cardiac-arrest recordings are messier and are not used here.
 - **Real electronics.** The capacitor, charger, discharge load and output bridge are simple equations (constant-power charging, exponential emptying, the `aed-waveform` shock model). No switch voltage drops, wiring inductance, capacitor dielectric absorption ("charge creeping back"), component tolerances, heating or ageing.
-- **Switch behaviour.** The output bridge fires instantly and perfectly when the interlock allows it. Real switches can fail half-on, ring, or leak.
+- **Switch behaviour.** The shock is stepped in time (10 µs steps: the rail, the patient relay's travel and bounce, the sequence latch, each phase, the caps and the lockout; see "The shock as a process in time"), but the switches themselves are perfect: no switching times, no wiring or coil inductance (so the over-current trip acts within one step, and the coil energy of review R-2 is not modelled), no half-on states, ringing or leakage. The relay and rail timings are model figures; no relay is chosen.
 - **Noise coupling.** The shock does not disturb the controllers, the sensors or the message wire. The heart-signal input is simply blanked for 1.5 s after a shock.
 - **Processor timing.** The controllers tick at exact intervals (main every 2 ms, supervisor every 1 ms). No interrupt latency, jitter, stack limits, watchdog, or the time the rhythm analysis takes to compute.
 - **People.** The responder is a script: stops compressions a fixed time after being told, restarts a fixed time after "Start CPR", may re-attach pads, and (when scripted) presses on the chest or gives breaths. Real people hesitate, talk, touch the patient.
@@ -87,7 +87,7 @@ Injectable faults (each can be switched on at any time or a set time after the d
 
 ## What it models
 
-- **The device.** A 100 µF capacitor (from the waveform design), a charger delivering a constant 30 W (a full adult charge takes about 6 s), a 2,000 Ω internal discharge load that empties the capacitor unless *both* controllers hold it open (the `aed-core` interlock rule), a slow leak, and the output bridge, which fires only when the interlock rule allows. The charger cannot run while the discharge path is active (the `aed-core` rule `charger_may_run`, a requirement on the future hardware); a switch (`charger_gated_by_discharge`) turns that rule off so a test can show what happens without it. The supervisor's own fault alarm (buzzer and light) appears in the timeline as the supervisor's alarm. The shock itself is the `aed-waveform` model, started from the voltage actually on the capacitor and delivered into the patient's actual resistance; whatever charge is left stays on the capacitor. The plant adds up the energy the charger puts into the capacitor and the energy burned off in the internal load, so each run's summary shows the battery and heat cost of charging during analysis (D-29): charges burned off without a shock, charger output and energy burned off inside, in joules (model figures; charger losses are not modelled).
+- **The device.** A 100 µF capacitor (from the waveform design), a charger delivering a constant 30 W (a full adult charge takes about 6 s), two internal discharge paths of 4,000 Ω each (path A conducts unless the main controller holds it, path B unless the supervisor does; together 2,000 Ω as before the split, one alone twice as slow), a slow leak, and the output bridge with its interlock, sequence latch and patient relay, modelled in time (see "The shock as a process in time"). The charger cannot run while the discharge path is active (the `aed-core` rule `charger_may_run`, a requirement on the future hardware); a switch (`charger_gated_by_discharge`) turns that rule off so a test can show what happens without it. The supervisor's own fault alarm (buzzer and light) appears in the timeline as the supervisor's alarm. The shock itself is integrated step by step (the same exponential as the `aed-waveform` model, so a completed sequence matches the model's prediction for the same starting voltage and resistance to within 0.2 %); whatever charge is left stays on the capacitor. The plant adds up the energy the charger puts into the capacitor and the energy burned off in the internal load, so each run's summary shows the battery and heat cost of charging during analysis (D-29): charges burned off without a shock, charger output and energy burned off inside, in joules (model figures; charger losses are not modelled).
 - **Two separate controllers.** The real `Rescue` (with the real rhythm analysis and shock planner) and the real `Supervisor`. Each sees the device only through its own sensors and clock, and they talk only through a message wire.
 - **The patient.** A scripted rhythm, pad resistance (or pads off), optional interference, compression artifact while the responder is doing CPR.
 - **Compression sensing (D-36).** A pad-impedance channel at 125 samples a second, fed to the real `aed_cpr::CompressionDetector` inside the main controller: the patient's resistance plus each compression (1.5 Ω by default, in step with the compression artifact in the heart signal), breaths, the heartbeat of a beating heart (0.05 Ω by default), touches, noise (5 mΩ), and after a shock 0.3 s saturated then a 3 Ω offset recovering over 1.5 s (a guess). The ground truth "hands on the chest" (compressing or touching) is checked at every shock. `Scenario::chest_sensing = false` runs the firmware without compression sensing, so its effect can be measured.
@@ -103,6 +103,9 @@ Injectable faults (each can be switched on at any time or a set time after the d
 8. With compression sensing, the bridge never fires while the responder's hands have been on the chest (ground truth) for longer than 1 s (`HANDS_ON_ALLOWANCE_MS`, the detector's design bound for seeing a compression). Every shock fired with hands on at all is reported with how long they had been on.
 7. The responder is never left without an instruction: any purely informational message ("Shock delivered.", "No shock advised.", "Unable to analyse. No shock.", "Poor pad contact. No shock.") is followed by an instruction within 4 s, and the device speaks within 8 s of switching on. The supervisor's fault alarm counts as an instruction ("continue CPR"; the simulated responder restarts compressions when it sounds). If the main controller freezes, the supervisor's alarm must come on within 4 s; there is no exemption for a frozen main controller.
 9. The charger never starts while the TRUE capacitor or cell temperature is above the 60 °C charging limit (D-41, D-48), unless a temperature sensor has been made faulty in the scenario (the firmware is designed to carry on then rather than block every shock).
+10. Every shock sequence delivers its plan (D-59): it is never cut short by a consent withdrawn mid-pulse, never ended by the hardware time cap or over-current trip without an injected fault to explain it, and a completed sequence delivers within 1 % of what the `aed-waveform` model predicts for the same start voltage and resistance (`ShockNotAsPlanned`).
+
+Rules 1-3 and 8 are checked at the first conducting moment of each sequence (when the hardware latches it), not at the end of the pulse.
 
 Rule 1 cannot hold for a rhythm change in the last few seconds before the shock: the analysis looks at a 4-second window. The random campaign counts those cases separately (see "Known problems").
 
@@ -140,6 +143,62 @@ For context only (from the project's research notes): trained EMTs reach about 5
 
 The cost (simulated, model energies, `tests/energy_and_timing.rs`): every analysis that ends without a shock burns a charge off inside the device, about 150 J when "no shock" comes at 5 s into the charge and 190 J for a full adult charge. A 170 s rescue with a normal rhythm now burns about 307 J (before: 8 J, the self-test only); a one-shock adult VF rescue about 188 J (before: 39 J). In the 5,000-run campaign: 0.7 charges burned per run, 108 J per run on average.
 
+## The shock as a process in time (D-59, review R-1)
+
+The independent review of the circuit design (finding R-1) found that the plant used to fire the whole shock in one 1 ms step, which hid a real failure: with real hardware the pads move from the measuring front ends to the bridge a few milliseconds before the pulse, so both controllers' pad readings go open, and during the pulse the capacitor voltage leaves the "at plan" window within tens of microseconds. The firmware re-checked both on every tick while consent was given, so it would have withdrawn its own consent before or during every shock. Decision D-59 (consent starts a shock; the hardware completes it) is now implemented in `aed-core` and the plant models the sequence in time:
+
+- while anything in the shock path is moving, the plant steps in 10 µs (`PlantConfig::shock_step_us`); the rest of the simulation stays at 1 ms;
+- the interlock rail rises as soon as both consents (and both holds) are present, and powers the relay coil and drivers 1 ms later; the relay's rest contact opens 2 ms after its coil is powered and the bridge contact closes at 6 ms and bounces for 1 ms; the phase timer starts once the position sense has read "bridge" for 0.5 ms; the relay returns 5 ms after the rail drops; pad readings stay open for 300 ms after it returns (all model figures, `PlantConfig`);
+- the sequence latch, the 25 ms non-retriggerable time cap, the 90 A over-current trip, the 250 ms permit-duration cap and the 20 ms re-arm lockout are `aed_core::interlock::Latch`, the same pure rules the circuit is being drawn to;
+- the consent lines are sampled at every step; `PlantConfig::sequence_latch = false` gives the hardware of the first design (consent is continuous power) for comparison;
+- converters can sample every N ms (`voltage_sample_ms`, `pad_sample_ms`; default 1, the review quotes 8 ms for the chosen voltage converter);
+- new fault injections (not in the random campaign's list, so its choices stay comparable): relay fails to transfer, fails to return, four times slow; phase timer stuck in phase 1; phase timer toggling; output shorted; request or permit stuck on; request or permit toggling; and any consent line forced low at a chosen microsecond (`Plant::consent_cut`).
+
+Results (simulated, model figures; `tests/consent_during_shock.rs`, run with `--nocapture` for the tables):
+
+**The old consent behaviour fails against this plant** (adult VF, 80 Ω, converters sampling every 8 ms, at each of the 8 sampling phases; the old checks are reproduced by the test harness, `Simulation::set_legacy_consent_parts`, not by the firmware):
+
+| Consent behaviour | Hardware | Runs | Full shock | No shock | Cut short mid-pulse |
+|---|---|---:|---:|---:|---:|
+| Both controllers as before D-59 | first design | 8 | 0 | 8 | 0 |
+| Both controllers as before D-59 | latched (D-59) | 8 | 0 | 8 | 0 |
+| Only the supervisor as before D-59 | first design | 8 | 0 | 5 | 3 (79, 53, 20 J of 150 J) |
+| Only the supervisor as before D-59 | latched (D-59) | 8 | 3 | 5 | 0 |
+| D-59 (now) | latched (D-59) | 8 | 8 | 0 | 0 |
+
+**Consent withdrawn at every instant** (bare plant, request or permit forced low at every 50 µs from before the rail to after the end, 25, 80 and 175 Ω): every run delivered either nothing or the whole plan (to 0.1 %), never part of it and never more. With the first design's hardware the same sweep at 80 Ω gave 164 part-shocks out of 536. Whole system (`adult-vf`, a line forced low 0 to 24 ms after the request, both lines): no shock up to 9 ms, the full 150 J from 10.5 ms, no fault either way.
+
+**Time from consent to energy delivered** (adult plan): 14.0 ms at 25 Ω, 14.6 ms at 50 Ω, 16.8 ms at 80 Ω, 20.2 ms at 125 Ω, 24.0 ms at 175 Ω (8.5 ms of rail, relay and settling plus the pulse). From the main controller's request: 17.8 ms in `adult-vf`; median 27.6 ms and longest 91 ms over the 2,000-run campaign (slow wires and clock drift).
+
+**Worst-case energy under each fault** (adult plan):
+
+| Fault | Result |
+|---|---|
+| Phase timer stuck in phase 1 | Cut by the 25 ms cap: 158 J at 25 Ω (plan 153), 173 J at 50 Ω, 178 J at 80 Ω, 179 J at 125 Ω, 173 J at 175 Ω (plan 150 J): up to 1.19 times the plan, monophasic. Without any cap: 158 to 185 J. **The cap limits the duration, hardly the energy**: 25 ms is several time constants at most resistances, so the stored charge (190 J) is what bounds it |
+| Phase timer toggling (review R-4) | Cut at 25.0 ms: 169.5 J at 80 Ω (plan 150 J); one sequence only |
+| Output shorted | Over-current trip in the first 10 µs step (382 A in the model, which has no inductance), 0 J into the patient |
+| Second sequence within one permit | Locked out (request toggled 20 times with the permit up): one sequence |
+| Request or permit stuck on | One normal sequence (150.0 J), then locked out |
+| Request or permit toggling at 1 kHz | The rail never stays up long enough for the relay: no shock (0 J) |
+| Relay fails to transfer | No shock ("Shock not delivered", CPR) |
+| Relay fails to return | The shock is delivered (150 J), then a fault (`PatientRelayStuck`) |
+| Relay four times slow | Delivered in full |
+| Rail held with no sequence | Dropped and locked out by the hardware after 250 ms |
+
+**Before and after, the whole simulator** (same seeds):
+
+| | Before D-59 (instantaneous shock) | After (time-resolved) |
+|---|---:|---:|
+| 2,000-run campaign: VF/VT runs shocked | 437 of 581 | 438 of 581 |
+| Extended campaign: VF/VT runs shocked | 418 of 582 | 416 of 579 |
+| Extended campaign: shocks with hands on the chest | 7 | 7 (the same seeds) |
+| Shocks within 4 s of VF/VT ending (known F-4) | 8 | 8 |
+| Shock sequences not completed / not as planned | (not modelled) | 0 / 0 |
+| Hands off before the shock (`adult-vf`) | 10.3 s | 10.4 s |
+| Switch-on self-test (`adult-vf`) | 0.79 s | 0.95 s |
+
+The changes in the campaigns are timing shifts: the switch-on self-test is 0.17 s longer (the interlock checks and the per-path discharge check), so faults injected at fixed times land in different steps (one weak charger now hits the self-test's charge step; one voltage sensor going wrong mid-test is now caught by the path B check); the extended campaign's "no fault" set lost three runs that were shocked before for the same reason. `touch-during-countdown` now waits 0.5 s longer before its second countdown: after the hold-back the capacitor empties through path A only (the supervisor already holds path B for the new arming), which takes twice as long as both paths.
+
 ## Between rescues: the periodic self-test (D-15)
 
 `src/standby.rs` runs the device over simulated weeks in about a second: time between wakes is skipped, not simulated. The real `aed_core::TestSchedule` decides at each wake; each test it asks for runs millisecond by millisecond on a fresh simulated device (the same plant as the rescues) with the real `PeriodicTestRun` and the real supervisor. The surroundings are scripted: in use, on the dock, temperature, battery, a charger that weakens, a plant fault, the timer restarting. Not modelled: anything that happens while asleep (self-discharge, ageing, the dock's power path).
@@ -172,3 +231,5 @@ Each open one has an `#[ignore]`d test in `tests/findings.rs` that states the ri
 7. FIXED. A failing charger at switch-on kept the device silent for about 12 s. The self-test charge step now has a limit scaled to its voltage (1 s at 400 V). This was also the cause of the two "silent at switch-on" runs in the earlier 5,000-run campaign (seeds 430 and 3263: a weak charger injected during the self-test).
 8. FIXED by D-32. Pads on but just outside 25–175 Ω got only "Attach pads" forever. Pads now count as on up to 250 Ω (see `pads-190-throughout`).
 9. FIXED by D-28. With sensors accurate to ±2 % ± 10 V a child shock could reach about 60.5 J (+21 %) at 25–35 Ω. With ±1 % ± 7 V sensors and the window set from them the top edge is 1,193 V true and the worst child case is +14.2 % at 25 Ω (model; 0.8 points inside the placeholder tolerance); every edge in both modes is inside ±15 %. Tests: `child_energy_at_the_top_of_the_voltage_window_is_within_tolerance`, `delivered_energy_at_the_edges_of_the_allowed_voltage_window`.
+10. FIXED by D-59 (review R-1). The plant fired the whole shock in one step, so it could not show that both controllers withdrew consent before or during every real shock. Now time-resolved; see "The shock as a process in time". Tests: `tests/consent_during_shock.rs`.
+11. FIXED. Found by the time-resolved plant with two discharge paths: after a hands-on hold-back the main controller lets go of path A and analyses again while the supervisor holds path B for the new arming; on a slow wire the falling voltage and the main controller's heartbeat-old claim disagreed for more than 500 ms and the supervisor latched a voltage-disagreement fault (extended campaign, seed 1758). The main controller now says in its status that it is emptying, and the supervisor does not compare during that, for at most the 3 s emptying limit. Tests: `emptying_through_one_path_while_the_supervisor_still_holds_is_not_a_disagreement`, `a_main_controller_that_says_it_is_emptying_is_not_compared_for_a_bounded_time`.

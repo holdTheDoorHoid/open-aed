@@ -128,6 +128,13 @@ pub enum Rule {
     /// The charger started while the TRUE capacitor or cell temperature was
     /// above the 60 °C charging limit (D-41, D-48), with healthy sensors.
     ChargedWhenTooHot,
+    /// A shock sequence did not deliver its plan (D-59): cut short by a
+    /// consent withdrawn mid-pulse, cut by the hardware time cap or
+    /// over-current trip with no injected fault to explain it, or a
+    /// completed sequence whose energy differs from the aed-waveform model's
+    /// prediction for the same start voltage and resistance by more than
+    /// 1 %.
+    ShockNotAsPlanned,
 }
 
 impl Rule {
@@ -151,6 +158,7 @@ impl Rule {
             Rule::SilentAtPowerOn => "device silent after switch-on",
             Rule::FiredWhileHandsOn => "bridge fired while hands were on the chest",
             Rule::ChargedWhenTooHot => "charger started above the 60 °C charging limit",
+            Rule::ShockNotAsPlanned => "shock sequence did not deliver its plan",
         }
     }
 }
@@ -187,8 +195,15 @@ pub struct ShockTiming {
     pub charge_wait_ms: u32,
     /// Countdown start to shock request, ms.
     pub countdown_ms: u32,
-    /// Shock request to the bridge firing (waiting for the supervisor's permit), ms.
+    /// Shock request to the first conducting moment (the supervisor's
+    /// permit, the rail, the relay moving the pads), ms.
     pub permit_wait_ms: u32,
+    /// Shock request to the energy delivered (the end of the pulse), µs.
+    pub request_to_delivered_us: u64,
+    /// Both consents present (rail up) to the energy delivered, µs.
+    pub consent_to_delivered_us: u64,
+    /// The pulse itself, first conducting moment to end, µs.
+    pub pulse_us: u64,
     /// From the moment compressions stopped to the shock, ms. `None` if
     /// compressions never stopped (should not happen).
     pub hands_off_ms: Option<u32>,
@@ -395,6 +410,11 @@ pub struct Simulation {
     cap_was_charged: bool,
     overvoltage_reported: bool,
     charger_was_running: bool,
+    start_state: Option<RescueState>,
+    start_hands_on_since: Option<u32>,
+    legacy: (bool, bool),
+    legacy_permit_blocked: bool,
+    legacy_request_blocked: bool,
 }
 
 /// Why a simulation could not be built.
@@ -498,6 +518,11 @@ impl Simulation {
             cap_was_charged: false,
             overvoltage_reported: false,
             charger_was_running: false,
+            start_state: None,
+            start_hands_on_since: None,
+            legacy: (false, false),
+            legacy_permit_blocked: false,
+            legacy_request_blocked: false,
         })
     }
 
@@ -517,6 +542,65 @@ impl Simulation {
     #[must_use]
     pub fn supervisor(&self) -> &Supervisor {
         &self.supervisor
+    }
+
+    /// Reproduce the consent behaviour of the firmware BEFORE D-59 on top of
+    /// the current firmware, for the regression test that demonstrates review
+    /// finding R-1. With this on, after each tick:
+    ///
+    /// * the supervisor's permit is forced off (for the rest of that permit)
+    ///   as soon as its own pad reading leaves the 25–175 Ω shock range or
+    ///   its own voltage reading leaves the "at plan" window: the old
+    ///   supervisor re-ran its permit checks on every tick while the permit
+    ///   was active (`still_ok`);
+    /// * the main controller's request is forced off (for the rest of that
+    ///   request) as soon as an impedance sample reads anything but a
+    ///   measurable chest: the old `armed_check` withdrew in `Delivering`
+    ///   when compression sensing could not tell (`!chest_still`).
+    ///
+    /// The test-only switch lives here, in the simulator, so the device
+    /// firmware carries no trace of the old behaviour.
+    pub fn set_legacy_consent(&mut self, on: bool) {
+        self.legacy = (on, on);
+    }
+
+    /// As [`Simulation::set_legacy_consent`], for one controller at a time:
+    /// the old main controller's rule (`main`), the old supervisor's rule
+    /// (`supervisor`).
+    pub fn set_legacy_consent_parts(&mut self, main: bool, supervisor: bool) {
+        self.legacy = (main, supervisor);
+    }
+
+    /// Apply the old consent rules (see [`Simulation::set_legacy_consent`]).
+    fn apply_legacy_consent(&mut self, impedance_tick: bool) {
+        let plan = self.rescue.last_plan().map(|p| p.charge_voltage);
+        let mut p = self.plant.borrow_mut();
+        let (main_rule, supervisor_rule) = self.legacy;
+        if !supervisor_rule {
+            // Only the main controller's old rule.
+        } else if p.permit {
+            let pads = p.supervisor_ohms();
+            let v = p.supervisor_volts();
+            let at_plan = plan.is_some_and(|pv| self.config.is_at_plan(v, pv));
+            if !aed_types::in_shock_range(pads) || !at_plan {
+                self.legacy_permit_blocked = true;
+            }
+        } else if !self.supervisor.permit_active() {
+            self.legacy_permit_blocked = false;
+        }
+        if self.legacy_permit_blocked {
+            p.permit = false;
+        }
+        let delivering = self.rescue.state() == RescueState::Delivering;
+        if main_rule && delivering && p.request.is_some() && impedance_tick && !p.pads_on_front_ends() {
+            self.legacy_request_blocked = true;
+        }
+        if !delivering {
+            self.legacy_request_blocked = false;
+        }
+        if self.legacy_request_blocked {
+            p.request = None;
+        }
     }
 
     fn now(&self) -> u32 {
@@ -571,6 +655,13 @@ impl Simulation {
         self.finish()
     }
 
+    /// End a run that was stepped by hand ([`Simulation::step`]) and return
+    /// its result, with the end-of-run checks applied.
+    #[must_use]
+    pub fn into_result(self) -> RunResult {
+        self.finish()
+    }
+
     /// Advance the whole system by 1 ms.
     pub fn step(&mut self) {
         let state_before = self.rescue.state();
@@ -599,6 +690,9 @@ impl Simulation {
             self.rescue.tick(&mut self.main_view);
         }
         self.supervisor.tick(&mut self.sup_view);
+        if self.legacy.0 || self.legacy.1 {
+            self.apply_legacy_consent(now.is_multiple_of(IMPEDANCE_PERIOD_MS));
+        }
 
         self.observe();
         self.run_script();
@@ -616,30 +710,58 @@ impl Simulation {
                     "Interlock passed but the output bridge did not fire (injected fault).",
                 );
             }
-            PlantEvent::Shock(s) => self.on_shock(&s, state_before),
+            PlantEvent::RailUp { test } => self.log(
+                Source::Hardware,
+                if test {
+                    "Test rail up (request + test permit; the relay cannot move)"
+                } else {
+                    "Interlock rail up (request + permit + both holds): relay moving the pads to the bridge"
+                },
+            ),
+            PlantEvent::RelayOnBridge => {
+                self.log(Source::Hardware, "Relay on the bridge (settled); the phase timer starts");
+            }
+            PlantEvent::SequenceStarted => {
+                let test = self.plant.borrow().latch.test;
+                if !test {
+                    self.start_state = Some(state_before);
+                    self.start_hands_on_since = self.plant.borrow().hands_on_since;
+                    self.log(Source::Hardware, "Sequence latched: the pulse will now complete (D-59)");
+                }
+            }
+            PlantEvent::RelayBack => self.log(Source::Hardware, "Relay back on the front ends"),
+            PlantEvent::RailDropped => {
+                self.log(Source::Hardware, "Rail dropped before any current flowed (consent withdrawn)");
+            }
+            PlantEvent::PermitCapTripped => {
+                self.log(Source::Hardware, "Hardware permit-duration cap: rail removed, locked out");
+            }
+            PlantEvent::Shock(s) => self.on_shock(&s),
         }
     }
 
-    fn on_shock(&mut self, s: &ShockRecord, state_before: RescueState) {
+    fn on_shock(&mut self, s: &ShockRecord) {
         let text = match s.result {
             Some(r) => format!(
-                "SHOCK fired from {:.0} V into {:.0} Ω: {:.1} J delivered, peak {:.1} A, \
-                 phases {:.2} + {:.2} + {:.2} ms, {:.0} V left on the capacitor (model)",
+                "SHOCK from {:.0} V into {:.0} Ω: {:.1} J delivered (plan {:.1} J), peak {:.1} A, \
+                 pulse {:.2} ms ({:?}), {:.0} V left on the capacitor (model, step by step)",
                 s.capacitor_v,
                 r.patient_ohms,
-                r.patient_energy_j,
-                r.peak_current_a,
-                r.phase1_s * 1e3,
-                r.interphase_s * 1e3,
-                r.phase2_s * 1e3,
-                r.final_capacitor_v
+                s.delivered_j(),
+                s.planned_j(),
+                s.peak_a(),
+                s.duration_us() as f64 / 1e3,
+                s.end,
+                s.final_v
             ),
             None => format!(
-                "SHOCK fired from {:.0} V into OPEN pads: no current flowed",
-                s.capacitor_v
+                "SHOCK sequence ran from {:.0} V into OPEN pads: no current flowed ({:?})",
+                s.capacitor_v, s.end
             ),
         };
         self.log(Source::Hardware, text);
+        self.check_shock_as_planned(s);
+        let state_before = self.start_state.take().unwrap_or(RescueState::Delivering);
 
         // Invariants at the moment the bridge fires (ground truth, not the analyser).
         if !rhythm_is_shockable(s.rhythm) {
@@ -667,7 +789,7 @@ impl Simulation {
         if s.cancel_pressed {
             self.violate(Rule::FiredWhileCancelPressed, String::new(), None);
         }
-        let hands_on_since = self.plant.borrow().hands_on_since;
+        let hands_on_since = self.start_hands_on_since.take();
         if let Some(since) = hands_on_since {
             let exposure = s.at_ms.saturating_sub(since);
             self.hands_on_at_fire.push(exposure);
@@ -703,8 +825,39 @@ impl Simulation {
                 charge_wait_ms: countdown_start.saturating_sub(advised),
                 countdown_ms: request.saturating_sub(countdown_start),
                 permit_wait_ms: s.at_ms.saturating_sub(request),
+                request_to_delivered_us: s.request_to_delivered_us().unwrap_or(0),
+                consent_to_delivered_us: s.consent_to_delivered_us(),
+                pulse_us: s.duration_us(),
                 hands_off_ms: self.hands_off_since.map(|t| s.at_ms.saturating_sub(t)),
             });
+        }
+    }
+
+    /// Rule [`Rule::ShockNotAsPlanned`].
+    fn check_shock_as_planned(&mut self, s: &ShockRecord) {
+        use crate::plant::ShockEnd;
+        let explained = {
+            let p = self.plant.borrow();
+            p.has_fault(Fault::MainTimerStuck)
+                || p.has_fault(Fault::MainTimerToggling)
+                || p.has_fault(Fault::OutputShort)
+        };
+        let planned = s.planned_j();
+        let delivered = s.delivered_j();
+        let detail = match s.end {
+            ShockEnd::ConsentCut => Some(format!(
+                "a consent was withdrawn mid-pulse: {delivered:.1} J of {planned:.1} J"
+            )),
+            ShockEnd::TimeCap | ShockEnd::OverCurrent if !explained => {
+                Some(format!("ended by {:?} with no fault to explain it", s.end))
+            }
+            ShockEnd::Completed if planned > 0.0 && (delivered - planned).abs() > 0.01 * planned => {
+                Some(format!("{delivered:.1} J against {planned:.1} J planned"))
+            }
+            _ => None,
+        };
+        if let Some(d) = detail {
+            self.violate(Rule::ShockNotAsPlanned, d, None);
         }
     }
 
@@ -950,12 +1103,24 @@ impl Simulation {
             Event::PlanRefused(e) => format!("Planner refused: {e:?}"),
             Event::ShockRequested => "Shock request raised; waiting for supervisor permit".to_string(),
             Event::Shock(o) => match o {
-                ShockOutcome::Delivered => "Output stage reports the shock delivered".to_string(),
-                ShockOutcome::RefusedByInterlock => "Interlock refused the shock".to_string(),
-                ShockOutcome::TimedOut => {
-                    "No shock within the delivery time limit: request withdrawn".to_string()
+                ShockOutcome::Delivered => {
+                    "Sequence completed and the capacitor fell as a shock leaves it: delivered".to_string()
                 }
-                ShockOutcome::Fault => "Output stage reported a fault".to_string(),
+                ShockOutcome::NotDelivered => {
+                    "Sequence completed but the capacitor did not fall: not delivered".to_string()
+                }
+                ShockOutcome::RefusedByInterlock => "Interlock did not start the sequence".to_string(),
+                ShockOutcome::TimedOut => {
+                    "No permit within the delivery time limit: request withdrawn".to_string()
+                }
+                ShockOutcome::RelayDidNotTransfer => "Patient relay did not reach the bridge".to_string(),
+                ShockOutcome::NotStarted => "Rail up and relay on the bridge, but no sequence started".to_string(),
+                ShockOutcome::TimeCapTripped => "Hardware time cap ended the sequence".to_string(),
+                ShockOutcome::OverCurrentTripped => "Over-current trip ended the sequence".to_string(),
+                ShockOutcome::ResidualImplausible => {
+                    "Capacitor fell to a level no plan explains".to_string()
+                }
+                ShockOutcome::DidNotEnd => "Sequence never reported an end".to_string(),
                 ShockOutcome::Withdrawn(r) => format!("Shock request withdrawn: {}", abort_text(r)),
             },
             Event::ShockAborted(r) => format!("Shock abandoned: {}", abort_text(r)),
@@ -1018,11 +1183,38 @@ impl Simulation {
                 f64::from(longest_pause_ms) / 1000.0
             ),
             Event::NoCompressionsPrompt => "No compressions sensed: prompts to continue CPR".to_string(),
+            Event::SequenceNotIdleAtRequest(st) => {
+                format!("Sequence logic not idle ({st:?}) when a shock was due: no request")
+            }
+            Event::SequenceArmed => "Sees the rail up (pads moving to the bridge)".to_string(),
+            Event::SequenceStarted => "Sees the sequence latched".to_string(),
+            Event::SequenceEnded(e) => format!("Sees the sequence ended ({e:?})"),
+            Event::SequenceCompletedAfterWithdrawal(e) => {
+                format!("A sequence latched as the request was withdrawn, and completed ({e:?})")
+            }
+            Event::RelayReturned => "Relay back; front ends recovering, readings ignored".to_string(),
+            Event::FrontEndsRecovered => {
+                "Front ends recovered: pad, heart and impedance readings used again".to_string()
+            }
+            Event::PadsNotBackAfterShock => "Pads did not read as on after the recovery time".to_string(),
+            Event::SupervisorShockCheckReported(c) => format!("Supervisor's own verdict: {c:?}"),
+            Event::ModeContactsDisagree { primary, ceiling } => format!(
+                "Adult/child switch contacts disagree (primary {primary:?}, ceiling {ceiling:?}): not ready (D-60)"
+            ),
+            Event::ModeContactsAgree => "Adult/child switch contacts agree again".to_string(),
             // The supervisor's own record covers these, and state changes are polled.
             Event::SupervisorPermitted
             | Event::SupervisorRefused(_)
             | Event::SupervisorReleasedHold(_)
             | Event::SupervisorFaultLatched(_)
+            | Event::SupervisorPermitWithdrawn(_)
+            | Event::SupervisorPermitUnused
+            | Event::SupervisorSequenceStarted
+            | Event::SupervisorSequenceEnded(_)
+            | Event::SupervisorShockCheck(_)
+            | Event::SupervisorTestPermitted
+            | Event::SupervisorTestPermitExpired
+            | Event::SupervisorTestPermitRefused(_)
             | Event::StateChanged { .. }
             | Event::PowerOn => return,
         };
@@ -1067,7 +1259,18 @@ impl Simulation {
                         "Lets go of the discharge path: its own temperature reading is over its limit"
                             .to_string()
                     }
+                    ReleaseReason::SelfTestPathB => {
+                        "Lets go of path B for the self-test's path check".to_string()
+                    }
                 },
+                Event::SupervisorPermitWithdrawn(r) => format!("Permit taken back before the start: {r:?}"),
+                Event::SupervisorPermitUnused => "Permit window passed with no sequence".to_string(),
+                Event::SupervisorSequenceStarted => "Sees the sequence latched".to_string(),
+                Event::SupervisorSequenceEnded(e) => format!("Sees the sequence ended ({e:?})"),
+                Event::SupervisorShockCheck(c) => format!("Own verdict from its own reading: {c:?}"),
+                Event::SupervisorTestPermitted => "Test permit given (self-test, D-61)".to_string(),
+                Event::SupervisorTestPermitExpired => "Test permit ran out".to_string(),
+                Event::SupervisorTestPermitRefused(r) => format!("Test permit refused: {r:?}"),
                 Event::SupervisorFaultLatched(f) => format!("FAULT latched: {f:?}"),
                 Event::SupervisorTooHot(t) => format!(
                     "Too hot ({:.1} °C on its own sensor): holds charging back",
@@ -1471,5 +1674,6 @@ pub const fn refusal_text(r: PermitRefusal) -> &'static str {
         PermitRefusal::VoltageNotAtPlan => "voltage not at the planned charge",
         PermitRefusal::PadsOutOfRange => "its pad reading is out of range",
         PermitRefusal::TooHot => "its own temperature reading is over its limit",
+        PermitRefusal::SequenceNotIdle => "the hardware sequence logic was not idle",
     }
 }

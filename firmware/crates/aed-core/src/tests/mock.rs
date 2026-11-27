@@ -9,8 +9,11 @@
 //! the real circuit.
 
 use crate::heat::{DeciC, SensorSet, TempPoint};
-use crate::hal::{BatteryStatus, MainHardware, PadCartridge, ShockStatus, SupervisorHardware};
-use crate::interlock::{bridge_may_fire, charger_may_run, discharge_path_active};
+use crate::hal::{
+    BatteryStatus, BridgeTestOutcome, BridgeTestResult, BridgeTestStep, MainHardware, PadCartridge,
+    RelayPosition, SequenceEnd, SequenceStatus, SupervisorHardware,
+};
+use crate::interlock::{charger_may_run, discharge_path_active, Latch, LatchInputs, LatchTiming};
 use crate::link::{MainStatus, SupervisorReport};
 use crate::prompts::Prompt;
 use crate::rescue::{Rescue, RescueState};
@@ -272,8 +275,63 @@ pub struct Board {
     pub main_hold: bool,
     pub sup_hold: bool,
     pub charger: Option<Volts>,
+    /// The request line raised with this plan loaded (a shock or a test
+    /// sequence).
     pub request: Option<ShockPlan>,
+    /// The request line raised with no sequence loaded (self-test probes).
+    pub request_bare: bool,
     pub permit: bool,
+    /// The supervisor's test permit line (D-61).
+    pub test_permit: bool,
+    /// The permit line is stuck on whatever the supervisor does.
+    pub permit_stuck_on: bool,
+    /// The request line is stuck on whatever the main controller does.
+    pub request_stuck_on: bool,
+    /// "Both held" reads true whatever the holds do (review R-6).
+    pub hold_ok_stuck: bool,
+    /// The hardware's test-voltage comparator limit, volts.
+    pub test_limit_v: f32,
+    /// The relay coil is (wrongly) powered by a test rail too.
+    pub relay_on_test_rail: bool,
+    /// The lockout latch does not work.
+    pub no_lockout: bool,
+    /// The sequence logic (D-59), stepped in 100 µs steps.
+    pub latch: Latch,
+    pub latch_timing: LatchTiming,
+    /// Patient relay position sense.
+    pub relay: RelayPosition,
+    /// How long the relay coil has been powered or unpowered (µs).
+    pub relay_coil_us: u32,
+    pub relay_coil_was: bool,
+    /// Relay operate and release times, µs.
+    pub relay_transfer_us: u32,
+    pub relay_return_us: u32,
+    /// The relay never leaves the front ends.
+    pub relay_stuck_front: bool,
+    /// The relay never comes back from the bridge.
+    pub relay_stuck_bridge: bool,
+    /// After the relay is back, both pad readings read open for this long, ms.
+    pub front_end_recovery_ms: u32,
+    /// When the relay last arrived back on the front ends.
+    pub relay_back_at: Option<u32>,
+    /// Time into the running sequence, µs.
+    pub seq_us: u32,
+    /// The phase timer never starts (the bridge does not fire).
+    pub bridge_no_start: bool,
+    /// The phase timer never ends its first phase (stuck timer).
+    pub timer_stuck: bool,
+    /// What a sequence leaves on the capacitor, as a fraction.
+    pub residual: f32,
+    /// A bridge test step that fails, and how.
+    pub bridge_switch_fault: Option<(BridgeTestStep, BridgeTestOutcome)>,
+    /// What the second (hardware ceiling) contact of the mode switch reads,
+    /// if it differs from `mode`.
+    pub mode_ceiling: Option<PatientMode>,
+    /// Path A (main's) or path B (supervisor's) discharge path failed open.
+    pub path_a_broken: bool,
+    pub path_b_broken: bool,
+    /// Test sequences seen (start times).
+    pub test_fires: Vec<u32>,
     /// True pad resistance.
     pub pad_ohms: u16,
     /// What the supervisor's own pad measurement sees, if different.
@@ -299,7 +357,7 @@ pub struct Board {
     pub charger_runaway: bool,
     /// Internal discharge load does not work.
     pub dump_broken: bool,
-    /// Output stage reports a fault on delivery.
+    /// The over-current trip ends every sequence.
     pub output_fault: bool,
     pub status_wire_up: bool,
     pub report_wire_up: bool,
@@ -311,7 +369,6 @@ pub struct Board {
     pub ready: bool,
     /// The supervisor's own fault alarm.
     pub sup_alarm: bool,
-    pub shock_status: ShockStatus,
     pub requests: Vec<RequestRecord>,
     pub fires: Vec<FireRecord>,
     pub violations: Vec<String>,
@@ -347,7 +404,35 @@ impl Board {
             sup_hold: false,
             charger: None,
             request: None,
+            request_bare: false,
             permit: false,
+            test_permit: false,
+            permit_stuck_on: false,
+            request_stuck_on: false,
+            hold_ok_stuck: false,
+            test_limit_v: 100.0,
+            relay_on_test_rail: false,
+            no_lockout: false,
+            latch: Latch::IDLE,
+            latch_timing: LatchTiming::PROPOSED,
+            relay: RelayPosition::FrontEnds,
+            relay_coil_us: 0,
+            relay_coil_was: false,
+            relay_transfer_us: 4_000,
+            relay_return_us: 4_000,
+            relay_stuck_front: false,
+            relay_stuck_bridge: false,
+            front_end_recovery_ms: 0,
+            relay_back_at: None,
+            seq_us: 0,
+            bridge_no_start: false,
+            timer_stuck: false,
+            residual: 0.2,
+            bridge_switch_fault: None,
+            mode_ceiling: None,
+            path_a_broken: false,
+            path_b_broken: false,
+            test_fires: Vec::new(),
             pad_ohms: 80,
             sup_pad_ohms: None,
             main_v_offset: 0,
@@ -372,7 +457,6 @@ impl Board {
             beats: Vec::new(),
             ready: false,
             sup_alarm: false,
-            shock_status: ShockStatus::Idle,
             requests: Vec::new(),
             fires: Vec::new(),
             violations: Vec::new(),
@@ -406,11 +490,32 @@ impl Board {
         discharge_path_active(self.main_hold, self.sup_hold)
     }
 
+    /// The permit line as the hardware sees it.
+    pub fn permit_line(&self) -> bool {
+        self.permit || self.permit_stuck_on
+    }
+
+    /// True while pad readings mean nothing: relay off the front ends, or
+    /// the front ends still recovering.
+    pub fn front_ends_blind(&self) -> bool {
+        self.relay != RelayPosition::FrontEnds
+            || self
+                .relay_back_at
+                .is_some_and(|t| self.now < t + self.front_end_recovery_ms)
+    }
+
     /// Advance the physics by `dt` milliseconds.
     pub fn step(&mut self, dt: u32) {
         let dt_f = dt as f32;
         if self.discharging() {
-            let tau = if self.dump_broken { 600_000.0 } else { 100.0 };
+            // Two paths side by side (path A let go by the main controller,
+            // path B by the supervisor). Crude on purpose, as before the
+            // split: any working path that is let go empties with a 100 ms
+            // time constant; a broken path does not conduct (only the slow
+            // bleed remains).
+            let a = !self.main_hold && !self.path_a_broken && !self.dump_broken;
+            let b = !self.sup_hold && !self.path_b_broken && !self.dump_broken;
+            let tau = if a || b { 100.0 } else { 600_000.0 };
             self.cap_v *= (-dt_f / tau).exp();
             if self.cap_v < 0.5 {
                 self.cap_v = 0.0;
@@ -435,26 +540,98 @@ impl Board {
                 }
             }
         }
-        // The hardware interlock.
-        let discharging = self.discharging();
-        if self.request.is_some()
-            && self.shock_status == ShockStatus::Pending
-            && bridge_may_fire(self.request.is_some(), self.permit, discharging)
-        {
-            self.fires.push(FireRecord {
-                at: self.now,
-                voltage: self.cap_v,
-                main_request: self.request.is_some(),
-                permit: self.permit,
-                main_hold: self.main_hold,
-                sup_hold: self.sup_hold,
-            });
-            self.cap_v *= 0.2;
-            self.shock_status = if self.output_fault {
-                ShockStatus::Fault
-            } else {
-                ShockStatus::Delivered
-            };
+        // The sequence logic and the relay, in 100 µs steps while anything
+        // is happening; one step when everything is at rest.
+        let quiet = self.latch.status == SequenceStatus::Idle
+            && self.relay == RelayPosition::FrontEnds
+            && !self.relay_coil_was
+            && self.request.is_none()
+            && !self.request_bare
+            && !self.request_stuck_on
+            && !self.permit_line()
+            && !self.test_permit;
+        if quiet {
+            self.step_sequence(dt * 1_000);
+        } else {
+            for _ in 0..dt * 10 {
+                self.step_sequence(100);
+            }
+        }
+    }
+
+    fn step_sequence(&mut self, dt_us: u32) {
+        let plan = self.request;
+        let armed = self.latch.status == SequenceStatus::Armed;
+        let active = self.latch.status == SequenceStatus::Active;
+        let total_us = plan.map_or(0, |p| p.phase1.0 + p.interphase.0 + p.phase2.0);
+        let ready = self.latch.test || self.relay == RelayPosition::Bridge;
+        let drive = !self.bridge_no_start && plan.is_some() && ((armed && ready) || active);
+        let done = active && !self.timer_stuck && self.seq_us >= total_us;
+        let inputs = LatchInputs {
+            request: self.request.is_some() || self.request_bare || self.request_stuck_on,
+            permit: self.permit_line(),
+            test_permit: self.test_permit,
+            discharge_active: self.discharging() && !self.hold_ok_stuck,
+            below_test_voltage: self.cap_v < self.test_limit_v,
+            relay_on_bridge: self.relay == RelayPosition::Bridge,
+            drive,
+            phases_done: done,
+            over_current: active && !self.latch.test && self.output_fault && self.seq_us > 0,
+        };
+        let before = self.latch.status;
+        self.latch = self.latch.step(inputs, self.latch_timing, dt_us);
+        if self.no_lockout && self.latch.status.locked_out() && !inputs.request {
+            // A broken lockout clears as soon as the request drops, with
+            // the permit still up.
+            self.latch = Latch::IDLE;
+        }
+        match (before, self.latch.status) {
+            (SequenceStatus::Armed, SequenceStatus::Active) => {
+                self.seq_us = 0;
+                if self.latch.test {
+                    self.test_fires.push(self.now);
+                } else {
+                    self.fires.push(FireRecord {
+                        at: self.now,
+                        voltage: self.cap_v,
+                        main_request: inputs.request,
+                        permit: inputs.permit,
+                        main_hold: self.main_hold,
+                        sup_hold: self.sup_hold,
+                    });
+                }
+            }
+            (SequenceStatus::Active, SequenceStatus::Active) => {
+                self.seq_us += dt_us;
+            }
+            (SequenceStatus::Active, SequenceStatus::Ended(end))
+                if !self.latch.test && end != SequenceEnd::OverCurrentTripped =>
+            {
+                self.cap_v *= self.residual;
+            }
+            _ => {}
+        }
+        // The relay follows its coil, with operate and release times.
+        let coil = self.latch.relay_coil() || (self.relay_on_test_rail && self.latch.rail_up());
+        if coil != self.relay_coil_was {
+            self.relay_coil_was = coil;
+            self.relay_coil_us = 0;
+        } else {
+            self.relay_coil_us += dt_us;
+        }
+        if coil && !self.relay_stuck_front && self.relay == RelayPosition::FrontEnds {
+            if self.relay_coil_us >= 1_000 {
+                self.relay = RelayPosition::Between;
+            }
+        } else if coil && self.relay == RelayPosition::Between && self.relay_coil_us >= self.relay_transfer_us {
+            self.relay = RelayPosition::Bridge;
+        } else if !coil && self.relay != RelayPosition::FrontEnds && !self.relay_stuck_bridge {
+            if self.relay_coil_us >= self.relay_return_us {
+                self.relay = RelayPosition::FrontEnds;
+                self.relay_back_at = Some(self.now);
+            } else if self.relay_coil_us >= 1_000 {
+                self.relay = RelayPosition::Between;
+            }
         }
     }
 
@@ -478,6 +655,9 @@ impl MainHardware for MainView<'_> {
         Millis(self.0.now)
     }
     fn pad_resistance(&mut self) -> Ohms {
+        if self.0.front_ends_blind() {
+            return Ohms(10_000);
+        }
         Ohms(self.0.pad_ohms)
     }
     fn capacitor_voltage(&mut self) -> Volts {
@@ -489,8 +669,17 @@ impl MainHardware for MainView<'_> {
     fn set_discharge_hold(&mut self, hold: bool) {
         self.0.main_hold = hold;
     }
-    fn request_shock(&mut self, plan: &ShockPlan) {
+    fn request_shock(&mut self, plan: Option<&ShockPlan>) {
         let b = &mut *self.0;
+        let Some(plan) = plan.copied() else {
+            b.request_bare = true;
+            return;
+        };
+        if plan.charge_voltage.0 == 0 {
+            // A self-test sequence into the internal load.
+            b.request = Some(plan);
+            return;
+        }
         // Invariant checks at the moment a request is raised.
         if b.last_decision.get() != Some(RhythmDecision::Shockable) {
             b.violations.push(format!(
@@ -529,25 +718,42 @@ impl MainHardware for MainView<'_> {
                 b.now
             ));
         }
-        b.requests.push(RequestRecord {
-            at: b.now,
-            plan: *plan,
-        });
-        b.request = Some(*plan);
-        b.shock_status = ShockStatus::Pending;
+        b.requests.push(RequestRecord { at: b.now, plan });
+        b.request = Some(plan);
     }
     fn withdraw_shock_request(&mut self) {
         self.0.request = None;
-        self.0.shock_status = ShockStatus::Idle;
+        self.0.request_bare = false;
     }
-    fn shock_status(&mut self) -> ShockStatus {
-        self.0.shock_status
+    fn sequence_status(&mut self) -> SequenceStatus {
+        self.0.latch.status
+    }
+    fn patient_relay(&mut self) -> RelayPosition {
+        self.0.relay
+    }
+    fn bridge_test_step(&mut self, step: BridgeTestStep) -> BridgeTestResult {
+        let b = &*self.0;
+        let outcome = if !(b.latch.status == SequenceStatus::Armed && b.latch.test) {
+            BridgeTestOutcome::Refused
+        } else {
+            match b.bridge_switch_fault {
+                Some((s, o)) if s == step => o,
+                _ => BridgeTestOutcome::Pass,
+            }
+        };
+        BridgeTestResult {
+            outcome,
+            measurement: 0,
+        }
     }
     fn cancel_pressed(&mut self) -> bool {
         self.0.cancel
     }
     fn patient_mode(&mut self) -> PatientMode {
         self.0.mode
+    }
+    fn patient_mode_ceiling(&mut self) -> PatientMode {
+        self.0.mode_ceiling.unwrap_or(self.0.mode)
     }
     fn battery(&mut self) -> BatteryStatus {
         self.0.battery
@@ -593,6 +799,9 @@ impl SupervisorHardware for SupView<'_> {
         Board::reading(self.0.cap_v, self.0.sup_v_offset)
     }
     fn pad_resistance(&mut self) -> Ohms {
+        if self.0.front_ends_blind() {
+            return Ohms(10_000);
+        }
         Ohms(self.0.sup_pad_ohms.unwrap_or(self.0.pad_ohms))
     }
     fn cancel_pressed(&mut self) -> bool {
@@ -603,6 +812,12 @@ impl SupervisorHardware for SupView<'_> {
     }
     fn set_permit(&mut self, permit: bool) {
         self.0.permit = permit;
+    }
+    fn set_test_permit(&mut self, on: bool) {
+        self.0.test_permit = on;
+    }
+    fn sequence_status(&mut self) -> SequenceStatus {
+        self.0.latch.status
     }
     fn set_discharge_hold(&mut self, hold: bool) {
         self.0.sup_hold = hold;

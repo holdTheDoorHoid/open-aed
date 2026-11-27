@@ -6,8 +6,8 @@ use super::mock::{Board, MainView};
 use crate::config::{Config, ConfigError};
 use crate::events::{Event, EventRecord};
 use crate::hal::{BatteryStatus, PadCartridge};
-use crate::interlock::{bridge_may_fire, charger_may_run, discharge_path_active};
-use crate::link::{SupervisorFault, SupervisorReport};
+use crate::interlock::{charger_may_run, discharge_path_active, sequence_may_start};
+use crate::link::{SupervisorFault, SupervisorReport, TestRequest};
 use crate::prompts::Prompt;
 use crate::selftest::{LinkSnapshot, SelfTest, SelfTestFailure, SelfTestPass, SelfTestProgress};
 use aed_types::{Millis, Volts};
@@ -19,15 +19,18 @@ use std::vec::Vec;
 
 #[test]
 fn interlock_fires_only_with_request_and_permit_and_discharge_off() {
+    // D-59 adds "not locked out" to the start gate; with no lockout the
+    // table is the original one.
     for request in [false, true] {
         for permit in [false, true] {
             for discharging in [false, true] {
-                let fires = bridge_may_fire(request, permit, discharging);
+                let fires = sequence_may_start(request, permit, discharging, false);
                 assert_eq!(
                     fires,
                     request && permit && !discharging,
                     "request {request} permit {permit} discharging {discharging}"
                 );
+                assert!(!sequence_may_start(request, permit, discharging, true));
             }
         }
     }
@@ -36,9 +39,11 @@ fn interlock_fires_only_with_request_and_permit_and_discharge_off() {
 #[test]
 fn interlock_never_passes_without_both_signals() {
     for discharging in [false, true] {
-        assert!(!bridge_may_fire(true, false, discharging));
-        assert!(!bridge_may_fire(false, true, discharging));
-        assert!(!bridge_may_fire(false, false, discharging));
+        for locked in [false, true] {
+            assert!(!sequence_may_start(true, false, discharging, locked));
+            assert!(!sequence_may_start(false, true, discharging, locked));
+            assert!(!sequence_may_start(false, false, discharging, locked));
+        }
     }
 }
 
@@ -81,6 +86,10 @@ struct FakeLink {
     holding: bool,
     offset: i32,
     fault: Option<SupervisorFault>,
+    /// Gives the test permit when asked (D-61).
+    test_permits: bool,
+    /// Lets go of path B when asked (D-61).
+    releases_path_b: bool,
 }
 
 const GOOD_LINK: FakeLink = FakeLink {
@@ -88,6 +97,8 @@ const GOOD_LINK: FakeLink = FakeLink {
     holding: true,
     offset: 0,
     fault: None,
+    test_permits: true,
+    releases_path_b: true,
 };
 
 /// Run a self-test on a bare board, with the supervisor side faked.
@@ -97,12 +108,40 @@ fn run_self_test(
     test_voltage: Volts,
     link: FakeLink,
 ) -> (Result<SelfTestPass, SelfTestFailure>, u32, f32) {
-    let mut st = SelfTest::new(Config::default(), test_voltage);
+    run_self_test_with(board, &mut SelfTest::new(Config::default(), test_voltage), link)
+}
+
+/// How long the switch-on interlock steps (D-61) take on a good board.
+/// They come before the charge step.
+fn interlock_steps_ms() -> u32 {
+    let mut b = board();
+    let mut st = SelfTest::new(Config::default(), Volts(400));
+    let (r, _, _) = run_self_test_with(&mut b, &mut st, GOOD_LINK);
+    assert!(r.is_ok());
+    st.interlock_ms()
+}
+
+/// As [`run_self_test`], with a given sequencer (for example the periodic form).
+fn run_self_test_with(
+    board: &mut Board,
+    st: &mut SelfTest,
+    link: FakeLink,
+) -> (Result<SelfTestPass, SelfTestFailure>, u32, f32) {
     let start = board.now;
     let mut peak = 0.0f32;
     for seq in 0..100_000u32 {
         board.now += 2;
-        board.sup_hold = link.holding; // the supervisor holds while main claims SelfTest
+        // The supervisor holds while main claims SelfTest, lets go of path B
+        // when asked, and gives the test permit when asked (D-61).
+        let request = st.test_request();
+        let holding =
+            link.holding && !(link.releases_path_b && request == TestRequest::ReleasePathB);
+        board.sup_hold = holding;
+        board.test_permit = link.alive
+            && link.test_permits
+            && link.fault.is_none()
+            && request == TestRequest::TestPermit
+            && board.cap_v < 60.0;
         board.step(2);
         peak = peak.max(board.cap_v);
         let snapshot = link.alive.then(|| LinkSnapshot {
@@ -110,12 +149,14 @@ fn run_self_test(
                 sequence: seq,
                 fault: link.fault,
                 permit: false,
-                holding: link.holding,
+                holding,
                 capacitor_voltage: Volts(
                     u16::try_from((board.cap_v.round() as i32 + link.offset).max(0)).unwrap(),
                 ),
                 too_hot: false,
                 temperature: None,
+                test_permit: board.test_permit,
+                shock_check: None,
             },
             received_at: Millis(board.now),
         });
@@ -262,9 +303,13 @@ fn self_test_checks_have_time_limits() {
     let mut b = board();
     b.charger_broken = true;
     let (_, took, _) = run_self_test(&mut b, Volts(400), GOOD_LINK);
+    // The interlock steps (D-61) now come before the charge step; the
+    // charge step itself is still bounded by its own limit.
+    let interlock = interlock_steps_ms();
+    assert!(interlock <= 150, "interlock steps {interlock} ms");
     assert!(
-        took <= c.charge_time_limit_for(Volts(400)) + 10,
-        "charge step {took} ms"
+        took <= c.charge_time_limit_for(Volts(400)) + interlock + 10,
+        "charge step {took} ms after {interlock} ms of interlock steps"
     );
     let mut b = board();
     let (_, took, _) = run_self_test(
@@ -638,4 +683,118 @@ fn fault_prompts_tell_the_responder_to_continue_cpr() {
     assert!(Prompt::CancelStuckContinueCpr
         .text()
         .contains("Continue CPR"));
+}
+
+// ----- the interlock steps of the self-test (D-61) ---------------------------
+
+#[test]
+fn each_interlock_check_of_the_self_test_has_its_own_failure_code() {
+    use crate::hal::{BridgeTestOutcome, BridgeTestStep, RelayPosition, SequenceStatus};
+    use SelfTestFailure as F;
+    let cases: Vec<SelfTestCase> = std::vec![
+        ("relay not at rest", |b| {
+            b.relay = RelayPosition::Between;
+            b.relay_stuck_bridge = true;
+        }, GOOD_LINK, F::RelayNotAtFrontEnds),
+        ("lockout never cleared", |b| {
+            b.latch.status = SequenceStatus::LockedOut;
+            b.latch_timing.rearm_us = u32::MAX;
+        }, GOOD_LINK, F::SequenceNotIdle),
+        ("permit line stuck on", |b| b.permit_stuck_on = true, GOOD_LINK, F::InterlockPassedRequestAlone),
+        ("test permit not given", |_| {}, FakeLink { test_permits: false, ..GOOD_LINK }, F::TestPermitRefused),
+        ("request line stuck on", |b| b.request_stuck_on = true, GOOD_LINK, F::InterlockPassedPermitAlone),
+        ("hold-ok stuck on (R-6)", |b| b.hold_ok_stuck = true, GOOD_LINK, F::InterlockPassedWithoutHold),
+        ("test rail never rises", |b| b.test_limit_v = 0.0, GOOD_LINK, F::TestRailDidNotRise),
+        ("relay moves on a test rail", |b| b.relay_on_test_rail = true, GOOD_LINK, F::RelayMovedUnderTestPermit),
+        ("switch", |b| b.bridge_switch_fault = Some((BridgeTestStep::LowSideB, BridgeTestOutcome::DoesNotTurnOff)),
+            GOOD_LINK, F::BridgeSwitch(BridgeTestStep::LowSideB, BridgeTestOutcome::DoesNotTurnOff)),
+        ("bridge never starts", |b| b.bridge_no_start = true, GOOD_LINK, F::SequenceLatchFailed),
+        ("no lockout", |b| b.no_lockout = true, GOOD_LINK, F::LockoutFailed),
+        ("lockout never clears", |b| b.latch_timing.rearm_us = u32::MAX, GOOD_LINK, F::LockoutDidNotClear),
+        ("path A open", |b| b.path_a_broken = true, GOOD_LINK, F::DischargePathASlow),
+        ("path B open", |b| b.path_b_broken = true, GOOD_LINK, F::DischargePathBSlow),
+        ("supervisor ignores the path B request", |_| {}, FakeLink { releases_path_b: false, ..GOOD_LINK }, F::PathBNotReleased),
+    ];
+    let mut seen = Vec::new();
+    for (name, setup, link, expect) in cases {
+        let mut b = board();
+        setup(&mut b);
+        let (r, _, _) = run_self_test(&mut b, Volts(400), link);
+        assert_eq!(r, Err(expect), "{name}");
+        assert!(!b.main_hold, "{name}: hold left on");
+        assert!(b.charger.is_none(), "{name}: charger left on");
+        assert!(b.request.is_none() && !b.request_bare, "{name}: request left up");
+        assert!(!seen.contains(&expect), "{name}");
+        seen.push(expect);
+    }
+}
+
+#[test]
+fn the_periodic_self_test_also_checks_the_two_hardware_caps_and_the_mode_contacts() {
+    use crate::hal::BridgeTestStep;
+    use aed_types::PatientMode;
+    use SelfTestFailure as F;
+    let c = Config::default();
+    // A good board passes, and the periodic checks take their time.
+    let mut b = board();
+    let mut st = SelfTest::periodic(c, Volts(400));
+    let (r, _, _) = run_self_test_with(&mut b, &mut st, GOOD_LINK);
+    assert_eq!(r, Ok(SelfTestPass { battery_low: false }));
+    let periodic = st.interlock_ms();
+    let switch_on = interlock_steps_ms();
+    std::println!("interlock steps: switch-on {switch_on} ms, periodic {periodic} ms (mock board)");
+    assert!(periodic > switch_on + c.hardware_permit_cap_ms);
+    // Three latched test sequences: the latch check and the time cap check.
+    assert_eq!(b.test_fires.len(), 2);
+    let cases: Vec<SelfTestCase> = std::vec![
+        ("time cap missing", |b| b.latch_timing.time_cap_us = u32::MAX, GOOD_LINK, F::TimeCapDidNotTrip),
+        ("time cap far too short", |b| b.latch_timing.time_cap_us = 10_000, GOOD_LINK, F::TimeCapTooShort),
+        ("permit cap missing", |b| b.latch_timing.permit_cap_us = u32::MAX, GOOD_LINK, F::PermitCapDidNotTrip),
+        ("mode contacts disagree", |b| {
+            b.mode = PatientMode::Adult;
+            b.mode_ceiling = Some(PatientMode::Child);
+        }, GOOD_LINK, F::ModeSwitchContactsDisagree),
+    ];
+    for (name, setup, link, expect) in cases {
+        let mut b = board();
+        setup(&mut b);
+        let mut st = SelfTest::periodic(c, Volts(400));
+        let (r, _, _) = run_self_test_with(&mut b, &mut st, link);
+        assert_eq!(r, Err(expect), "{name}");
+        // The switch-on form does not run these checks.
+        let mut b = board();
+        setup(&mut b);
+        let (r, _, _) = run_self_test(&mut b, Volts(400), link);
+        assert!(r.is_ok(), "{name}: switch-on test {r:?}");
+    }
+    let _ = BridgeTestStep::ALL;
+}
+
+#[test]
+fn new_self_test_failures_are_not_advisory() {
+    use crate::hal::{BridgeTestOutcome, BridgeTestStep};
+    use SelfTestFailure as F;
+    for f in [
+        F::ModeSwitchContactsDisagree,
+        F::RelayNotAtFrontEnds,
+        F::SequenceNotIdle,
+        F::InterlockPassedRequestAlone,
+        F::TestPermitRefused,
+        F::InterlockPassedPermitAlone,
+        F::InterlockPassedWithoutHold,
+        F::TestRailDidNotRise,
+        F::RelayMovedUnderTestPermit,
+        F::BridgeSwitch(BridgeTestStep::HighSideA, BridgeTestOutcome::DoesNotTurnOn),
+        F::SequenceLatchFailed,
+        F::LockoutFailed,
+        F::LockoutDidNotClear,
+        F::TimeCapDidNotTrip,
+        F::TimeCapTooShort,
+        F::PermitCapDidNotTrip,
+        F::DischargePathASlow,
+        F::PathBNotReleased,
+        F::DischargePathBSlow,
+    ] {
+        assert!(!f.is_advisory(), "{f:?}");
+    }
 }

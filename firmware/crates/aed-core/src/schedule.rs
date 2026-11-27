@@ -90,7 +90,7 @@
 
 use crate::config::Config;
 use crate::hal::{BatteryStatus, MainHardware};
-use crate::link::MainStatus;
+use crate::link::{MainStatus, TestRequest};
 use crate::rescue::RescueState;
 use crate::selftest::{LinkSnapshot, SelfTest, SelfTestFailure, SelfTestPass, SelfTestProgress};
 use aed_types::{Millis, Volts};
@@ -730,8 +730,9 @@ enum Phase {
     Done(PeriodicOutcome),
 }
 
-/// Runs one periodic test on the hardware: the switch-on [`SelfTest`]
-/// sequence at the test's voltage, with status messages to the supervisor
+/// Runs one periodic test on the hardware: the [`SelfTest`] sequence in its
+/// periodic form ([`SelfTest::periodic`]: also the adult/child switch's
+/// two contacts and the two hardware caps) at the test's voltage, with status messages to the supervisor
 /// (as state `SelfTest`, so it holds the discharge path during the charge),
 /// then a check that the capacitor is empty. Non-blocking: call
 /// [`PeriodicTestRun::step`] every few milliseconds until it returns the
@@ -746,6 +747,7 @@ pub struct PeriodicTestRun {
     link: Option<LinkSnapshot>,
     sequence: u32,
     last_status_at: Option<Millis>,
+    last_test_request: TestRequest,
 }
 
 impl PeriodicTestRun {
@@ -761,12 +763,13 @@ impl PeriodicTestRun {
         PeriodicTestRun {
             config,
             test,
-            self_test: SelfTest::new(config, v),
+            self_test: SelfTest::periodic(config, v),
             phase: Phase::Testing,
             charged: false,
             link: None,
             sequence: 0,
             last_status_at: None,
+            last_test_request: TestRequest::None,
         }
     }
 
@@ -852,12 +855,19 @@ impl PeriodicTestRun {
     }
 
     fn send_status(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        let test_request = if matches!(self.phase, Phase::Testing) {
+            self.self_test.test_request()
+        } else {
+            TestRequest::None
+        };
         let due = self
             .last_status_at
             .is_none_or(|t| now.since(t) >= self.config.heartbeat_period_ms);
-        if !due {
+        // A change in what the test asks of the supervisor goes at once.
+        if !due && test_request == self.last_test_request {
             return;
         }
+        self.last_test_request = test_request;
         self.last_status_at = Some(now);
         self.sequence = self.sequence.wrapping_add(1);
         let charging = matches!(self.phase, Phase::Testing) && self.self_test.is_charging();
@@ -872,6 +882,8 @@ impl PeriodicTestRun {
             // handing out this test; the supervisor judges its own reading
             // alone (a test refused for heat is reported as failed).
             temperature: None,
+            test_request,
+            emptying: matches!(self.phase, Phase::Emptying { .. }),
         });
     }
 }

@@ -6,12 +6,15 @@
 //! overflow counter goes up, so a reviewer can see that entries were lost.
 
 use crate::heat::{DeciC, HeatInhibit, SensorFault, TempPoint};
-use crate::link::SupervisorFault;
+use crate::hal::{SequenceEnd, SequenceStatus};
+use crate::link::{ShockCheck, SupervisorFault};
 use crate::readiness::ReasonSet;
 use crate::rescue::{AbortReason, FaultKind, RescueState, ShockOutcome};
 use crate::schedule::Readiness;
 use crate::selftest::SelfTestFailure;
-use crate::supervisor::{PermitRefusal, ReleaseReason, TempIgnored};
+use crate::supervisor::{
+    PermitRefusal, PermitWithdrawal, ReleaseReason, TempIgnored, TestPermitRefusal,
+};
 use aed_types::{
     ChestState, ImpedanceSignal, Millis, Ohms, PatientMode, PlanError, RhythmDecision, ShockPlan,
     Volts,
@@ -181,6 +184,64 @@ pub enum Event {
     SupervisorTooHot(DeciC),
     /// The supervisor is not acting on its own temperature reading.
     SupervisorTempIgnored(TempIgnored),
+
+    // ----- the shock sequence (D-59) ---------------------------------------
+    /// The main controller found the sequence logic not idle at the moment
+    /// it was about to request a shock (a lockout that did not clear, or a
+    /// consent line stuck on). No request was raised.
+    SequenceNotIdleAtRequest(SequenceStatus),
+    /// The main controller saw the hardware rail come up (pads moving to
+    /// the bridge).
+    SequenceArmed,
+    /// The main controller saw the sequence latched (current flowing).
+    SequenceStarted,
+    /// The main controller saw the sequence end, in this way.
+    SequenceEnded(SequenceEnd),
+    /// A sequence started although the main controller had just withdrawn
+    /// its request (the withdrawal and the hardware's latch raced): it
+    /// completed by design and is recorded with how it ended.
+    SequenceCompletedAfterWithdrawal(SequenceEnd),
+    /// The patient relay is back on the front ends after a sequence; pad and
+    /// heart readings are ignored for the recovery time from here.
+    RelayReturned,
+    /// The front-end recovery time after a sequence is over; pad, heart and
+    /// impedance readings are used again (analysis and compression sensing
+    /// restart from scratch).
+    FrontEndsRecovered,
+    /// After the recovery time the pads still did not read as on (they
+    /// came off, or a front end did not recover). The ordinary pad-contact
+    /// rule takes over ("Attach pads").
+    PadsNotBackAfterShock,
+    /// The supervisor's own verdict on the last sequence, as reported to the
+    /// main controller.
+    SupervisorShockCheckReported(ShockCheck),
+    /// The adult/child switch's two contacts have disagreed for
+    /// [`crate::Config::mode_contacts_disagree_ms`] (D-60). The primary
+    /// contact still sets the mode; the device shows "not ready".
+    ModeContactsDisagree {
+        /// The primary contact (used).
+        primary: PatientMode,
+        /// The contact that sets the hardware voltage ceiling.
+        ceiling: PatientMode,
+    },
+    /// The adult/child switch's two contacts agree again.
+    ModeContactsAgree,
+    /// The supervisor took back its permit before the sequence started.
+    SupervisorPermitWithdrawn(PermitWithdrawal),
+    /// The supervisor's permit window passed with no sequence started.
+    SupervisorPermitUnused,
+    /// The supervisor saw the sequence it permitted start.
+    SupervisorSequenceStarted,
+    /// The supervisor saw the sequence end, in this way.
+    SupervisorSequenceEnded(SequenceEnd),
+    /// The supervisor's verdict on the sequence from its own reading.
+    SupervisorShockCheck(ShockCheck),
+    /// The supervisor gave the self-test's test permit (D-61).
+    SupervisorTestPermitted,
+    /// A test permit ran its full window while still asked for.
+    SupervisorTestPermitExpired,
+    /// The supervisor refused a test permit.
+    SupervisorTestPermitRefused(TestPermitRefusal),
 }
 
 /// How many compressions the compression record keeps (the newest).

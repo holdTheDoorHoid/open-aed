@@ -12,8 +12,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use aed_core::{
-    BatteryStatus, DeciC, MainHardware, MainStatus, PadCartridge, Prompt, SensorSet, ShockStatus,
-    SupervisorHardware, SupervisorReport, TempPoint,
+    BatteryStatus, BridgeTestResult, BridgeTestStep, DeciC, MainHardware, MainStatus,
+    PadCartridge, Prompt, RelayPosition, SensorSet, SequenceStatus, SupervisorHardware,
+    SupervisorReport, TempPoint,
 };
 use aed_types::{Millis, Ohms, PatientMode, ShockPlan, Volts};
 
@@ -41,12 +42,10 @@ impl MainHardware for MainView {
         self.plant.borrow().main_clock()
     }
     fn pad_resistance(&mut self) -> Ohms {
-        let p = self.plant.borrow();
-        p.read_ohms(p.config.main_resistance_sensor)
+        self.plant.borrow().main_ohms()
     }
     fn capacitor_voltage(&mut self) -> Volts {
-        let p = self.plant.borrow();
-        p.read_volts(p.config.main_voltage_sensor)
+        self.plant.borrow().main_volts()
     }
     fn set_charger(&mut self, target: Option<Volts>) {
         self.plant.borrow_mut().charger_target = target;
@@ -54,24 +53,45 @@ impl MainHardware for MainView {
     fn set_discharge_hold(&mut self, hold: bool) {
         self.plant.borrow_mut().main_hold = hold;
     }
-    fn request_shock(&mut self, plan: &ShockPlan) {
+    fn request_shock(&mut self, plan: Option<&ShockPlan>) {
         let mut p = self.plant.borrow_mut();
-        p.request = Some(*plan);
-        p.shock_status = ShockStatus::Pending;
+        let was_up = p.request.is_some() || p.request_bare;
+        match plan {
+            Some(plan) => p.request = Some(*plan),
+            None => p.request_bare = true,
+        }
+        if !was_up {
+            let now = p.now_us();
+            p.request_raised_us = Some(now);
+        }
     }
     fn withdraw_shock_request(&mut self) {
         let mut p = self.plant.borrow_mut();
         p.request = None;
-        p.shock_status = ShockStatus::Idle;
+        p.request_bare = false;
     }
-    fn shock_status(&mut self) -> ShockStatus {
-        self.plant.borrow().shock_status
+    fn sequence_status(&mut self) -> SequenceStatus {
+        self.plant.borrow().latch.status
+    }
+    fn patient_relay(&mut self) -> RelayPosition {
+        self.plant.borrow().relay_position()
+    }
+    fn bridge_test_step(&mut self, step: BridgeTestStep) -> BridgeTestResult {
+        let p = self.plant.borrow();
+        BridgeTestResult {
+            outcome: p.bridge_test_step(step),
+            measurement: 0,
+        }
     }
     fn cancel_pressed(&mut self) -> bool {
         self.plant.borrow().cancel_pressed()
     }
     fn patient_mode(&mut self) -> PatientMode {
         self.plant.borrow().mode
+    }
+    fn patient_mode_ceiling(&mut self) -> PatientMode {
+        let p = self.plant.borrow();
+        p.mode_ceiling.unwrap_or(p.mode)
     }
     fn battery(&mut self) -> BatteryStatus {
         self.plant.borrow().battery
@@ -126,12 +146,10 @@ impl SupervisorHardware for SupervisorView {
         self.plant.borrow().supervisor_clock()
     }
     fn capacitor_voltage(&mut self) -> Volts {
-        let p = self.plant.borrow();
-        p.read_volts(p.config.supervisor_voltage_sensor)
+        self.plant.borrow().supervisor_volts()
     }
     fn pad_resistance(&mut self) -> Ohms {
-        let p = self.plant.borrow();
-        p.read_ohms(p.config.supervisor_resistance_sensor)
+        self.plant.borrow().supervisor_ohms()
     }
     fn cancel_pressed(&mut self) -> bool {
         self.plant.borrow().cancel_pressed()
@@ -141,6 +159,12 @@ impl SupervisorHardware for SupervisorView {
     }
     fn set_permit(&mut self, permit: bool) {
         self.plant.borrow_mut().permit = permit;
+    }
+    fn set_test_permit(&mut self, on: bool) {
+        self.plant.borrow_mut().test_permit = on;
+    }
+    fn sequence_status(&mut self) -> SequenceStatus {
+        self.plant.borrow().latch.status
     }
     fn set_discharge_hold(&mut self, hold: bool) {
         self.plant.borrow_mut().supervisor_hold = hold;

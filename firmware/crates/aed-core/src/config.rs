@@ -79,7 +79,9 @@ pub struct Config {
     ///   19.7 s if its clock runs 2 % slow.
     ///
     /// That is shorter than before D-29/D-30 (12 + 5 + 1 + 3 = 21 s), so the
-    /// 25 s limit still has about 5 s in hand and is not changed.
+    /// 25 s limit still has about 5 s in hand and is not changed. The shock
+    /// sequence's own stage limits (D-59: start 50 ms, end 60 ms, settling
+    /// 20 ms) add 0.13 s to the sum [`Config::validate`] checks.
     /// [`Config::validate`] refuses a value that does not exceed the sum.
     pub max_charged_ms: u32,
     /// Longest emptying the capacitor may take. If the main controller's
@@ -87,7 +89,8 @@ pub struct Config {
     /// Emptying runs in the background (see [`crate::rescue`]): the device
     /// gives its next instruction at once and does not wait for it, but
     /// starts no new charge until the capacitor is confirmed empty.
-    /// Provisional: 3 s (the model empties 1,950 V in about 0.8 s).
+    /// Provisional: 3 s (the model empties 1,950 V in about 0.8 s through
+    /// both discharge paths, about 1.5 s through one alone).
     pub disarm_time_limit_ms: u32,
     /// Below this voltage the capacitor counts as empty. Provisional: 50 V,
     /// matching the project's "no circuit above 50 volts" line (D-10).
@@ -172,8 +175,100 @@ pub struct Config {
     /// If no new heartbeat arrives within this time, the other controller counts
     /// as stopped. Provisional: 250 ms (five missed heartbeats).
     pub heartbeat_timeout_ms: u32,
-    /// How long one supervisor permit lasts. Provisional: 200 ms.
+    /// How long one supervisor permit lasts if no shock sequence starts
+    /// within it. Provisional: 200 ms. Once the hardware reports a
+    /// sequence, the permit is held until the hardware reports it ended
+    /// (it no longer matters then, D-59). Must be shorter than
+    /// [`Config::hardware_permit_cap_ms`], so firmware ends an unused
+    /// permit before the hardware's own limit does.
     pub permit_window_ms: u32,
+    /// After the hardware shows the interlock rail up ("armed"), the longest
+    /// the main controller waits for the sequence to start: the relay moving
+    /// the pads to the bridge (up to about 10 ms, HARDWARE_DESIGN.md §B8.4,
+    /// unverified for any chosen relay) plus the drivers starting.
+    /// Provisional: 50 ms.
+    pub sequence_start_timeout_ms: u32,
+    /// After the sequence starts, the longest until the hardware reports it
+    /// ended. Must exceed [`Config::hardware_time_cap_ms`]: the hardware
+    /// cap ends any sequence first, so this only catches a hardware that
+    /// reports nothing. Provisional: 60 ms.
+    pub sequence_end_timeout_ms: u32,
+    /// After a sequence ends (or a request is withdrawn with the relay
+    /// moved), the longest until the relay's position sense reads "front
+    /// ends" again. Longer is a fault (the pads would stay on the bridge,
+    /// and nothing can be analysed). Provisional: 50 ms (relay release up
+    /// to about 10 ms, §B8.4, unverified).
+    pub relay_return_timeout_ms: u32,
+    /// After the relay is back on the front ends following a sequence (or
+    /// any move to the bridge), how long pad, heart-signal and
+    /// pad-impedance readings are not believed: the front ends are
+    /// recovering from the disconnection and the pulse (polarisation of the
+    /// pads, saturated amplifiers). During this time pad contact is neither
+    /// declared lost nor regained, nothing is analysed, and afterwards the
+    /// rhythm analysis and compression sensing restart from scratch.
+    /// Provisional: 1,500 ms, the heart-signal blanking the simulator
+    /// assumes (HARDWARE_DESIGN.md §B3.3); the real figure must be measured.
+    pub front_end_recovery_ms: u32,
+    /// After the hardware reports a sequence ended, how long each controller
+    /// waits before judging its own capacitor reading (so a converter that
+    /// samples every 8 ms has a fresh reading). Provisional: 20 ms.
+    pub post_shock_settle_ms: u32,
+    /// A completed sequence counts as delivered when the capacitor reading
+    /// afterwards is between this and [`Config::shock_residual_max_percent`]
+    /// of the planned voltage. Below it: implausible (more energy left the
+    /// capacitor than any plan takes). Provisional: 10 %. The model leaves
+    /// 19 % (25 Ω) to 43 % (175 Ω) of an adult charge and 19 % to 47 % of
+    /// a child charge (aed-waveform DESIGN_TABLE, residual energy).
+    pub shock_residual_min_percent: u8,
+    /// See [`Config::shock_residual_min_percent`]. Provisional: 60 %.
+    pub shock_residual_max_percent: u8,
+    /// A completed sequence after which the reading is still at least this
+    /// percentage of the plan delivered nothing ("not delivered", for
+    /// example open pads). Between the delivered range and this: an
+    /// implausible part-way fall. Provisional: 80 %, leaving room for the
+    /// capacitor emptying a little through one discharge path during
+    /// [`Config::post_shock_settle_ms`].
+    pub shock_not_delivered_percent: u8,
+    /// The hardware's non-retriggerable time cap from the first conducting
+    /// moment, ms (a hardware figure the firmware only checks against).
+    /// Proposed 25 ms (HARDWARE_DESIGN.md §B6.4).
+    pub hardware_time_cap_ms: u32,
+    /// The hardware's limit on how long a permit may hold the rail up
+    /// before a sequence starts, ms (a hardware figure, review R-4).
+    /// Proposed 250 ms.
+    pub hardware_permit_cap_ms: u32,
+    /// How long one TEST permit lasts (D-61). Must exceed
+    /// [`Config::hardware_permit_cap_ms`] so the self-test can see the
+    /// hardware cut the rail. Provisional: 400 ms.
+    pub test_permit_window_ms: u32,
+    /// The supervisor gives a test permit only with its own capacitor
+    /// reading below this, and withdraws it above. The hardware enforces
+    /// its own, higher limit too. Provisional: 60 V.
+    pub test_permit_max_voltage: Volts,
+    /// At most this many test permits per self-test (the supervisor counts
+    /// from the moment the main controller reports "self-test"). The
+    /// switch-on test uses one, a periodic test three. Provisional: 4.
+    pub test_permits_per_self_test: u8,
+    /// How long the self-test watches the interlock after each probe (for
+    /// example "request alone") to see that the rail does NOT rise, or that
+    /// it does. Longer than the rail's rise (about 2 ms, §B8.4).
+    /// Provisional: 10 ms.
+    pub interlock_probe_ms: u32,
+    /// The longest a self-test sequence into the internal load may take to
+    /// start and end. Provisional: 50 ms.
+    pub test_sequence_timeout_ms: u32,
+    /// The self-test lets each discharge path empty the capacitor on its
+    /// own for this long, ms. Provisional: 100 ms.
+    pub discharge_path_test_ms: u32,
+    /// ... and the reading after that time must be at most this percentage
+    /// of the reading before, or that path is too slow (failed open). One
+    /// model path (4 kΩ with 100 µF, τ 0.4 s) leaves 78 %; a failed-open
+    /// path leaves about 100 %. Provisional: 90 %.
+    pub discharge_path_max_remaining_percent: u8,
+    /// The adult/child switch's two contacts must disagree for this long
+    /// before it counts (D-60): while the switch is being moved the two
+    /// contacts change at slightly different moments. Provisional: 500 ms.
+    pub mode_contacts_disagree_ms: u32,
     /// How long the supervisor tolerates its voltage reading disagreeing with the
     /// main controller's claim before it empties the capacitor and latches a fault.
     /// A short allowance is needed because the claim is up to one heartbeat old.
@@ -205,8 +300,11 @@ pub struct Config {
     /// than this. If it is older, no shock is given. Must be longer than the
     /// interval between the rhythm analyser's decisions. Provisional: 5 s.
     pub confirmation_max_age_ms: u32,
-    /// After the shock is requested, how long the main controller waits for the
-    /// hardware to report it delivered before giving up. Provisional: 1 s.
+    /// After the shock is requested, how long the main controller waits for
+    /// the interlock rail to rise (the supervisor's permit) before giving
+    /// up: "Shock not delivered", CPR. The later stages have their own
+    /// limits ([`Config::sequence_start_timeout_ms`],
+    /// [`Config::sequence_end_timeout_ms`]). Provisional: 1 s.
     pub delivery_timeout_ms: u32,
     /// Voltage the power-on self-test charges to. A full-energy test (D-15) is
     /// left to the periodic self-test, so that switching on in an emergency is
@@ -462,6 +560,24 @@ impl Default for Config {
             heartbeat_period_ms: 50,
             heartbeat_timeout_ms: 250,
             permit_window_ms: 200,
+            sequence_start_timeout_ms: 50,
+            sequence_end_timeout_ms: 60,
+            relay_return_timeout_ms: 50,
+            front_end_recovery_ms: 1_500,
+            post_shock_settle_ms: 20,
+            shock_residual_min_percent: 10,
+            shock_residual_max_percent: 60,
+            shock_not_delivered_percent: 80,
+            hardware_time_cap_ms: 25,
+            hardware_permit_cap_ms: 250,
+            test_permit_window_ms: 400,
+            test_permit_max_voltage: Volts(60),
+            test_permits_per_self_test: 4,
+            interlock_probe_ms: 10,
+            test_sequence_timeout_ms: 50,
+            discharge_path_test_ms: 100,
+            discharge_path_max_remaining_percent: 90,
+            mode_contacts_disagree_ms: 500,
             disagreement_persist_ms: 500,
             pad_debounce_ms: 200,
             analysis_time_limit_ms: 12_000,
@@ -578,6 +694,14 @@ pub enum ConfigError {
     /// The capacitor life is zero or the "service soon" percentage is not
     /// 1 to 100.
     CapacitorLife,
+    /// The shock-sequence times or limits (D-59, D-61) contradict each
+    /// other: a time is zero; the sequence-end timeout does not exceed the
+    /// hardware time cap; the permit window is not shorter than the
+    /// hardware permit cap, or the test permit window not longer; the
+    /// residual percentages are not in order; the test permit voltage is
+    /// not below the self-test voltage; or the path-test percentage is not
+    /// 1 to 99.
+    ShockSequence,
 }
 
 impl Config {
@@ -625,6 +749,9 @@ impl Config {
         let normal_shock = before_countdown
             .saturating_add(self.countdown_ms)
             .saturating_add(self.delivery_timeout_ms)
+            .saturating_add(self.sequence_start_timeout_ms)
+            .saturating_add(self.sequence_end_timeout_ms)
+            .saturating_add(self.post_shock_settle_ms)
             .saturating_add(self.disarm_time_limit_ms);
         if self.max_charged_ms <= normal_shock {
             return Err(ConfigError::MaxChargedTooShort);
@@ -696,7 +823,64 @@ impl Config {
         if self.capacitor_life_charges == 0 || !(1..=100).contains(&self.capacitor_service_soon_percent) {
             return Err(ConfigError::CapacitorLife);
         }
+        if !self.sequence_ok() {
+            return Err(ConfigError::ShockSequence);
+        }
         Ok(())
+    }
+
+    fn sequence_ok(&self) -> bool {
+        let positive = [
+            self.sequence_start_timeout_ms,
+            self.sequence_end_timeout_ms,
+            self.relay_return_timeout_ms,
+            self.front_end_recovery_ms,
+            self.post_shock_settle_ms,
+            self.hardware_time_cap_ms,
+            self.hardware_permit_cap_ms,
+            self.test_permit_window_ms,
+            self.interlock_probe_ms,
+            self.test_sequence_timeout_ms,
+            self.discharge_path_test_ms,
+            self.mode_contacts_disagree_ms,
+            u32::from(self.test_permits_per_self_test),
+            u32::from(self.test_permit_max_voltage.0),
+        ]
+        .iter()
+        .all(|t| *t > 0);
+        positive
+            && self.sequence_end_timeout_ms > self.hardware_time_cap_ms
+            && self.permit_window_ms < self.hardware_permit_cap_ms
+            && self.test_permit_window_ms > self.hardware_permit_cap_ms
+            && self.shock_residual_min_percent > 0
+            && self.shock_residual_min_percent < self.shock_residual_max_percent
+            && self.shock_residual_max_percent < self.shock_not_delivered_percent
+            && self.shock_not_delivered_percent <= 100
+            && self.test_permit_max_voltage < self.self_test_voltage
+            && (1..=99).contains(&self.discharge_path_max_remaining_percent)
+    }
+
+    /// What a controller concludes from its own capacitor reading after a
+    /// sequence the hardware reports completed, against the planned
+    /// voltage (D-59): delivered, not delivered, or implausible. The two
+    /// controllers apply it independently to their own readings.
+    #[must_use]
+    pub fn check_shock_residual(&self, reading: Volts, plan: Volts) -> crate::link::ShockCheck {
+        use crate::link::ShockCheck;
+        let r = u32::from(reading.0) * 100;
+        let p = u32::from(plan.0);
+        if p == 0 {
+            return ShockCheck::Implausible;
+        }
+        if r >= p * u32::from(self.shock_not_delivered_percent) {
+            ShockCheck::NotDelivered
+        } else if r >= p * u32::from(self.shock_residual_min_percent)
+            && r <= p * u32::from(self.shock_residual_max_percent)
+        {
+            ShockCheck::Delivered
+        } else {
+            ShockCheck::Implausible
+        }
     }
 
     fn heat_ok(&self) -> bool {

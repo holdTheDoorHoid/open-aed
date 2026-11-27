@@ -5,7 +5,7 @@
 
 use super::mock::{Board, SupView};
 use crate::events::Event;
-use crate::interlock::bridge_may_fire;
+use crate::interlock::sequence_may_start;
 use crate::link::{MainStatus, SupervisorFault};
 use crate::rescue::RescueState;
 use crate::supervisor::{PermitRefusal, ReleaseReason, Supervisor};
@@ -13,6 +13,7 @@ use crate::Config;
 use aed_types::Volts;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::vec::Vec;
 
 use RescueState as S;
 
@@ -31,6 +32,10 @@ struct SupBench {
     planned: u16,
     /// Temperature the fake main controller reports (D-48).
     claim_temp: Option<crate::heat::DeciC>,
+    /// What the fake main controller's self-test asks for (D-61).
+    test_request: crate::link::TestRequest,
+    /// The fake main controller says it is emptying in the background.
+    emptying: bool,
 }
 
 impl SupBench {
@@ -45,6 +50,8 @@ impl SupBench {
             claim_v: None,
             planned: PLANNED,
             claim_temp: Some(crate::heat::DeciC::from_c(25)),
+            test_request: crate::link::TestRequest::None,
+            emptying: false,
         }
     }
 
@@ -61,6 +68,8 @@ impl SupBench {
             planned_voltage: Volts(if armed { self.planned } else { 0 }),
             armed_for_ms: 0,
             temperature: self.claim_temp,
+            test_request: self.test_request,
+            emptying: self.emptying,
         });
     }
 
@@ -102,6 +111,17 @@ impl SupBench {
         );
         self.claim(S::Countdown);
         self.run_ms(self.config.countdown_ms);
+    }
+
+    /// Fake main: arm, count down, claim delivering, raise the request
+    /// once the permit is up, and let the hardware run for 200 ms.
+    fn deliver(&mut self) {
+        self.arm_and_count_down();
+        self.claim(S::Delivering);
+        self.step();
+        assert!(self.board.permit, "no permit");
+        self.board.request = Some(test_plan());
+        self.run_ms(200);
     }
 
     fn refused(&self, r: PermitRefusal) -> bool {
@@ -447,10 +467,11 @@ fn supervisor_alone_cannot_fire() {
 fn permit_with_request_fires_only_while_both_hold() {
     // With request and permit both present, releasing either hold blocks the shock.
     for (main_hold, sup_hold) in [(true, false), (false, true), (false, false)] {
-        assert!(!bridge_may_fire(
+        assert!(!sequence_may_start(
             true,
             true,
-            crate::interlock::discharge_path_active(main_hold, sup_hold)
+            crate::interlock::discharge_path_active(main_hold, sup_hold),
+            false
         ));
     }
 }
@@ -492,8 +513,38 @@ fn provoke(kind: SupervisorFault) -> SupBench {
             s.board.cancel = true;
             s.run_ms(s.config.cancel_stuck_ms + 100);
         }
+        SupervisorFault::ShockImplausible => {
+            // The capacitor falls to almost nothing: no plan does that.
+            s.board.residual = 0.02;
+            s.deliver();
+        }
+        SupervisorFault::SequenceTripped => {
+            // A stuck phase timer: the hardware time cap ends the sequence.
+            s.board.timer_stuck = true;
+            s.deliver();
+        }
+        SupervisorFault::SequenceWithoutPermit => {
+            // A shorted permit path: the main controller's request alone
+            // starts a sequence the supervisor never permitted.
+            s.claim(S::Charging);
+            s.run_ms(2_000);
+            s.board.permit_stuck_on = true;
+            s.board.request = Some(test_plan());
+            s.run_ms(100);
+        }
     }
     s
+}
+
+/// A shock plan for the fake main controller to raise.
+fn test_plan() -> aed_types::ShockPlan {
+    aed_types::ShockPlan {
+        charge_voltage: Volts(PLANNED),
+        phase1: aed_types::Micros(5_000),
+        interphase: aed_types::Micros(500),
+        phase2: aed_types::Micros(3_000),
+        expected_energy: aed_types::Decijoules(1_500),
+    }
 }
 
 #[test]
@@ -504,6 +555,9 @@ fn supervisor_alarm_is_on_for_every_supervisor_fault_kind() {
         SupervisorFault::Overvoltage,
         SupervisorFault::VoltageDisagreement,
         SupervisorFault::CancelStuck,
+        SupervisorFault::ShockImplausible,
+        SupervisorFault::SequenceTripped,
+        SupervisorFault::SequenceWithoutPermit,
     ] {
         let mut s = provoke(kind);
         assert_eq!(s.sup.fault(), Some(kind));
@@ -678,4 +732,253 @@ fn no_already_used_refusal_is_recorded_for_a_delayed_delivering_echo() {
         !s.refused(PermitRefusal::AlreadyUsed),
         "spurious 'already used' refusal recorded"
     );
+}
+
+// ----- consent starts a shock, it need not last through it (D-59) ---------------
+
+fn withdrawn(s: &SupBench) -> Vec<crate::supervisor::PermitWithdrawal> {
+    s.sup
+        .events()
+        .iter()
+        .filter_map(|e| match e.event {
+            Event::SupervisorPermitWithdrawn(r) => Some(r),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn supervisor_keeps_its_permit_while_its_own_pad_reading_is_open_and_the_voltage_falls() {
+    // Review R-1. The mock reads both pad measurements open from the moment
+    // the relay starts to move, and the voltage drops through the pulse.
+    let mut s = SupBench::new();
+    s.board.relay_transfer_us = 8_000;
+    s.arm_and_count_down();
+    s.claim(S::Delivering);
+    s.step();
+    assert!(s.board.permit);
+    s.board.request = Some(test_plan());
+    let mut saw_open_with_permit = false;
+    for _ in 0..50 {
+        s.step();
+        if s.board.front_ends_blind() && s.board.permit {
+            saw_open_with_permit = true;
+        }
+        if s.board.latch.status.started() {
+            break;
+        }
+    }
+    assert!(saw_open_with_permit, "the pads never read open while the permit was up");
+    assert!(s.board.latch.status.started(), "no sequence");
+    s.run_ms(100);
+    assert_eq!(s.board.fires.len(), 1);
+    assert!(withdrawn(&s).is_empty(), "{:?}", withdrawn(&s));
+    assert_eq!(s.sup.shock_check(), Some(crate::link::ShockCheck::Delivered));
+    assert_eq!(s.sup.fault(), None);
+}
+
+#[test]
+fn before_the_start_the_permit_is_withdrawn_only_for_cancel_heat_overvoltage_a_fault_or_the_main_leaving() {
+    use crate::supervisor::PermitWithdrawal as W;
+    type Setup = fn(&mut SupBench);
+    let cases: [(&str, Setup, W); 4] = [
+        ("cancel", |s| s.board.cancel = true, W::Cancel),
+        ("too hot", |s| {
+            s.board.sup_temp = Some(crate::heat::DeciC::from_c(70));
+            s.claim_temp = Some(crate::heat::DeciC::from_c(66));
+            s.claim(S::Delivering);
+        }, W::TooHot),
+        ("overvoltage (latched)", |s| s.board.cap_v = 2_300.0, W::Fault),
+        ("main left delivering", |s| s.claim(S::Cpr), W::MainNotDelivering),
+    ];
+    for (name, setup, expect) in cases {
+        let mut s = SupBench::new();
+        // The relay takes long enough that the sequence cannot start.
+        s.board.relay_transfer_us = 150_000;
+        s.arm_and_count_down();
+        s.claim(S::Delivering);
+        s.step();
+        assert!(s.board.permit, "{name}");
+        s.board.request = Some(test_plan());
+        s.run_ms(10);
+        assert_eq!(s.board.latch.status, crate::hal::SequenceStatus::Armed, "{name}");
+        // The pads already read open, and the voltage may wander: neither
+        // takes the permit back.
+        assert!(s.board.front_ends_blind() || s.board.relay != crate::hal::RelayPosition::Bridge);
+        assert!(s.board.permit, "{name}: withdrawn for the readings the shock disturbs");
+        setup(&mut s);
+        s.run_ms(10);
+        assert!(!s.board.permit, "{name}");
+        assert_eq!(withdrawn(&s), std::vec![expect], "{name}");
+        assert!(s.board.fires.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn an_unused_permit_is_recorded_and_released_without_a_fault() {
+    let mut s = SupBench::new();
+    s.board.bridge_no_start = true;
+    s.arm_and_count_down();
+    s.claim(S::Delivering);
+    s.step();
+    s.board.request = Some(test_plan());
+    s.run_ms(s.config.permit_window_ms + 20);
+    assert!(!s.board.permit);
+    assert!(s
+        .sup
+        .events()
+        .iter()
+        .any(|e| e.event == Event::SupervisorPermitUnused));
+    assert_eq!(s.sup.fault(), None);
+}
+
+#[test]
+fn the_voltage_comparison_is_suspended_across_the_pulse_but_only_for_a_bounded_time() {
+    let mut s = SupBench::new();
+    s.deliver();
+    // The fake main keeps claiming "delivering" at the planned voltage (a
+    // stale claim), while the capacitor sits at 20 % after the shock and
+    // both still hold.
+    s.claim_v = Some(PLANNED);
+    s.board.main_hold = true;
+    let c = s.config;
+    let suspend = c.permit_window_ms + c.sequence_end_timeout_ms + c.post_shock_settle_ms + c.heartbeat_timeout_ms;
+    // deliver() already ran 200 ms of it.
+    s.run_ms(suspend - 250);
+    assert_eq!(s.sup.fault(), None, "disagreement fault during the pulse");
+    s.run_ms(c.disagreement_persist_ms + 200);
+    assert_eq!(s.sup.fault(), Some(SupervisorFault::VoltageDisagreement));
+}
+
+#[test]
+fn a_sequence_that_did_not_empty_the_capacitor_is_reported_not_delivered_without_a_fault() {
+    let mut s = SupBench::new();
+    s.board.residual = 1.0;
+    s.deliver();
+    assert_eq!(s.sup.shock_check(), Some(crate::link::ShockCheck::NotDelivered));
+    assert_eq!(s.sup.fault(), None);
+    assert_eq!(s.board.report_inbox.map(|r| r.shock_check), Some(Some(crate::link::ShockCheck::NotDelivered)));
+}
+
+#[test]
+fn no_permit_is_given_while_the_sequence_logic_is_not_idle() {
+    let mut s = SupBench::new();
+    s.arm_and_count_down();
+    s.board.latch.status = crate::hal::SequenceStatus::LockedOut;
+    s.board.permit_stuck_on = true; // keeps the lockout from clearing
+    s.claim(S::Delivering);
+    s.run_ms(20);
+    assert!(!s.board.permit || s.board.permit_stuck_on && !s.sup.permit_active());
+    assert!(!s.sup.permit_active());
+    assert!(s.refused(PermitRefusal::SequenceNotIdle));
+}
+
+// ----- the self-test's test permit (D-61) ----------------------------------------
+
+#[test]
+fn the_test_permit_is_given_only_in_the_self_test_only_below_its_voltage_bounded_and_counted() {
+    use crate::link::TestRequest;
+    use crate::supervisor::TestPermitRefusal;
+    let refused = |s: &SupBench, r: TestPermitRefusal| {
+        s.sup
+            .events()
+            .iter()
+            .any(|e| e.event == Event::SupervisorTestPermitRefused(r))
+    };
+    // Outside the self-test: never.
+    let mut s = SupBench::new();
+    s.test_request = TestRequest::TestPermit;
+    for state in [S::AttachPads, S::Charging, S::Countdown, S::Delivering, S::Cpr, S::Fault] {
+        s.claim(state);
+        s.run_ms(60);
+        assert!(!s.board.test_permit, "{state:?}");
+    }
+    // In the self-test: given, and bounded.
+    let mut s = SupBench::new();
+    s.test_request = TestRequest::TestPermit;
+    s.claim(S::SelfTest);
+    s.run_ms(4);
+    assert!(s.board.test_permit);
+    assert!(s.sup.test_permit_active());
+    s.run_ms(s.config.test_permit_window_ms + 10);
+    assert!(!s.board.test_permit, "the test permit outlasted its window");
+    assert!(s.sup.events().iter().any(|e| e.event == Event::SupervisorTestPermitExpired));
+    // Not again until the main controller stops asking.
+    s.run_ms(100);
+    assert!(!s.board.test_permit);
+    // At most four per self-test.
+    let mut given = 0;
+    for _ in 0..6 {
+        s.test_request = TestRequest::None;
+        s.claim(S::SelfTest);
+        s.run_ms(10);
+        s.test_request = TestRequest::TestPermit;
+        s.claim(S::SelfTest);
+        s.run_ms(10);
+        given += u32::from(s.board.test_permit);
+    }
+    assert_eq!(given, u32::from(s.config.test_permits_per_self_test) - 1);
+    assert!(refused(&s, TestPermitRefusal::TooMany));
+    // Never with the capacitor at or above the test voltage limit.
+    let mut s = SupBench::new();
+    s.board.cap_v = 80.0;
+    s.test_request = TestRequest::TestPermit;
+    s.claim(S::SelfTest);
+    s.run_ms(20);
+    assert!(!s.board.test_permit);
+    assert!(refused(&s, TestPermitRefusal::VoltageTooHigh));
+    // Withdrawn if the capacitor rises above it.
+    let mut s = SupBench::new();
+    s.test_request = TestRequest::TestPermit;
+    s.claim(S::SelfTest);
+    s.run_ms(4);
+    assert!(s.board.test_permit);
+    s.board.cap_v = 80.0;
+    s.run_ms(4);
+    assert!(!s.board.test_permit);
+}
+
+#[test]
+fn the_supervisor_lets_go_of_path_b_when_the_self_test_asks_and_only_then() {
+    use crate::link::TestRequest;
+    let mut s = SupBench::new();
+    s.claim(S::SelfTest);
+    s.run_ms(20);
+    assert!(s.board.sup_hold);
+    s.test_request = TestRequest::ReleasePathB;
+    s.claim(S::SelfTest);
+    s.run_ms(4);
+    assert!(!s.board.sup_hold);
+    assert!(s
+        .sup
+        .events()
+        .iter()
+        .any(|e| e.event == Event::SupervisorReleasedHold(ReleaseReason::SelfTestPathB)));
+    // The same request outside the self-test means nothing.
+    s.claim(S::Charging);
+    s.run_ms(20);
+    assert!(s.board.sup_hold);
+}
+
+#[test]
+fn a_main_controller_that_says_it_is_emptying_is_not_compared_for_a_bounded_time() {
+    // Found by the time-resolved simulator (campaign seed 1758, extended):
+    // after a hands-on hold-back the main controller lets go of path A and
+    // analyses again; the supervisor still holds path B, so the capacitor
+    // empties through one path while the main controller's claim is a
+    // heartbeat (plus a slow wire) old. That must not be a disagreement.
+    let mut s = SupBench::new();
+    s.arm_and_count_down();
+    s.emptying = true;
+    s.claim_v = Some(PLANNED); // stale: the true voltage is falling
+    s.board.main_hold = false;
+    s.claim(S::Charging);
+    s.run_ms(s.config.disarm_time_limit_ms - 100);
+    assert_eq!(s.sup.fault(), None);
+    // But not for ever: a claim stuck at "emptying" with a voltage that
+    // disagrees is still caught once the emptying limit has passed.
+    s.board.main_hold = true;
+    s.board.cap_v = 1_000.0;
+    s.run_ms(200 + s.config.disagreement_persist_ms + 100);
+    assert_eq!(s.sup.fault(), Some(SupervisorFault::VoltageDisagreement));
 }

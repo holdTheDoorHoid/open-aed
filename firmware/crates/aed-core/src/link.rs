@@ -35,6 +35,44 @@ pub struct MainStatus {
     /// reading is far above this one (then its own sensor is the suspect,
     /// and one failed sensor must not block every shock).
     pub temperature: Option<DeciC>,
+    /// What the main controller's self-test asks of the supervisor (D-61).
+    /// Honoured only while `state` is [`RescueState::SelfTest`].
+    pub test_request: TestRequest,
+    /// True while the main controller has let go of its discharge path and
+    /// is waiting for the capacitor to empty in the background. The
+    /// voltage then falls fast (one path alone: a 0.4 s time constant in
+    /// the model) while the claim above is up to a heartbeat plus the wire
+    /// delay old, so the supervisor does not compare the two then, for at
+    /// most [`crate::Config::disarm_time_limit_ms`].
+    pub emptying: bool,
+}
+
+/// What the main controller's self-test asks of the supervisor (D-61).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TestRequest {
+    /// Nothing.
+    #[default]
+    None,
+    /// Give the bounded, low-voltage test permit.
+    TestPermit,
+    /// Let go of the discharge path (path B) for a moment, so the main
+    /// controller can time path B emptying the capacitor on its own.
+    ReleasePathB,
+}
+
+/// What a controller concluded about a finished shock sequence from its own
+/// capacitor reading afterwards ([`crate::Config::check_shock_residual`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShockCheck {
+    /// The voltage fell into the range a delivered shock leaves.
+    Delivered,
+    /// The voltage hardly fell: no energy left the capacitor.
+    NotDelivered,
+    /// The voltage fell further than any planned shock can take it, or
+    /// stopped part-way: something other than the plan happened.
+    Implausible,
+    /// The hardware reported its time cap or over-current trip.
+    HardwareTrip,
 }
 
 /// A fault the supervisor has latched. Once latched it stays until power-off:
@@ -54,6 +92,16 @@ pub enum SupervisorFault {
     /// a break for [`crate::Config::cancel_stuck_ms`] (D-31). A stuck cancel
     /// would block every permit, silently, so it is a fault.
     CancelStuck,
+    /// After a sequence, the capacitor voltage fell to a level no planned
+    /// shock leaves, or stopped part-way (D-59).
+    ShockImplausible,
+    /// The hardware reported that its time cap or over-current trip ended a
+    /// sequence (D-59).
+    SequenceTripped,
+    /// The hardware reported a sequence running while the supervisor had
+    /// given no permit and had not just withdrawn one: a consent path is
+    /// shorted.
+    SequenceWithoutPermit,
 }
 
 /// The supervisor's report back to the main controller.
@@ -78,4 +126,9 @@ pub struct SupervisorReport {
     /// The supervisor's own temperature reading (capacitor body), if it
     /// trusts it.
     pub temperature: Option<DeciC>,
+    /// True while the supervisor is giving the self-test's test permit.
+    pub test_permit: bool,
+    /// The supervisor's own verdict on the most recent shock sequence of
+    /// this arming, from its own voltage reading, if it has one.
+    pub shock_check: Option<ShockCheck>,
 }
