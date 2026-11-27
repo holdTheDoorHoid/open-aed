@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/aed-types", "crates/aed-rhythm", "crates/aed-waveform", "crates/aed-core", "crates/aed-sim", "crates/aed-eval"]
+members = ["crates/aed-types", "crates/aed-rhythm", "crates/aed-waveform", "crates/aed-core", "crates/aed-sim", "crates/aed-cpr", "crates/aed-cpr-eval", "crates/aed-eval"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ aed-types = { path = "crates/aed-types" }
 aed-rhythm = { path = "crates/aed-rhythm" }
 aed-waveform = { path = "crates/aed-waveform" }
 aed-core = { path = "crates/aed-core" }
+aed-cpr = { path = "crates/aed-cpr" }
 # The only third-party dependency allowed on the device side. See DEPENDENCIES.md.
 libm = "0.2"
 

@@ -10,6 +10,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "aed-cpr"
+version = "0.1.0"
+dependencies = [
+ "aed-types",
+ "libm",
+]
+
+[[package]]
+name = "aed-cpr-eval"
+version = "0.1.0"
+dependencies = [
+ "aed-cpr",
+ "aed-types",
+]
+
+[[package]]
 name = "aed-eval"
 version = "0.1.0"
 dependencies = [
