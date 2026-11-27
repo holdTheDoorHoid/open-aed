@@ -80,10 +80,81 @@ fn cancel_during_countdown() {
 
 #[test]
 fn pads_off_during_charge() {
+    // No shock had been advised yet, so the one instruction is "Attach pads"
+    // (finding F-6); the charge from the analysis is burned off.
     let r = standard("pads-off-during-charge");
-    assert!(r.said(Prompt::CheckPads));
     assert!(r.said(Prompt::AttachPads));
-    assert_eq!(r.charges_started, 2, "aborted charge, then a new one after re-attaching");
+    let shock_at = r.shocks.first().unwrap().at_ms;
+    let charges_before_shock = r
+        .timeline
+        .iter()
+        .filter(|e| e.t_ms < shock_at && e.text.starts_with("Charging to"))
+        .count();
+    assert_eq!(charges_before_shock, 2, "aborted charge, then a new one after re-attaching");
+    // The aborted charge, and the one from the analysis after the shock
+    // (normal rhythm), were burned off.
+    assert_eq!(usize::from(r.charges_burned), r.charges_started as usize - 1);
+}
+
+#[test]
+fn pads_off_during_countdown() {
+    // The shock was advised and is abandoned: "Check pads." then "Attach
+    // pads", never "Start CPR" in between (finding F-6).
+    let r = standard("pads-off-during-countdown");
+    let p: Vec<Prompt> = r.prompts.iter().map(|&(_, p)| p).collect();
+    let i = p.iter().position(|&x| x == Prompt::CheckPads).unwrap();
+    assert_eq!(p.get(i + 1), Some(&Prompt::AttachPads));
+    let before_shock: Vec<Prompt> = r
+        .prompts
+        .iter()
+        .take_while(|&&(t, _)| t < r.shocks.first().unwrap().at_ms)
+        .map(|&(_, p)| p)
+        .collect();
+    assert!(!before_shock.contains(&Prompt::StartCpr));
+}
+
+#[test]
+fn pads_190_throughout() {
+    // D-32: pads on but above the shock range. The device analyses, asks
+    // for the pads to be pressed, gives no shock and sends the responder to
+    // CPR. Never silent, and never only "attach pads".
+    let r = standard("pads-190-throughout");
+    assert!(r.shocks.is_empty());
+    let pads_on = r.pads_on_at_ms.unwrap();
+    assert!(
+        !r.prompts.iter().any(|&(t, p)| p == Prompt::AttachPads && t > pads_on),
+        "the pads are on: never 'attach pads' after that"
+    );
+    assert!(r.said(Prompt::PressPadsFirmly));
+    assert!(r.said(Prompt::PadContactPoorNoShock));
+    assert!(r.entered(RescueState::AnalysingCharging));
+    assert!(r.entered(RescueState::Cpr));
+    let p: Vec<Prompt> = r.prompts.iter().map(|&(_, p)| p).collect();
+    for (i, x) in p.iter().enumerate() {
+        if *x == Prompt::PadContactPoorNoShock {
+            assert_eq!(p.get(i + 1), Some(&Prompt::StartCpr));
+        }
+    }
+    // Every charge was burned off and the capacitor ended empty.
+    assert!(r.charges_burned >= 1);
+    assert!(r.final_cap_v < f64::from(r.config.empty_voltage.0));
+}
+
+#[test]
+fn pads_190_pressed_to_150() {
+    let r = standard("pads-190-pressed-to-150");
+    assert!(r.said(Prompt::PressPadsFirmly));
+    let s = r.shocks.first().unwrap();
+    assert_eq!(s.patient_ohms, Some(150.0));
+    assert!(!r.said(Prompt::PadContactPoorNoShock));
+}
+
+#[test]
+fn stray_cancel_at_switch_on() {
+    // D-31: ignored during the self-test; the device then works normally.
+    let r = standard("stray-cancel-at-switch-on");
+    assert!(!r.said(Prompt::DeviceFaultContinueCpr));
+    assert!(r.timeline.iter().any(|e| e.text.contains("ignored (D-31)")));
 }
 
 #[test]
@@ -247,7 +318,25 @@ fn fault_pads_off() {
 fn fault_cancel() {
     let r = standard("fault-cancel");
     assert!(r.said(Prompt::AnalysisCancelled));
-    assert_eq!(r.charges_started, 0);
+    // The first analysis was charging (D-29); cancel ended it before any
+    // shock was advised, and that charge was burned off.
+    let first_cpr = r.states.iter().find(|&&(_, s)| s == RescueState::Cpr).unwrap().0;
+    assert!(!r.states.iter().any(|&(t, s)| s == RescueState::Countdown && t < first_cpr));
+}
+
+#[test]
+fn fault_cancel_stuck() {
+    // D-31: a cancel stuck down is a fault with its own prompt, from both
+    // controllers' own views of the button.
+    let r = standard("fault-cancel-stuck");
+    assert!(matches!(
+        r.final_fault,
+        Some(FaultKind::CancelStuck | FaultKind::Supervisor(SupervisorFault::CancelStuck))
+    ));
+    assert_eq!(r.last_prompt(), Some(Prompt::CancelStuckContinueCpr));
+    assert_eq!(r.supervisor_fault, Some(SupervisorFault::CancelStuck));
+    let stuck_from = r.injected.first().unwrap().0;
+    assert!(r.shocks.iter().all(|s| s.at_ms < stuck_from));
 }
 
 #[test]
@@ -269,4 +358,32 @@ fn simulation_is_deterministic() {
     let a = run_named("noisy");
     let b = run_named("noisy");
     assert_eq!(a.timeline, b.timeline);
+}
+
+#[test]
+fn charger_is_never_asked_for_before_the_supervisor_holds() {
+    // D-29 with the hardware rule D-25: at every analysis start (the first
+    // straight after the self-test or after the pads go on, and after each
+    // CPR period), the main controller asks for the charger only once the
+    // supervisor holds the discharge path, including on a slow message wire
+    // and with drifting clocks.
+    for name in ["adult-vf", "adult-vf-two-shocks", "child-vf", "normal-rhythm", "slow-link", "clock-drift"] {
+        let s = aed_sim::by_name(name).unwrap();
+        let mut sim = aed_sim::Simulation::new(&s).unwrap();
+        let mut asked = 0;
+        while sim.plant().borrow().now_ms < s.duration_ms {
+            sim.step();
+            let p = sim.plant().borrow();
+            let charging_for_a_shock = p.charger_target.is_some_and(|v| v.0 > 1_000);
+            if charging_for_a_shock {
+                asked += 1;
+                assert!(
+                    p.supervisor_hold,
+                    "{name}: t={} charger asked for while the supervisor is not holding",
+                    p.now_ms
+                );
+            }
+        }
+        assert!(asked > 0, "{name}: never charged");
+    }
 }

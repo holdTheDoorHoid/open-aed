@@ -22,6 +22,19 @@
 //!    charged too long; the voltage goes over the limit; its reading and the
 //!    main controller's claim disagree; or cancel is pressed. The first four
 //!    are faults and are latched until power-off.
+//!
+//!    With charging during analysis (D-29) the main controller also says
+//!    "analysing and charging" ([`RescueState::AnalysingCharging`]). The
+//!    supervisor holds then, and accepts a charged capacitor, but never
+//!    gives a permit from it: a permit still needs the countdown, held
+//!    without a break for the full countdown time on its own clock.
+//!
+//!    **Cancel** (D-31): while the main controller says it is running its
+//!    switch-on self-test, the supervisor ignores the cancel control, as the
+//!    main controller does, so a stray press cannot fail the self-test. A
+//!    cancel that reads pressed without a break for
+//!    [`Config::cancel_stuck_ms`] is latched as a stuck-button fault, since
+//!    a stuck cancel would otherwise block every permit without a word.
 //! 3. **Alarm.** It has its own fault alarm (a buzzer and light only it
 //!    drives), switched on whenever a fault is latched, so the device is
 //!    not silent if the main controller has died. It also sounds the alarm,
@@ -42,7 +55,7 @@ use crate::events::{Event, EventRecord, SUPERVISOR_EVENT_CAPACITY};
 use crate::hal::SupervisorHardware;
 use crate::link::{MainStatus, SupervisorFault, SupervisorReport};
 use crate::rescue::RescueState;
-use aed_types::{Millis, Ohms, Volts, MAX_PATIENT_OHMS, MIN_PATIENT_OHMS};
+use aed_types::{in_shock_range, Millis, Ohms, Volts};
 
 /// Why the supervisor refused a permit. Recorded in its event record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +79,8 @@ pub enum PermitRefusal {
     VoltageDisagreesWithMain,
     /// The supervisor's voltage reading is not at the planned charge voltage.
     VoltageNotAtPlan,
-    /// The supervisor's own pad reading is outside the patient range.
+    /// The supervisor's own pad reading is outside the shock range (25 to
+    /// 175 Ω). The wider pad-sensing range of D-32 does not apply here.
     PadsOutOfRange,
 }
 
@@ -94,6 +108,8 @@ pub struct Supervisor {
     last_status_at: Option<Millis>,
     countdown_since: Option<Millis>,
     permit_used: bool,
+    permit_given_at: Option<Millis>,
+    cancel_since: Option<Millis>,
     last_refusal: Option<PermitRefusal>,
     permit_until: Option<Millis>,
     holding: bool,
@@ -108,26 +124,13 @@ pub struct Supervisor {
 
 /// True for the states in which the main controller may want the capacitor charged.
 const fn holdable(state: RescueState) -> bool {
-    matches!(
-        state,
-        RescueState::SelfTest
-            | RescueState::Charging
-            | RescueState::Countdown
-            | RescueState::Delivering
-    )
+    matches!(state, RescueState::SelfTest) || state.holds_charge()
 }
 
-/// True for the states that make up one "arming" (charging through delivery).
+/// True for the states that make up one "arming" (charging, including
+/// charging during analysis, through delivery).
 const fn armed(state: RescueState) -> bool {
-    matches!(
-        state,
-        RescueState::Charging | RescueState::Countdown | RescueState::Delivering
-    )
-}
-
-/// True if a resistance is in the range the device must shock into.
-fn in_patient_range(ohms: Ohms) -> bool {
-    ohms >= MIN_PATIENT_OHMS && ohms <= MAX_PATIENT_OHMS
+    state.holds_charge()
 }
 
 impl Supervisor {
@@ -146,6 +149,8 @@ impl Supervisor {
             last_status_at: None,
             countdown_since: None,
             permit_used: false,
+            permit_given_at: None,
+            cancel_since: None,
             last_refusal: None,
             permit_until: None,
             holding: false,
@@ -210,12 +215,22 @@ impl Supervisor {
             .is_some_and(|t| now.since(t) <= self.config.heartbeat_timeout_ms);
         let voltage = hw.capacitor_voltage();
         let pads = hw.pad_resistance();
-        let cancel = hw.cancel_pressed();
+        let raw_cancel = hw.cancel_pressed();
+        if raw_cancel {
+            let since = *self.cancel_since.get_or_insert(now);
+            if now.since(since) >= self.config.cancel_stuck_ms {
+                self.latch(now, SupervisorFault::CancelStuck);
+            }
+        } else {
+            self.cancel_since = None;
+        }
 
         self.check_latched_faults(now, fresh, voltage);
+        let claim = self.last_status.map(|s| s.state);
+        // Ignored during the main controller's switch-on self-test (D-31).
+        let cancel = raw_cancel && claim != Some(RescueState::SelfTest);
 
         // Decide whether to hold the discharge path open.
-        let claim = self.last_status.map(|s| s.state);
         let hold = self.fault.is_none() && fresh && claim.is_some_and(holdable) && !cancel;
         if self.holding && !hold {
             let reason = if let Some(f) = self.fault {
@@ -254,10 +269,23 @@ impl Supervisor {
                     self.permit_until =
                         Some(Millis(now.0.saturating_add(self.config.permit_window_ms)));
                     self.permit_used = true;
+                    self.permit_given_at = Some(now);
                     self.events.push(now, Event::SupervisorPermitted);
                 }
                 Err(reason) => {
-                    if self.last_refusal != Some(reason) {
+                    // Finding F-5: right after a permit, the main controller's
+                    // "delivering" can still be arriving in delayed status
+                    // messages after the shock has gone. That is not a second
+                    // request, so it is not recorded as a refusal until the
+                    // claim has outlasted the permit window and a heartbeat
+                    // timeout.
+                    let grace = self
+                        .config
+                        .permit_window_ms
+                        .saturating_add(self.config.heartbeat_timeout_ms);
+                    let echo_of_used_permit = reason == PermitRefusal::AlreadyUsed
+                        && self.permit_given_at.is_some_and(|t| now.since(t) <= grace);
+                    if !echo_of_used_permit && self.last_refusal != Some(reason) {
                         self.last_refusal = Some(reason);
                         self.events.push(now, Event::SupervisorRefused(reason));
                     }
@@ -283,13 +311,15 @@ impl Supervisor {
         if !armed(status.state) {
             // The arming (if any) is over: the next one gets a fresh permit.
             self.permit_used = false;
+            self.permit_given_at = None;
             self.last_refusal = None;
             self.countdown_since = None;
         } else if status.state == RescueState::Countdown {
             if self.countdown_since.is_none() {
                 self.countdown_since = Some(now);
             }
-        } else if status.state == RescueState::Charging {
+        } else if status.state != RescueState::Delivering {
+            // Charging, or analysing and charging: not counting down.
             self.countdown_since = None;
         }
         self.last_status = Some(status);
@@ -366,15 +396,17 @@ impl Supervisor {
         if voltage > self.config.overvoltage_limit {
             return Err(PermitRefusal::Overvoltage);
         }
-        if !self.config.readings_agree(voltage, status.capacitor_voltage) {
+        if !self
+            .config
+            .readings_agree(voltage, status.capacitor_voltage)
+        {
             return Err(PermitRefusal::VoltageDisagreesWithMain);
         }
-        if status.planned_voltage.0 == 0
-            || !self.config.is_at_plan(voltage, status.planned_voltage)
+        if status.planned_voltage.0 == 0 || !self.config.is_at_plan(voltage, status.planned_voltage)
         {
             return Err(PermitRefusal::VoltageNotAtPlan);
         }
-        if !in_patient_range(pads) {
+        if !in_shock_range(pads) {
             return Err(PermitRefusal::PadsOutOfRange);
         }
         Ok(())

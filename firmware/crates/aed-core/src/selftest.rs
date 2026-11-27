@@ -8,6 +8,11 @@
 //! discharge empties the capacitor in time; and that the pads are present and
 //! in date.
 //!
+//! The charge step's time limit is scaled to the test voltage
+//! ([`Config::charge_time_limit_for`]): 1 s for the 400 V switch-on test, so
+//! a weak charger is reported about a second into the test (finding F-7),
+//! and about 11.4 s for a full-energy test at 1,950 V.
+//!
 //! Per SAFETY.md nothing here tests real hardware yet: it only puts the trait
 //! calls in the right order with the right time limits.
 //!
@@ -46,8 +51,10 @@ pub enum SelfTestFailure {
     PadsMissing,
     /// The pads are past their use-by date. Advisory: the rescue still continues.
     PadsExpired,
-    /// The cancel control was pressed during the self-test.
-    Cancelled,
+    /// The test was stopped from outside before it finished (for example
+    /// the battery failed or the cancel control was found stuck). The
+    /// cancel control itself does NOT stop the self-test (decision D-31).
+    Aborted,
 }
 
 impl SelfTestFailure {
@@ -121,6 +128,12 @@ impl SelfTest {
         }
     }
 
+    /// How long the charge step may take for this test's voltage, ms.
+    #[must_use]
+    pub fn charge_time_limit_ms(&self) -> u32 {
+        self.config.charge_time_limit_for(self.test_voltage)
+    }
+
     /// The voltage this test charges to.
     #[must_use]
     pub const fn test_voltage(&self) -> Volts {
@@ -137,7 +150,7 @@ impl SelfTest {
     pub fn abort(&mut self, hw: &mut impl MainHardware) {
         hw.set_charger(None);
         hw.set_discharge_hold(false);
-        self.step = Step::Finished(Err(SelfTestFailure::Cancelled));
+        self.step = Step::Finished(Err(SelfTestFailure::Aborted));
     }
 
     /// Advance the test. `link` is the latest supervisor report, if any.
@@ -181,7 +194,7 @@ impl SelfTest {
                     Step::Finished(Err(SelfTestFailure::Overvoltage))
                 } else if self.config.reached_plan(v, self.test_voltage) {
                     Step::Agree { since: now }
-                } else if now.since(since) > self.config.charge_time_limit_ms {
+                } else if now.since(since) > self.charge_time_limit_ms() {
                     Step::Finished(Err(SelfTestFailure::ChargeTimeout))
                 } else {
                     Step::Charge { since }

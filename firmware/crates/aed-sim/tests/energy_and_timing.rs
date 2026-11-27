@@ -84,3 +84,46 @@ fn timing_measurements_are_reported() {
     assert!(t.analysis_ms <= cfg.analysis_time_limit_ms);
     assert!(pads_to_shock < 30_000);
 }
+
+/// The battery and heat cost of charging during analysis (D-29), per rescue
+/// (SIMULATED, model energies): every analysis that ends without a shock
+/// burns a full charge off in the internal load. Compared with charging
+/// only once a shock is advised (the design before D-29; 5 s countdown).
+#[test]
+fn battery_and_heat_cost_of_charging_during_analysis_is_reported() {
+    let before = aed_core::Config {
+        countdown_ms: 5_000,
+        charge_during_analysis: false,
+        ..aed_core::Config::default()
+    };
+    let after = aed_core::Config::default();
+    println!("Battery and heat cost per rescue (SIMULATED, model energies, 30 W charger):");
+    println!("| scenario | length | design | analyses | charges burned | charger output J | burned off inside J |");
+    for name in [
+        "adult-vf",
+        "child-vf",
+        "adult-vf-two-shocks",
+        "normal-rhythm",
+        "asystole",
+        "never-stops-compressing",
+        "pads-190-throughout",
+    ] {
+        let s = aed_sim::by_name(name).unwrap();
+        for (design, config) in [("before", before), ("after", after)] {
+            let r = aed_sim::Simulation::with_config(&s, config).unwrap().run();
+            assert_invariants(&r);
+            let analyses = r.states.iter().filter(|&&(_, x)| x.is_analysing()).count();
+            println!(
+                "| {name} | {} | {design} | {analyses} | {} | {:.0} | {:.0} |",
+                secs(s.duration_ms),
+                r.charges_burned,
+                r.charger_energy_j,
+                r.dump_energy_j
+            );
+            if design == "after" && name == "normal-rhythm" {
+                // One full adult charge (about 190 J) burned per analysis.
+                assert_eq!(usize::from(r.charges_burned), analyses);
+            }
+        }
+    }
+}

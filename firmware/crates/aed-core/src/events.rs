@@ -63,6 +63,25 @@ pub enum Event {
     Fault(FaultKind),
     /// The cancel control was pressed.
     CancelPressed,
+    /// The cancel control was pressed during the switch-on self-test and
+    /// ignored, as decision D-31 requires.
+    CancelIgnoredDuringSelfTest,
+    /// The cancel control has read pressed without a break for
+    /// [`crate::Config::cancel_stuck_ms`] and counts as stuck (D-31).
+    CancelStuck,
+    /// The capacitor started charging while the analysis runs (D-29). The
+    /// matching [`Event::ChargeStarted`] gives the voltage.
+    ChargingDuringAnalysis,
+    /// Emptying the capacitor started (in the background: the device does
+    /// not wait for it before its next instruction). [`Event::CapacitorEmptied`]
+    /// confirms it, or the serious fault follows.
+    EmptyingStarted,
+    /// A charge was emptied without a shock: the energy is burned off in
+    /// the internal load (the battery and heat cost of D-29).
+    ChargeBurnedOff,
+    /// The pads are on but read above the shock range (D-32), at this
+    /// resistance.
+    PadContactPoor(Ohms),
     /// The battery became low.
     BatteryLow,
     /// The self-test passed.

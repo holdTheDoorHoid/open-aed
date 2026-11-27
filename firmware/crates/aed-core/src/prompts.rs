@@ -28,11 +28,15 @@ pub enum Prompt {
     /// The analysis could not reach an answer in time. No shock. Always
     /// followed at once by "Start CPR."
     AnalysisInconclusive,
-    /// A shock is advised and the capacitor is charging.
+    /// A shock is advised and the capacitor is already charged (it charged
+    /// during the analysis, D-29): the countdown follows at once.
+    ShockAdvised,
+    /// A shock is advised and the capacitor is still charging.
     ShockAdvisedCharging,
-    /// Charged; the automatic countdown is starting.
+    /// Charged; the automatic countdown is starting ("Stand clear. Three,
+    /// two, one.", D-30).
     StandClear,
-    /// One number of the countdown (5, 4, 3, 2, 1).
+    /// One number of the countdown (3, 2, 1 with the default 3 s countdown).
     Countdown(u8),
     /// The shock was delivered.
     ShockDelivered,
@@ -55,6 +59,16 @@ pub enum Prompt {
     SeriousFaultContinueCpr,
     /// The battery is low.
     LowBattery,
+    /// The pads are on but read above the shock range (poor contact, D-32).
+    /// Said as an analysis starts and repeated during CPR; never while the
+    /// responder must keep hands off.
+    PressPadsFirmly,
+    /// A shock was due but the pads still read above the shock range: no
+    /// shock (D-32). Always followed at once by "Start CPR."
+    PadContactPoorNoShock,
+    /// The cancel control has read pressed for too long and counts as stuck
+    /// (D-31). A stuck cancel would block every shock, so this is a fault.
+    CancelStuckContinueCpr,
 }
 
 impl Prompt {
@@ -71,8 +85,9 @@ impl Prompt {
             Prompt::StopCprAnalysing => "Stop CPR. Analysing. Do not touch the patient.",
             Prompt::DoNotTouchPatient => "Do not touch the patient. Still analysing.",
             Prompt::AnalysisInconclusive => "Unable to analyse. No shock.",
+            Prompt::ShockAdvised => "Shock advised.",
             Prompt::ShockAdvisedCharging => "Shock advised. Charging. Stand clear.",
-            Prompt::StandClear => "Stand clear. Shocking in",
+            Prompt::StandClear => "Stand clear.",
             Prompt::Countdown(n) => countdown_word(n),
             Prompt::ShockDelivered => "Shock delivered.",
             Prompt::ShockNotDelivered => "Shock not delivered.",
@@ -86,6 +101,9 @@ impl Prompt {
                 "Serious device fault. Do not touch the device. Continue CPR."
             }
             Prompt::LowBattery => "Battery low.",
+            Prompt::PressPadsFirmly => "Press pads firmly to bare chest.",
+            Prompt::PadContactPoorNoShock => "Poor pad contact. No shock.",
+            Prompt::CancelStuckContinueCpr => "Cancel button stuck. No shocks. Continue CPR.",
         }
     }
 }

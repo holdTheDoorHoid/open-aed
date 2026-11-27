@@ -3,9 +3,9 @@
 //! both controllers talk to through their own trait, plus fake rhythm
 //! analysis and shock planning.
 //!
-//! The capacitor model is deliberately crude: it charges at a fixed rate,
-//! empties exponentially through the internal load, and keeps 20% of its
-//! voltage after a shock. It exists to exercise the logic, not to predict
+//! The capacitor model is deliberately crude: it charges at constant power
+//! (1,800 V in 8 s), empties exponentially through the internal load, and
+//! keeps 20% of its voltage after a shock. It exists to exercise the logic, not to predict
 //! the real circuit.
 
 use crate::hal::{BatteryStatus, MainHardware, PadCartridge, ShockStatus, SupervisorHardware};
@@ -162,7 +162,10 @@ pub struct Board {
     pub battery: BatteryStatus,
     pub battery_under_load: BatteryStatus,
     pub cartridge: PadCartridge,
-    /// Volts per millisecond (1800 V in 8 s).
+    /// Charging speed: the average volts per millisecond of a charge to
+    /// 1,800 V (in 8 s). The charger is modelled as constant power, so it is
+    /// faster than this at low voltage. A runaway charger climbs at exactly
+    /// this rate.
     pub charge_rate: f32,
     pub charger_broken: bool,
     /// Charger ignores its target and keeps going.
@@ -258,7 +261,12 @@ impl Board {
                 if self.charger_runaway {
                     self.cap_v += self.charge_rate * dt_f;
                 } else if self.cap_v < t {
-                    self.cap_v = (self.cap_v + self.charge_rate * dt_f).min(t);
+                    // Constant power, as a real flyback charger: fast at low
+                    // voltage (current-limited to 5 V/ms), slower near the
+                    // top. 1,800 V in 8 s, 1,000 V in about 2.5 s, 400 V in
+                    // about 0.4 s.
+                    let rate = (self.charge_rate * 900.0 / self.cap_v.max(1.0)).min(5.0);
+                    self.cap_v = (self.cap_v + rate * dt_f).min(t);
                 }
             }
         }
@@ -530,10 +538,12 @@ impl Bench {
         self.states.iter().map(|&(_, s)| s).collect()
     }
 
-    /// Power on and run until the pads are being analysed (pads on, self-test passed).
+    /// Power on and run until the pads are being analysed (pads on, self-test
+    /// passed): `AnalysingCharging` by default, `Analysing` if charging
+    /// during analysis is switched off.
     pub fn run_to_analysing(&mut self) {
         assert!(
-            self.run_until_state(RescueState::Analysing, 30_000),
+            self.run_until(30_000, |b| b.rescue.state().is_analysing()),
             "never reached Analysing; states {:?}",
             self.state_sequence()
         );

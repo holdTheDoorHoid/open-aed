@@ -82,8 +82,20 @@ fn check_frozen(s: &Scenario) -> RunResult {
 }
 
 #[test]
+fn frozen_main_while_charging_during_analysis_empties_the_capacitor_stops_the_charger_and_sounds_the_alarm() {
+    // D-29: the capacitor charges while the analysis runs.
+    let r = check_frozen(&freeze_at(RescueState::AnalysingCharging, 3_000, &[]));
+    assert!(r.shocks.is_empty());
+}
+
+#[test]
 fn frozen_main_while_charging_empties_the_capacitor_stops_the_charger_and_sounds_the_alarm() {
-    let r = check_frozen(&freeze_at(RescueState::Charging, 3_000, &[]));
+    // A slower (20 W) charger, so that the shock is advised before the
+    // charge is done and the device waits in Charging.
+    let mut s = freeze_at(RescueState::Charging, 1_000, &[]);
+    s.plant.charger_watts = 20.0;
+    let r = check_frozen(&s);
+    assert!(r.entered(RescueState::Charging));
     assert!(r.shocks.is_empty());
 }
 

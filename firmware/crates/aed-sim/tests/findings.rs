@@ -6,14 +6,17 @@
 //! `cargo test -p aed-sim --test findings -- --ignored --nocapture`.
 //! The fixes belong in other crates (or in hardware design decisions), not here.
 //! A finding's test is un-parked (no longer ignored) once it is fixed: F-1,
-//! F-2 and F-3 are fixed; their wider tests are in `late_hands_off.rs`,
-//! `voltage_sensors.rs` and `frozen_main.rs`.
+//! F-2 and F-3 are fixed (their wider tests are in `late_hands_off.rs`,
+//! `voltage_sensors.rs` and `frozen_main.rs`), and F-5 to F-9 were fixed
+//! with the owner decisions of 27 November 2026 (D-28, D-31, D-32). Only F-4
+//! is still parked; its exposure is measured by
+//! `measure_how_close_to_delivery_a_rhythm_change_is_still_caught`.
 //! SIMULATION ONLY.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
 mod common;
 
-use aed_core::{PermitRefusal, Prompt, RescueState};
+use aed_core::{Config, PermitRefusal, Prompt, RescueState};
 use aed_rhythm::synth::Rhythm;
 use aed_sim::runner::silence_grace_ms;
 use aed_sim::{by_name, run, Action, Rule, Scenario, Trigger};
@@ -54,22 +57,23 @@ fn measure_how_late_compressions_may_stop() {
     }
 }
 
-/// Finding 2 (FIXED). Two healthy voltage sensors with opposite 2 % gain
-/// errors (+2 %/+10 V and −2 %/−10 V) differ by about 98 V at 1,950 V. The
-/// old single 50 V `voltage_tolerance` made the supervisor latch
-/// `VoltageDisagreement`. The agreement budget now grows with the voltage
-/// (`Config::agree_percent` + `Config::agree_abs_volts`, per sensor, twice
-/// that between the two), separate from the "at the planned voltage" window.
+/// Finding 2 (FIXED). Two healthy voltage sensors with opposite errors
+/// tripped the old single 50 V `voltage_tolerance`. The agreement budget now
+/// grows with the voltage (`Config::agree_percent` + `Config::agree_abs_volts`,
+/// per sensor, twice that between the two), separate from the "at the
+/// planned voltage" window. Since D-28 the sensors are specified to
+/// ±1 % ± 7 V (it was ±2 % ± 10 V when this finding was fixed), so this
+/// checks opposite errors at the edge of THAT specification.
 #[test]
-fn two_percent_sensor_errors_do_not_disable_the_device() {
+fn in_spec_sensor_errors_do_not_disable_the_device() {
     let mut s = by_name("adult-vf").unwrap();
-    s.plant.main_voltage_sensor.gain = 1.02;
-    s.plant.main_voltage_sensor.offset = 10.0;
-    s.plant.supervisor_voltage_sensor.gain = 0.98;
-    s.plant.supervisor_voltage_sensor.offset = -10.0;
+    s.plant.main_voltage_sensor.gain = 1.01;
+    s.plant.main_voltage_sensor.offset = 7.0;
+    s.plant.supervisor_voltage_sensor.gain = 0.99;
+    s.plant.supervisor_voltage_sensor.offset = -7.0;
     let r = run_scenario(&s);
     if r.shocks.len() != 1 {
-        fail(&r, "sensor errors of ±2 % made the device fault");
+        fail(&r, "in-spec sensor errors (±1 % ± 7 V) made the device fault");
     }
 }
 
@@ -135,7 +139,7 @@ fn conversion_one_second_before_delivery_is_not_shocked() {
         Trigger::AfterState {
             state: RescueState::Countdown,
             nth: 1,
-            after_ms: 4_000,
+            after_ms: Config::default().countdown_ms - 1_000,
         },
         Action::SetRhythm(Rhythm::sinus(75.0)),
     ));
@@ -146,12 +150,11 @@ fn conversion_one_second_before_delivery_is_not_shocked() {
     }
 }
 
-/// Finding 5. With a slow message wire (40 ms), after a successful shock
-/// the supervisor still sees "Delivering" in the delayed status and records
-/// "permit refused: already used" in its event record. Harmless to the
-/// shock, but the record then reads as if a permit had been refused.
+/// Finding 5 (FIXED). With a slow message wire (40 ms), after a successful
+/// shock the supervisor still saw "Delivering" in the delayed status and
+/// recorded "permit refused: already used". It now ignores that echo for
+/// the permit window plus a heartbeat timeout after its permit.
 #[test]
-#[ignore = "FINDING: supervisor records a spurious 'permit refused (already used)' after a good shock on a slow link (aed-core supervisor.rs permit decision)"]
 fn no_spurious_refusal_after_a_good_shock() {
     let r = run_scenario(&by_name("slow-link").unwrap());
     assert_eq!(r.shocks.len(), 1);
@@ -160,28 +163,32 @@ fn no_spurious_refusal_after_a_good_shock() {
     }
 }
 
-/// Finding 6. When the pads come off while charging, the device says
-/// "Check pads.", then "Start CPR." and, in the same instant, "Attach pads
-/// to bare chest." Two contradictory instructions at once.
+/// Finding 6 (FIXED). When the pads came off while charging, the device
+/// said "Check pads.", then "Start CPR." and, in the same instant, "Attach
+/// pads to bare chest." Now a pads-off abort goes straight to "Attach pads"
+/// (after "Check pads." if a shock had been advised): with the pads off the
+/// device can neither analyse nor shock, so that is the one instruction.
 #[test]
-#[ignore = "FINDING: 'Start CPR' immediately followed by 'Attach pads' after a pads-off abort (aed-core rescue.rs abort -> disarm -> Cpr -> AttachPads)"]
 fn pads_off_abort_gives_one_clear_instruction() {
-    let r = run_scenario(&by_name("pads-off-during-charge").unwrap());
-    let both_at_once = r.prompts.windows(2).any(|w| {
-        matches!(w, [(t1, Prompt::StartCpr), (t2, Prompt::AttachPads)] if t2.saturating_sub(*t1) < 1_000)
-    });
-    if both_at_once {
-        fail(&r, "'Start CPR' and 'Attach pads' given together");
+    for name in ["pads-off-during-charge", "pads-off-during-countdown", "fault-pads-off"] {
+        let r = run_scenario(&by_name(name).unwrap());
+        let both_at_once = r.prompts.windows(2).any(|w| {
+            matches!(w, [(t1, Prompt::StartCpr), (t2, Prompt::AttachPads)] if t2.saturating_sub(*t1) < 1_000)
+        });
+        if both_at_once {
+            fail(&r, "'Start CPR' and 'Attach pads' given together");
+        }
     }
 }
 
-/// Finding 7. The power-on self-test charges to only 400 V, but waits up to
-/// `Config::charge_time_limit_ms` (12 s, sized for a full 1,950 V charge)
-/// before declaring the charger failed. A good charger needs about 0.1 s
-/// for 400 V. With a weak charger the device says NOTHING for about 12 s
-/// after switch-on (no "attach pads", no fault), then reports the fault.
+/// Finding 7 (FIXED). The power-on self-test charges to only 400 V, but
+/// waited up to the full 12 s charge time limit before declaring the
+/// charger failed, so with a weak charger the device said nothing for about
+/// 12 s. (This was also the cause of the two "silent at switch-on" runs in
+/// the 5,000-run campaign: seeds 430 and 3263, both a weak charger injected
+/// during the self-test.) The charge step's limit is now scaled to its
+/// voltage (`Config::charge_time_limit_for`): 1 s at 400 V.
 #[test]
-#[ignore = "FINDING: self-test charge step uses the full-charge time limit; weak charger means ~12 s of silence at switch-on (aed-core selftest.rs Step::Charge)"]
 fn weak_charger_is_reported_promptly_at_switch_on() {
     let mut s = by_name("fault-charger-weak").unwrap();
     s.script = vec![(Trigger::At(0), Action::Fault(aed_sim::Fault::ChargerWeak))];
@@ -192,14 +199,14 @@ fn weak_charger_is_reported_promptly_at_switch_on() {
     }
 }
 
-/// Finding 8. Pads that are on the chest but read just outside 25–175 Ω
-/// (here 190 Ω, e.g. poor contact or a hairy chest; other devices accept up
-/// to 180–230 Ω) are treated exactly like pads not attached: the device
-/// never analyses and repeats "Attach pads to bare chest." every 15 s, an
-/// instruction the responder has already followed. It never says "Check
-/// pads" and never tells them to continue CPR.
+/// Finding 8 (FIXED by D-32). Pads that are on the chest but read just
+/// outside 25–175 Ω (here 190 Ω) were treated exactly like pads not
+/// attached: "Attach pads to bare chest." every 15 s, forever. Pads now
+/// count as on up to 250 Ω: the device analyses, says "Press pads firmly",
+/// and, if they still read above 175 Ω when the shock is due, "Poor pad
+/// contact. No shock." and "Start CPR". The scenarios `pads-190-throughout`
+/// and `pads-190-pressed-to-150` cover the rest.
 #[test]
-#[ignore = "FINDING: attached pads just out of range get only 'Attach pads' forever (aed-core rescue.rs PadMonitor / tick_attach_pads)"]
 fn attached_pads_out_of_range_get_a_useful_instruction() {
     let mut s = by_name("adult-vf").unwrap();
     s.pad_ohms = 190.0;
@@ -208,39 +215,34 @@ fn attached_pads_out_of_range_get_a_useful_instruction() {
     let useful = r
         .prompts
         .iter()
-        .any(|&(_, p)| matches!(p, Prompt::CheckPads | Prompt::StartCpr));
-    if !useful {
+        .any(|&(_, p)| matches!(p, Prompt::PressPadsFirmly | Prompt::CheckPads | Prompt::StartCpr));
+    if !useful || !r.said(Prompt::PressPadsFirmly) || !r.said(Prompt::StartCpr) {
         fail(&r, "only 'Attach pads' for 60 s with pads on at 190 ohms");
     }
 }
 
-/// New finding from the F-2 work (SIMULATION, MODEL energies). With
-/// sensors accurate to ±2 % ± 10 V (what the default `Config` assumes),
-/// the "at the planned voltage" checks cannot stop a shock from a true
-/// voltage up to about 1,227 V in child mode (plan 1,150 V): a charger that
-/// regulates high, with both sensors reading low by their full allowance,
-/// still passes every check. At 25 to 35 Ω that delivers about 60.5 J,
-/// +21 % over the 50 J target, outside the ±15 % energy tolerance (at 25 Ω
-/// the planner is already at its shortest phase and +6 % on target). Adult
-/// mode and the bottom edge in child mode stay inside. The window cannot be
-/// narrowed without false faults from in-spec sensors, so this is an input
-/// to the sensor specification (about ±1 % ± 7 V would be needed) or to the
-/// child-mode waveform. Full table: `voltage_sensors.rs`,
-/// `delivered_energy_at_the_edges_of_the_allowed_voltage_window`.
+/// Finding 9 (FIXED by D-28; SIMULATION, MODEL energies). With sensors
+/// accurate to ±2 % ± 10 V, the "at the planned voltage" checks could not
+/// stop a child-mode shock from a true voltage up to about 1,227 V (plan
+/// 1,150 V): a charger regulating high, with both sensors reading low by
+/// their full allowance, passed every check, and at 25 to 35 Ω that
+/// delivered about 60.5 J, +21 % over the 50 J target. With the sensors of
+/// D-28 (±1 % ± 7 V) and the at-plan window set from them (1 % + 12 V) the
+/// top edge is (1,150 + 24 + 7) / 0.99 = 1,193 V. Full table:
+/// `voltage_sensors.rs`, `delivered_energy_at_the_edges_of_the_allowed_voltage_window`.
 #[test]
-#[ignore = "FINDING: ±2 % ± 10 V sensors allow a child shock about +21 % over target at 25-35 Ω (sensor accuracy vs energy tolerance; aed-core config.rs at_plan_*, aed-waveform child charge)"]
 fn child_energy_at_the_top_of_the_voltage_window_is_within_tolerance() {
     let config = aed_core::Config::default();
     let plan = 1_150.0;
     let a = f64::from(config.at_plan_allowance(aed_types::Volts(1_150)).0);
-    let top = (plan + a + 10.0) / 0.98 - 1.0;
+    let top = (plan + a + 7.0) / 0.99 - 1.0;
     let mut s = by_name("child-vf").unwrap();
     s.duration_ms = 40_000;
     s.pad_ohms = 25.0;
     s.plant.charger_set_point_gain = top / plan;
     let low = aed_sim::SensorModel {
-        gain: 0.98,
-        offset: -10.0,
+        gain: 0.99,
+        offset: -7.0,
         stuck_at: None,
     };
     s.plant.main_voltage_sensor = low;
@@ -249,5 +251,56 @@ fn child_energy_at_the_top_of_the_voltage_window_is_within_tolerance() {
     let j = r.shocks.first().map_or(0.0, aed_sim::ShockRecord::delivered_j);
     if !(42.5..=57.5).contains(&j) {
         fail(&r, &format!("child shock from {top:.0} V into 25 Ω delivered {j:.1} J (target 50 J ±15 %)"));
+    }
+}
+
+/// Finding 4, measured (SIMULATION). How close to the moment of delivery a
+/// change from VF to a normal rhythm (or to a flatline) can happen and still
+/// stop the shock, before (5 s countdown, charging only after "shock
+/// advised") and after (D-29 charging during analysis, D-30 3 s countdown).
+/// Not a pass/fail test: it prints the table for the findings document. It
+/// checks only that the safety rule holds when the change is 5 s or more
+/// before delivery.
+#[test]
+fn measure_how_close_to_delivery_a_rhythm_change_is_still_caught() {
+    let before = Config {
+        countdown_ms: 5_000,
+        charge_during_analysis: false,
+        ..Config::default()
+    };
+    let after = Config::default();
+    println!("Rhythm change at a time before the planned shock (SIMULATED):");
+    for (to_name, to) in [("normal rhythm 75/min", Rhythm::sinus(75.0)), ("flatline", Rhythm::Asystole)] {
+        for (name, config) in [
+            ("before (5 s countdown, charge after advice)", before),
+            ("after (D-29 + D-30)", after),
+        ] {
+            // When the shock fires with no change, for this configuration.
+            let mut base = by_name("adult-vf").unwrap();
+            base.duration_ms = 40_000;
+            let r = aed_sim::Simulation::with_config(&base, config).unwrap().run();
+            let fire = r.shocks.first().unwrap().at_ms;
+            let analysing = r.states.iter().find(|&&(_, s)| s.is_analysing()).unwrap().0;
+            let mut missed = Vec::new();
+            for before_ms in (250..=8_000).step_by(250) {
+                let mut s = base.clone();
+                s.script
+                    .push((Trigger::At(fire - before_ms), Action::SetRhythm(to)));
+                let r = aed_sim::Simulation::with_config(&s, config).unwrap().run();
+                if !r.violations_of(Rule::FiredOnNonShockableRhythm).is_empty() {
+                    missed.push(before_ms);
+                    assert!(before_ms < 5_000, "{name}: a change {before_ms} ms before delivery was missed");
+                }
+            }
+            let caught_from = missed.iter().max().map_or(250, |m| m + 250);
+            println!(
+                "VF to {to_name}, {name}: missed when {:.2} s or less before the shock, always caught from {:.2} s; \
+                 hands-off from 'Analysing' to the shock {:.1} s, so {:.0} % of that pause is blind",
+                f64::from(caught_from.saturating_sub(250)) / 1000.0,
+                f64::from(caught_from) / 1000.0,
+                f64::from(fire - analysing) / 1000.0,
+                100.0 * f64::from(caught_from) / f64::from(fire - analysing)
+            );
+        }
     }
 }

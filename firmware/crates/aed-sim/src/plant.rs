@@ -159,6 +159,9 @@ pub enum Fault {
     PadsOff,
     /// Someone holds the cancel control for one second.
     CancelPressed,
+    /// The cancel control sticks down and stays pressed (both controllers
+    /// see it). Decision D-31: this must be reported as a stuck button.
+    CancelStuck,
     /// The battery is suddenly flat: the power monitor says so and the charger stops.
     BatteryDepleted,
     /// The output bridge does not fire when told to, and reports nothing.
@@ -167,7 +170,7 @@ pub enum Fault {
 
 impl Fault {
     /// Every fault, in a fixed order.
-    pub const ALL: [Fault; 11] = [
+    pub const ALL: [Fault; 12] = [
         Fault::MainVoltageSensorWrong,
         Fault::SupervisorVoltageSensorWrong,
         Fault::ChargerWeak,
@@ -177,6 +180,7 @@ impl Fault {
         Fault::LinkDrop,
         Fault::PadsOff,
         Fault::CancelPressed,
+        Fault::CancelStuck,
         Fault::BatteryDepleted,
         Fault::BridgeFailsToFire,
     ];
@@ -194,6 +198,7 @@ impl Fault {
             Fault::LinkDrop => "message wire between the controllers drops",
             Fault::PadsOff => "pads fall off the patient",
             Fault::CancelPressed => "cancel control pressed",
+            Fault::CancelStuck => "cancel control stuck down",
             Fault::BatteryDepleted => "battery suddenly depleted",
             Fault::BridgeFailsToFire => "output bridge fails to fire",
         }
@@ -212,6 +217,7 @@ impl Fault {
             Fault::LinkDrop => "link-drop",
             Fault::PadsOff => "pads-off",
             Fault::CancelPressed => "cancel",
+            Fault::CancelStuck => "cancel-stuck",
             Fault::BatteryDepleted => "battery-depleted",
             Fault::BridgeFailsToFire => "bridge-fails",
         }
@@ -350,6 +356,13 @@ pub struct Plant {
     pub to_main: VecDeque<(u32, SupervisorReport)>,
     /// Messages lost on the wire.
     pub messages_dropped: u32,
+    /// Energy the charger has put into the capacitor, joules (model). This
+    /// is what the battery pays for, before charger losses (not modelled).
+    pub charger_energy_j: f64,
+    /// Energy burned off in the internal discharge load, joules (model):
+    /// charges emptied without a shock, what is left after each shock, and
+    /// the self-test charge. This is the heat cost inside the device.
+    pub dump_energy_j: f64,
     /// The patient's current rhythm.
     pub rhythm: Rhythm,
     /// When the current rhythm started.
@@ -396,6 +409,8 @@ impl Plant {
             to_supervisor: VecDeque::new(),
             to_main: VecDeque::new(),
             messages_dropped: 0,
+            charger_energy_j: 0.0,
+            dump_energy_j: 0.0,
             rhythm,
             rhythm_since_ms: 0,
             after_shock: Vec::new(),
@@ -469,6 +484,7 @@ impl Plant {
             }
             Fault::PadsOff => self.pad_ohms = None,
             Fault::CancelPressed => self.press_cancel(1_000),
+            Fault::CancelStuck => self.press_cancel(u32::MAX),
             Fault::BatteryDepleted => self.battery = BatteryStatus::Depleted,
             Fault::ChargerWeak
             | Fault::ChargerRunaway
@@ -596,12 +612,16 @@ impl Plant {
             if self.cap_v < limit {
                 let i = (self.config.charger_watts / self.cap_v.max(1.0))
                     .min(self.config.charger_max_current_a);
+                let before = self.cap_v;
                 self.cap_v = (self.cap_v + i * dt / c).min(limit);
+                self.charger_energy_j += 0.5 * c * (self.cap_v * self.cap_v - before * before);
             }
         }
         // Discharge path (unless stuck), then the slow leakage, always.
         if self.discharge_active() && !self.has_fault(Fault::DischargeStuck) {
+            let before = self.cap_v;
             self.cap_v *= (-dt / (self.config.dump_ohms * c)).exp();
+            self.dump_energy_j += 0.5 * c * (before * before - self.cap_v * self.cap_v);
         }
         self.cap_v *= (-dt / (self.config.bleed_ohms * c)).exp();
         if self.cap_v < 0.01 {

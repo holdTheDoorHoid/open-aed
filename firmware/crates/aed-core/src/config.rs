@@ -25,20 +25,68 @@ pub struct Config {
     /// Compression metronome rate, in beats per minute. Must be 100 to 120.
     /// Provisional: 110, the middle of the guideline range.
     pub metronome_per_min: u16,
-    /// Length of the "stand clear" countdown before an automatic shock.
-    /// The supervisor also requires the main controller to have been counting
-    /// down for at least this long, by the supervisor's own clock.
-    /// Provisional: 5 s.
+    /// Length of the "stand clear" countdown before an automatic shock
+    /// ("Stand clear. Three, two, one."). The supervisor also requires the
+    /// main controller to have been counting down for at least this long, by
+    /// the supervisor's own clock, before it gives a permit.
+    /// Owner decision D-30: 3 s (users are trained responders). To be checked
+    /// against the defibrillator standard once it is bought.
     pub countdown_ms: u32,
-    /// Longest the capacitor may take to charge before it counts as a fault.
-    /// Provisional: 12 s (the requirement is 8 s or less; this leaves margin).
+    /// Charge during analysis (owner decision D-29). When true, the capacitor
+    /// starts charging as soon as an analysis starts (state
+    /// [`crate::RescueState::AnalysingCharging`]), so that a "shock advised"
+    /// can go straight to the countdown without a charging wait. If no shock
+    /// is advised the charge is emptied into the internal load. When false,
+    /// charging starts only once a shock is advised (the first design).
+    /// Default: true.
+    pub charge_during_analysis: bool,
+    /// Longest the capacitor may take to charge to the shock voltage, counted
+    /// from the moment charging is asked for, before it counts as a fault.
+    /// With charging during analysis this runs from the start of the
+    /// analysis. Provisional: 12 s (the requirement is 8 s or less; this
+    /// leaves margin).
     pub charge_time_limit_ms: u32,
-    /// Longest the capacitor may stay charged (from the start of charging) before
-    /// it must be emptied. Both controllers enforce this separately.
-    /// Provisional: 25 s. Must be longer than charging + countdown + delivery.
+    /// The charge voltage that [`Config::charge_time_limit_ms`] is sized for.
+    /// Shorter charges get a proportionally shorter limit (see
+    /// [`Config::charge_time_limit_for`]), so that a weak charger shows up
+    /// quickly in the 400 V switch-on self-test (finding F-7) instead of
+    /// after 12 s of silence. Provisional: 2,000 V, the highest voltage the
+    /// capacitor may ever be charged to (aed-waveform `max_charge`).
+    pub charge_limit_reference_voltage: Volts,
+    /// The shortest charge time limit for any charge, however small, ms.
+    /// Provisional: 1 s. The model charger takes about 0.27 s to reach the
+    /// 400 V self-test voltage (it is current-limited at low voltage), so 1 s
+    /// is between three and four times that.
+    pub min_charge_time_limit_ms: u32,
+    /// Longest the capacitor may stay charged before it must be emptied.
+    /// The main controller counts from the moment charging is asked for; the
+    /// supervisor counts, on its own clock, for as long as its own reading
+    /// is not empty. Each empties the capacitor on its own at this limit.
+    ///
+    /// Provisional: 25 s. The longest a normal shock cycle keeps the
+    /// capacitor charged, with charging during analysis (D-29) and the 3 s
+    /// countdown (D-30), is:
+    ///
+    /// * a "shock" answer can arrive as late as the 12 s analysis limit
+    ///   (the capacitor charged early, about 6.3 s in for an adult), or the
+    ///   charge can take up to its 12 s limit: at most 12 s either way;
+    /// * plus the 3 s countdown, plus up to 1 s waiting for delivery: 16 s
+    ///   for the main controller;
+    /// * plus up to the 3 s emptying limit before the supervisor's own
+    ///   reading shows empty (about 0.8 s in the model), and a few
+    ///   heartbeats of message delay: about 19.3 s for the supervisor, or
+    ///   19.7 s if its clock runs 2 % slow.
+    ///
+    /// That is shorter than before D-29/D-30 (12 + 5 + 1 + 3 = 21 s), so the
+    /// 25 s limit still has about 5 s in hand and is not changed.
+    /// [`Config::validate`] refuses a value that does not exceed the sum.
     pub max_charged_ms: u32,
-    /// Longest emptying the capacitor may take. If it is not empty by then, that
-    /// is the most serious fault. Provisional: 3 s.
+    /// Longest emptying the capacitor may take. If the main controller's
+    /// reading does not show empty by then, that is the most serious fault.
+    /// Emptying runs in the background (see [`crate::rescue`]): the device
+    /// gives its next instruction at once and does not wait for it, but
+    /// starts no new charge until the capacitor is confirmed empty.
+    /// Provisional: 3 s (the model empties 1,950 V in about 0.8 s).
     pub disarm_time_limit_ms: u32,
     /// Below this voltage the capacitor counts as empty. Provisional: 50 V,
     /// matching the project's "no circuit above 50 volts" line (D-10).
@@ -59,14 +107,25 @@ pub struct Config {
     /// [`Config::agree_percent`] and [`Config::agree_abs_volts`], or an
     /// in-tolerance sensor would cause false faults. Together with that
     /// sensor error it also bounds how far the true voltage can be from the
-    /// plan when a shock fires, which sets the delivered energy.
-    /// Provisional: 2 % (see `at_plan_abs_volts` for the reasoning).
+    /// plan when a shock fires, which sets the delivered energy (finding
+    /// F-9). Provisional: 1 % (see `at_plan_abs_volts` for the reasoning).
     pub at_plan_percent: u8,
     /// The fixed part of the "at the planned voltage" window, volts.
-    /// Provisional: 20 V. With 2 % this gives 59 V at 1,950 V (adult),
-    /// 43 V at 1,150 V (child) and 28 V at 400 V (self-test): 10 V more than
-    /// the error of a sensor accurate to ±2 % ± 10 V, the accuracy these
-    /// defaults assume.
+    ///
+    /// Provisional: 12 V, the same as one sensor's allowance (the narrowest
+    /// [`Config::validate`] accepts). With 1 % this gives 32 V at 1,950 V
+    /// (adult), 24 V at 1,150 V (child) and 16 V at 400 V (self-test).
+    ///
+    /// Why so narrow: the window, widened by the sensor's own error, is how
+    /// far the TRUE voltage may be from the plan when a shock fires. At the
+    /// child top edge (charger regulating high, both sensors reading 1 % +
+    /// 7 V low) the true voltage can be (1,150 + 24 + 7) / 0.99 = 1,193 V,
+    /// which the model puts at about +14 % over 50 J into 25 Ω, just inside
+    /// the ±15 % placeholder tolerance. A 17 V fixed part (the old "10 V more
+    /// than the sensor" margin) would allow 1,198 V, right on the edge.
+    /// The 5 V above the 7 V sensor error covers rounding and a charger that
+    /// regulates up to about 5 V away from its set point; a real charger
+    /// must be specified to that, or this must be revisited.
     pub at_plan_abs_volts: Volts,
     /// The error each of the two independent voltage sensors is allowed,
     /// as a percentage of the reading (plus [`Config::agree_abs_volts`]).
@@ -78,12 +137,30 @@ pub struct Config {
     /// allowance always agree. A bigger difference, lasting longer than
     /// [`Config::disagreement_persist_ms`], is a fault.
     ///
-    /// Provisional: 2 % + 15 V. ASSUMES each real sensor is accurate to
-    /// ±2 % ± 10 V; the extra 5 V per sensor covers rounding and the
-    /// main controller's reading being up to one heartbeat old while the
-    /// capacitor charges. Not from any part's datasheet: no sensor is chosen.
+    /// Provisional: 1 % + 12 V, from owner decision D-28: each real sensor
+    /// must be accurate to about ±1 % ± 7 V. The arithmetic, per sensor:
+    ///
+    /// * the sensor itself: 1 % of the reading + 7 V;
+    /// * rounding of each reading to a whole volt: up to 1 V;
+    /// * the main controller's claimed reading arriving slightly old (it is
+    ///   read when the status message is sent): 4 V.
+    ///
+    /// 7 + 1 + 4 = 12 V. Two sensors may then differ by 2 % + 24 V (64 V at
+    /// 1,950 V, 47 V at 1,150 V, 32 V at 400 V); two in-spec sensors with
+    /// opposite errors differ by at most 2 % + 14 V, leaving 10 V.
+    ///
+    /// While the capacitor is charging fast a heartbeat-old claim can lag by
+    /// far more than 4 V (about 15,000 / V volts in the model: 15 V at
+    /// 1,000 V). That is covered by [`Config::disagreement_persist_ms`],
+    /// not by this allowance: the readings agree again each time a fresh
+    /// status message arrives, which resets the persistence timer. On a
+    /// slow message wire (tens of ms of delay) with sensors at opposite
+    /// ends of their accuracy this margin is thin; see the aed-core README.
+    /// Not from any part's datasheet: no sensor is chosen.
     pub agree_percent: u8,
-    /// The fixed part of each sensor's allowed error, volts. Provisional: 15 V.
+    /// The fixed part of each sensor's allowed error, volts. Provisional:
+    /// 12 V (7 V sensor + 1 V rounding + 4 V stale reading; see
+    /// [`Config::agree_percent`]).
     pub agree_abs_volts: Volts,
     /// Above this voltage the capacitor is over-charged and is emptied at once.
     /// Provisional: 2,200 V (the design point is about 1,700 to 2,000 V).
@@ -141,6 +218,29 @@ pub struct Config {
     pub self_test_agree_wait_ms: u32,
     /// How often the "attach pads" prompt is repeated while waiting. Provisional: 15 s.
     pub attach_pads_repeat_ms: u32,
+    /// How often "Press pads firmly" is repeated during CPR while the pads
+    /// are on but read above the shock range (decision D-32). It is also
+    /// said once as each analysis starts. Never during the hands-off and
+    /// stand-clear phases, which would tell the responder to touch the
+    /// patient. Provisional: 15 s, the same as "attach pads".
+    pub press_pads_repeat_ms: u32,
+    /// The cancel control counts as stuck once it has read pressed without a
+    /// break for this long (decision D-31). A stuck cancel would block every
+    /// shock, so it is a fault with its own prompt rather than a silent
+    /// "cancel". Both controllers apply the rule to their own view of the
+    /// button.
+    ///
+    /// Provisional: 10 s. A deliberate press lasts a second or two, and
+    /// someone holding cancel through a whole 3 s countdown has already
+    /// stopped that shock; 10 s is well beyond both. It is also shorter than
+    /// the time from switch-on to a first shock with the pads already on
+    /// (self-test about 0.6 s, analysis about 7 s, countdown 3 s), so a
+    /// button stuck from switch-on is reported before a first shock would
+    /// have been due. A rule of "pressed from switch-on to the end of the
+    /// self-test" alone was not used: the self-test takes well under a
+    /// second, so it would turn a brief stray press, the very thing D-31
+    /// protects against, into a permanent fault.
+    pub cancel_stuck_ms: u32,
     /// How often the fault prompt is repeated in the Fault state. Provisional: 30 s.
     pub fault_reminder_ms: u32,
 }
@@ -151,15 +251,18 @@ impl Default for Config {
         Config {
             cpr_period_ms: 120_000,
             metronome_per_min: 110,
-            countdown_ms: 5_000,
+            countdown_ms: 3_000,
+            charge_during_analysis: true,
             charge_time_limit_ms: 12_000,
+            charge_limit_reference_voltage: Volts(2_000),
+            min_charge_time_limit_ms: 1_000,
             max_charged_ms: 25_000,
             disarm_time_limit_ms: 3_000,
             empty_voltage: Volts(50),
-            at_plan_percent: 2,
-            at_plan_abs_volts: Volts(20),
-            agree_percent: 2,
-            agree_abs_volts: Volts(15),
+            at_plan_percent: 1,
+            at_plan_abs_volts: Volts(12),
+            agree_percent: 1,
+            agree_abs_volts: Volts(12),
             overvoltage_limit: Volts(2_200),
             heartbeat_period_ms: 50,
             heartbeat_timeout_ms: 250,
@@ -174,6 +277,8 @@ impl Default for Config {
             self_test_link_wait_ms: 1_000,
             self_test_agree_wait_ms: 500,
             attach_pads_repeat_ms: 15_000,
+            press_pads_repeat_ms: 15_000,
+            cancel_stuck_ms: 10_000,
             fault_reminder_ms: 30_000,
         }
     }
@@ -187,8 +292,10 @@ pub enum ConfigError {
     MetronomeRateOutOfRange,
     /// A time limit that must be above zero is zero.
     ZeroTimeLimit,
-    /// The longest-charged limit is not longer than charging + countdown + delivery,
-    /// so a normal shock would be cut off.
+    /// The longest-charged limit is not longer than the longest normal shock
+    /// cycle (the longer of charging and, when charging during analysis, the
+    /// analysis limit; plus countdown, delivery and emptying), so a normal
+    /// shock could be cut off.
     MaxChargedTooShort,
     /// The heartbeat timeout is not longer than the heartbeat period.
     HeartbeatTimeoutTooShort,
@@ -240,15 +347,26 @@ impl Config {
             self.self_test_link_wait_ms,
             self.self_test_agree_wait_ms,
             self.attach_pads_repeat_ms,
+            self.press_pads_repeat_ms,
+            self.cancel_stuck_ms,
+            self.min_charge_time_limit_ms,
+            u32::from(self.charge_limit_reference_voltage.0),
             self.fault_reminder_ms,
         ];
         if must_be_positive.contains(&0) {
             return Err(ConfigError::ZeroTimeLimit);
         }
-        let normal_shock = self
-            .charge_time_limit_ms
+        // With charging during analysis the capacitor may already be
+        // charged when a late "shock" answer arrives at the analysis limit.
+        let before_countdown = if self.charge_during_analysis {
+            self.charge_time_limit_ms.max(self.analysis_time_limit_ms)
+        } else {
+            self.charge_time_limit_ms
+        };
+        let normal_shock = before_countdown
             .saturating_add(self.countdown_ms)
-            .saturating_add(self.delivery_timeout_ms);
+            .saturating_add(self.delivery_timeout_ms)
+            .saturating_add(self.disarm_time_limit_ms);
         if self.max_charged_ms <= normal_shock {
             return Err(ConfigError::MaxChargedTooShort);
         }
@@ -275,7 +393,8 @@ impl Config {
             .self_test_voltage
             .0
             .saturating_sub(self.at_plan_allowance(self.self_test_voltage).0);
-        let lowest_true = lowest_charged.saturating_sub(self.sensor_allowance(Volts(lowest_charged)).0);
+        let lowest_true =
+            lowest_charged.saturating_sub(self.sensor_allowance(Volts(lowest_charged)).0);
         if lowest_true <= self.empty_voltage.0 {
             return Err(ConfigError::SelfTestVoltageTooLow);
         }
@@ -286,6 +405,31 @@ impl Config {
             return Err(ConfigError::CprPeriodTooShort);
         }
         Ok(())
+    }
+
+    /// The charge time limit for a charge to `target`, ms: the full
+    /// [`Config::charge_time_limit_ms`] scaled by the stored energy, which
+    /// grows with the square of the voltage, relative to
+    /// [`Config::charge_limit_reference_voltage`], and never less than
+    /// [`Config::min_charge_time_limit_ms`] nor more than the full limit.
+    ///
+    /// For the 400 V switch-on self-test: 12 s × (400 / 2,000)² = 0.48 s,
+    /// so the 1 s floor applies (finding F-7: a weak charger is reported
+    /// about 1 s into the self-test, not 12 s). For a full-energy test at
+    /// 1,950 V: 12 s × 0.95 = 11.4 s.
+    #[must_use]
+    pub fn charge_time_limit_for(&self, target: Volts) -> u32 {
+        let full = u64::from(self.charge_time_limit_ms);
+        let v = u64::from(target.0);
+        let reference = u64::from(self.charge_limit_reference_voltage.0);
+        let scaled = full
+            .saturating_mul(v.saturating_mul(v))
+            .checked_div(reference.saturating_mul(reference))
+            .unwrap_or(full);
+        let scaled = u32::try_from(scaled).unwrap_or(self.charge_time_limit_ms);
+        scaled
+            .max(self.min_charge_time_limit_ms)
+            .min(self.charge_time_limit_ms)
     }
 
     /// Time between metronome beats, in milliseconds (545 ms at 110 per minute).

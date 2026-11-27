@@ -38,7 +38,7 @@ fn late_stop(rhythm: Rhythm, late_ms: u32) -> RunResult {
 /// True if the first analysis ended in a shock (charging started straight from it).
 fn first_analysis_shocked(r: &RunResult) -> bool {
     !r.shocks.is_empty()
-        && r.states.iter().filter(|&&(_, s)| s == RescueState::Analysing).count() == 1
+        && r.states.iter().filter(|&&(_, s)| s.is_analysing()).count() == 1
 }
 
 #[test]
@@ -79,7 +79,9 @@ fn vf_is_shocked_from_the_first_analysis_when_compressions_stop_up_to_3_s_late()
 fn normal_rhythm_with_compressions_running_into_the_analysis_is_never_shocked() {
     for late in [500, 2_000, 4_000, 8_000, 15_000] {
         let r = late_stop(Rhythm::sinus(80.0), late);
-        if r.charges_started != 0 || !r.shocks.is_empty() {
+        // The capacitor charges during every analysis (D-29); what matters
+        // is that no shock is ever advised or given.
+        if r.entered(RescueState::Countdown) || !r.shocks.is_empty() {
             fail(&r, &format!("normal rhythm charged or shocked (late stop {late} ms)"));
         }
         if !r.entered(RescueState::Cpr) {
@@ -92,13 +94,13 @@ fn normal_rhythm_with_compressions_running_into_the_analysis_is_never_shocked() 
 fn asystole_with_compressions_running_into_the_analysis_still_gets_to_cpr_promptly() {
     for late in [500, 2_000, 4_000, 8_000] {
         let r = late_stop(Rhythm::Asystole, late);
-        if r.charges_started != 0 || !r.shocks.is_empty() {
+        if r.entered(RescueState::Countdown) || !r.shocks.is_empty() {
             fail(&r, &format!("asystole charged or shocked (late stop {late} ms)"));
         }
         let analysing_at = r
             .states
             .iter()
-            .find(|&&(_, s)| s == RescueState::Analysing)
+            .find(|&&(_, s)| s.is_analysing())
             .map(|&(t, _)| t)
             .unwrap();
         let cpr_at = r

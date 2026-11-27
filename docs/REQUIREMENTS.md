@@ -26,7 +26,7 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 | Child energy | 50 joules, chosen in software | Matches Avive and the pocket units. (D-04) |
 | Patient resistance range | 25 to 175 ohms | The range the defibrillator standard tests |
 | Storage capacitor | About 100 µF charged to 1.7–2.0 kV | Follows from the above. Below about 60 µF the shock becomes too brief to work well. |
-| Charge time | 8 seconds or less from a ready battery | Provisional; the standard's exact limit must be read from the purchased standard |
+| Charge time | 7 seconds or less from a ready battery, so the charge finishes inside the analysis (D-29) | Provisional; the standard's exact limit must be read from the purchased standard |
 | Shocks per battery charge | 30 or more | Provisional  |
 
 ## Pads
@@ -47,7 +47,9 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 
 ## Operation
 
-- **Fully automatic** (D-06): when a shock is advised the device warns everyone to stand clear, counts down aloud and on screen, and delivers the shock itself. No shock button.
+- **Fully automatic** (D-06): when a shock is advised the device warns everyone to stand clear, counts down three seconds aloud and on screen (D-30), and delivers the shock itself. No shock button.
+- **Hands-off target:** about 9 seconds from "stop CPR" to shock in simulation, by charging during the analysis (D-29).
+- **Voltage sensing:** two independent sensors, each accurate to about 1% + 7 V (D-28).
 - Because no human confirms the shock, the design must include: a loud stand-clear warning and countdown; a cancel control the responder can hit at any time; a check that the pads are still attached and the signal is still shockable right up to delivery; and the independent second check on the shock path. Whether the device can sense someone touching the patient is an open research question.
 - The accuracy bar for leaving normal rhythms alone matters even more than on a semi-automatic unit.
 - Short prompts for trained users, loud enough for a roadside, with a screen that can be read in sunlight and worked with gloves.

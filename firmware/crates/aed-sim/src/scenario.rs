@@ -60,6 +60,10 @@ pub struct Responder {
     /// (models someone who cannot hear or does not follow the device).
     /// Default false.
     pub keeps_compressing: bool,
+    /// When told "Press pads firmly", the responder does so (after their
+    /// reaction time) and the pad resistance becomes this, ohms. `None`
+    /// (the default): pressing makes no difference.
+    pub pressing_pads_brings_ohms_to: Option<f64>,
 }
 
 impl Default for Responder {
@@ -70,6 +74,7 @@ impl Default for Responder {
             compression_uv: 1_500.0,
             reattach_after_ms: None,
             keeps_compressing: false,
+            pressing_pads_brings_ohms_to: None,
         }
     }
 }
@@ -123,8 +128,10 @@ pub struct Scenario {
 pub enum Expect {
     /// Exactly this many shocks, and no fault.
     Shocks(usize),
-    /// No shock and the capacitor is never charged for a shock.
-    NeverCharges,
+    /// No shock is ever advised: no countdown, no shock request, no shock.
+    /// (With charging during analysis, D-29, the capacitor does charge
+    /// during each analysis; it must never go above the shock voltage.)
+    NeverCountsDown,
     /// A shock was advised and prepared, but abandoned: no shock, capacitor emptied.
     AbortedNoShock,
     /// No shock at all; the device ends in the Fault state.
@@ -200,7 +207,7 @@ fn fault_scenario(fault: Fault, when: Trigger, expect: Expect, note: &str) -> Sc
 /// Every named scenario.
 #[must_use]
 pub fn catalogue() -> Vec<Scenario> {
-    use RescueState::{Analysing, Charging, Countdown};
+    use RescueState::{AnalysingCharging, Countdown};
     let sinus = Rhythm::sinus(75.0);
     let mut v = vec![
         Scenario::base(
@@ -228,13 +235,13 @@ pub fn catalogue() -> Vec<Scenario> {
             |s| {
                 s.rhythm = Rhythm::sinus(80.0);
                 s.after_shock = Vec::new();
-                s.expect = Expect::NeverCharges;
+                s.expect = Expect::NeverCountsDown;
             },
         ),
         Scenario::base("asystole", "Flatline throughout: no shock, CPR.").with(|s| {
             s.rhythm = Rhythm::Asystole;
             s.after_shock = Vec::new();
-            s.expect = Expect::NeverCharges;
+            s.expect = Expect::NeverCountsDown;
         }),
         Scenario::base(
             "vf-converts-during-countdown",
@@ -258,13 +265,47 @@ pub fn catalogue() -> Vec<Scenario> {
         }),
         Scenario::base(
             "pads-off-during-charge",
-            "A pad comes off 2 s into charging; the responder re-attaches it 8 s after being told.",
+            "A pad comes off 3 s into the analysis, while charging; the responder re-attaches it 8 s after being told.",
         )
         .with(|s| {
             s.script
-                .push((after(Charging, 2_000), Action::SetPadOhms(None)));
+                .push((after(AnalysingCharging, 3_000), Action::SetPadOhms(None)));
             s.responder.reattach_after_ms = Some(8_000);
             s.expect = Expect::Shocks(1);
+        }),
+        Scenario::base(
+            "pads-off-during-countdown",
+            "A pad comes off 1 s into the countdown; the responder re-attaches it 5 s after being told.",
+        )
+        .with(|s| {
+            s.script
+                .push((after(Countdown, 1_000), Action::SetPadOhms(None)));
+            s.responder.reattach_after_ms = Some(5_000);
+            s.expect = Expect::Shocks(1);
+        }),
+        Scenario::base(
+            "pads-190-throughout",
+            "Adult VF; pads on but reading 190 ohms (above the 175 ohm shock range) throughout: analyses, 'press pads firmly', no shock, CPR.",
+        )
+        .with(|s| {
+            s.pad_ohms = 190.0;
+            s.after_shock = Vec::new();
+            s.expect = Expect::NoShock;
+        }),
+        Scenario::base(
+            "pads-190-pressed-to-150",
+            "Adult VF; pads on at 190 ohms; when told to press them firmly the responder does, and they read 150 ohms: shock.",
+        )
+        .with(|s| {
+            s.pad_ohms = 190.0;
+            s.responder.pressing_pads_brings_ohms_to = Some(150.0);
+        }),
+        Scenario::base(
+            "stray-cancel-at-switch-on",
+            "Adult VF; cancel is pressed for 0.5 s while the device switches on: ignored (D-31), one shock.",
+        )
+        .with(|s| {
+            s.script.push((Trigger::At(50), Action::PressCancel(500)));
         }),
         Scenario::base("high-resistance", "Adult VF at 175 ohms (top of the range).")
             .with(|s| s.pad_ohms = 175.0),
@@ -305,7 +346,7 @@ pub fn catalogue() -> Vec<Scenario> {
         )
         .with(|s| {
             s.responder.keeps_compressing = true;
-            s.expect = Expect::NeverCharges;
+            s.expect = Expect::NeverCountsDown;
         }),
         Scenario::base(
             "clock-drift",
@@ -326,25 +367,27 @@ pub fn catalogue() -> Vec<Scenario> {
         }),
         Scenario::base(
             "sensor-tolerance",
-            "Adult VF; main voltage sensor reads +1%, supervisor's -1% (small, opposite errors).",
+            "Adult VF; main voltage sensor reads +1% +7 V, supervisor's -1% -7 V (opposite errors at the edge of D-28).",
         )
         .with(|s| {
             s.plant.main_voltage_sensor.gain = 1.01;
+            s.plant.main_voltage_sensor.offset = 7.0;
             s.plant.supervisor_voltage_sensor.gain = 0.99;
+            s.plant.supervisor_voltage_sensor.offset = -7.0;
         }),
     ];
 
     v.push(fault_scenario(
         Fault::MainVoltageSensorWrong,
-        after(Charging, 1_000),
+        after(AnalysingCharging, 3_000),
         Expect::FaultNoShock,
-        "during charging",
+        "while charging during the analysis",
     ));
     v.push(fault_scenario(
         Fault::SupervisorVoltageSensorWrong,
-        after(Charging, 1_000),
+        after(AnalysingCharging, 3_000),
         Expect::FaultNoShock,
-        "during charging",
+        "while charging during the analysis",
     ));
     v.push(fault_scenario(
         Fault::ChargerWeak,
@@ -354,9 +397,9 @@ pub fn catalogue() -> Vec<Scenario> {
     ));
     v.push(fault_scenario(
         Fault::ChargerRunaway,
-        after(Charging, 500),
+        after(AnalysingCharging, 2_500),
         Expect::FaultNoShock,
-        "during charging",
+        "while charging during the analysis",
     ));
     v.push(fault_scenario(
         Fault::DischargeStuck,
@@ -372,9 +415,9 @@ pub fn catalogue() -> Vec<Scenario> {
     ));
     v.push(fault_scenario(
         Fault::LinkDrop,
-        after(Charging, 1_000),
+        after(AnalysingCharging, 3_000),
         Expect::FaultNoShock,
-        "during charging",
+        "while charging during the analysis",
     ));
     v.push(fault_scenario(
         Fault::PadsOff,
@@ -384,15 +427,21 @@ pub fn catalogue() -> Vec<Scenario> {
     ));
     v.push(fault_scenario(
         Fault::CancelPressed,
-        after(Analysing, 2_000),
+        after(AnalysingCharging, 2_000),
         Expect::NoShock,
         "2 s into the first analysis",
     ));
     v.push(fault_scenario(
+        Fault::CancelStuck,
+        Trigger::At(20_000),
+        Expect::EndsInFault,
+        "from 20 s, during CPR; reported as stuck after 10 s",
+    ));
+    v.push(fault_scenario(
         Fault::BatteryDepleted,
-        after(Charging, 1_000),
+        after(AnalysingCharging, 3_000),
         Expect::FaultNoShock,
-        "during charging",
+        "while charging during the analysis",
     ));
     v.push(fault_scenario(
         Fault::BridgeFailsToFire,

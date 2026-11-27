@@ -51,6 +51,12 @@ pub fn summary(r: &RunResult) -> String {
         r.shocks.len(),
         r.charges_started
     );
+    let _ = writeln!(
+        out,
+        "  Battery/heat cost:   {} charge(s) burned off without a shock; charger put in {:.0} J, \
+         {:.0} J burned off in the internal load (model)",
+        r.charges_burned, r.charger_energy_j, r.dump_energy_j
+    );
     for (i, sh) in r.shocks.iter().enumerate() {
         let _ = writeln!(
             out,
@@ -69,10 +75,11 @@ pub fn summary(r: &RunResult) -> String {
     for t in &r.timings {
         let _ = writeln!(
             out,
-            "    #{} timing: analysis {}, charge {}, countdown {}, permit wait {}, hands-off before shock {}",
+            "    #{} timing: analysis {}, charge {} (wait after 'shock advised' {}), countdown {}, permit wait {}, hands-off before shock {}",
             t.number,
             secs(t.analysis_ms),
             secs(t.charge_ms),
+            secs(t.charge_wait_ms),
             secs(t.countdown_ms),
             secs(t.permit_wait_ms),
             t.hands_off_ms.map_or_else(|| "n/a".to_string(), secs)
@@ -131,11 +138,12 @@ pub fn summary(r: &RunResult) -> String {
 #[must_use]
 pub fn timing_row(name: &str, pads_to_shock: Option<u32>, t: &ShockTiming) -> String {
     format!(
-        "| {name} | {} | {} | {} | {} | {} | {} | {} |",
+        "| {name} | {} | {} | {} | {} | {} | {} | {} | {} |",
         t.number,
         pads_to_shock.map_or_else(|| "-".to_string(), secs),
         secs(t.analysis_ms),
         secs(t.charge_ms),
+        secs(t.charge_wait_ms),
         secs(t.countdown_ms),
         secs(t.permit_wait_ms),
         t.hands_off_ms.map_or_else(|| "-".to_string(), secs)
@@ -146,8 +154,8 @@ pub fn timing_row(name: &str, pads_to_shock: Option<u32>, t: &ShockTiming) -> St
 #[must_use]
 pub fn timing_table(runs: &[RunResult]) -> String {
     let mut out = String::from(
-        "| Scenario | Shock | Pads on -> shock | Analysis | Charge | Countdown | Permit wait | Hands-off before shock |\n\
-         |---|---:|---:|---:|---:|---:|---:|---:|\n",
+        "| Scenario | Shock | Pads on -> shock | Analysis | Charge (during analysis) | Charge wait after advice | Countdown | Permit wait | Hands-off before shock |\n\
+         |---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
     for r in runs {
         for t in &r.timings {

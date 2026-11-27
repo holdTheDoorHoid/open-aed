@@ -158,10 +158,15 @@ pub struct ShockTiming {
     pub number: usize,
     /// When the bridge fired, ms.
     pub at_ms: u32,
-    /// Analysis start to "shock advised" (charging starts), ms.
+    /// Analysis start to "shock advised", ms.
     pub analysis_ms: u32,
-    /// Charging start to "charged", ms.
+    /// Charging start to "charged", ms. With charging during analysis
+    /// (D-29) this overlaps the analysis.
     pub charge_ms: u32,
+    /// "Shock advised" to the start of the countdown: the wait for the
+    /// charge to finish, ms. Zero when the capacitor charged during the
+    /// analysis and was ready.
+    pub charge_wait_ms: u32,
     /// Countdown start to shock request, ms.
     pub countdown_ms: u32,
     /// Shock request to the bridge firing (waiting for the supervisor's permit), ms.
@@ -176,6 +181,8 @@ pub struct ShockTiming {
 struct Cycle {
     analysis_start: u32,
     charge_start: Option<u32>,
+    charged: Option<u32>,
+    advised: Option<u32>,
     countdown_start: Option<u32>,
     request: Option<u32>,
 }
@@ -213,8 +220,19 @@ pub struct RunResult {
     pub injected: Vec<(u32, Fault)>,
     /// When the pads first went on, ms.
     pub pads_on_at_ms: Option<u32>,
-    /// How many times charging for a shock started.
+    /// How many times charging for a shock started (with charging during
+    /// analysis, D-29: once per analysis, plus a recharge if the adult/child
+    /// switch is moved during one).
     pub charges_started: u32,
+    /// Charges emptied into the internal load without a shock (the main
+    /// controller's own count).
+    pub charges_burned: u16,
+    /// Energy the charger put into the capacitor over the run, joules (model).
+    pub charger_energy_j: f64,
+    /// Energy burned off in the internal discharge load over the run,
+    /// joules (model): unused charges, what is left after shocks, and the
+    /// self-test charge.
+    pub dump_energy_j: f64,
     /// The supervisor refused a permit at least once for these reasons.
     pub supervisor_refusals: Vec<PermitRefusal>,
     /// Metronome beats.
@@ -278,6 +296,8 @@ pub const fn is_instruction(p: Prompt) -> bool {
             | Prompt::StartCpr
             | Prompt::DeviceFaultContinueCpr
             | Prompt::SeriousFaultContinueCpr
+            | Prompt::CancelStuckContinueCpr
+            | Prompt::PressPadsFirmly
             | Prompt::ChildModeFrontBack
     )
 }
@@ -323,6 +343,7 @@ pub struct Simulation {
     last_printed_decision: Option<RhythmDecision>,
     responder_pending: Option<(u32, bool)>,
     reattach_at: Option<u32>,
+    press_pads_at: Option<u32>,
     pads_on_at: Option<u32>,
     hands_off_since: Option<u32>,
     cycle: Option<Cycle>,
@@ -405,6 +426,7 @@ impl Simulation {
             last_printed_decision: None,
             responder_pending: None,
             reattach_at: None,
+            press_pads_at: None,
             pads_on_at: None,
             hands_off_since: if scenario.responder.cpr_at_start {
                 None
@@ -587,14 +609,17 @@ impl Simulation {
         // Timing.
         let number = self.plant.borrow().shocks.len();
         if let Some(c) = self.cycle.take() {
-            let charge_start = c.charge_start.unwrap_or(c.analysis_start);
-            let countdown_start = c.countdown_start.unwrap_or(charge_start);
+            let advised = c.advised.unwrap_or(c.analysis_start);
+            let charge_start = c.charge_start.unwrap_or(advised);
+            let charged = c.charged.unwrap_or(charge_start);
+            let countdown_start = c.countdown_start.unwrap_or(advised);
             let request = c.request.unwrap_or(s.at_ms);
             self.timings.push(ShockTiming {
                 number,
                 at_ms: s.at_ms,
-                analysis_ms: charge_start.saturating_sub(c.analysis_start),
-                charge_ms: countdown_start.saturating_sub(charge_start),
+                analysis_ms: advised.saturating_sub(c.analysis_start),
+                charge_ms: charged.saturating_sub(charge_start),
+                charge_wait_ms: countdown_start.saturating_sub(advised),
                 countdown_ms: request.saturating_sub(countdown_start),
                 permit_wait_ms: s.at_ms.saturating_sub(request),
                 hands_off_ms: self.hands_off_since.map(|t| s.at_ms.saturating_sub(t)),
@@ -613,7 +638,9 @@ impl Simulation {
             self.states.push((now, state));
             self.log(Source::Device, format!("State: {from:?} -> {state:?}"));
             match state {
-                RescueState::Analysing => {
+                RescueState::Analysing | RescueState::AnalysingCharging => {
+                    // The charge this analysis starts (D-29) is picked up
+                    // from the event record just after this.
                     self.cycle = Some(Cycle {
                         analysis_start: now,
                         ..Cycle::default()
@@ -622,11 +649,12 @@ impl Simulation {
                 }
                 RescueState::Charging => {
                     if let Some(c) = self.cycle.as_mut() {
-                        c.charge_start = Some(now);
+                        c.advised.get_or_insert(now);
                     }
                 }
                 RescueState::Countdown => {
                     if let Some(c) = self.cycle.as_mut() {
+                        c.advised.get_or_insert(now);
                         c.countdown_start = Some(now);
                     }
                 }
@@ -775,9 +803,39 @@ impl Simulation {
             Event::PatientModeChanged(m) => format!("Patient mode switched to {m:?}"),
             Event::ChargeStarted(v) => {
                 self.charges_started = self.charges_started.saturating_add(1);
+                match self.cycle.as_mut() {
+                    Some(c) => c.charge_start = Some(now),
+                    None => {
+                        self.cycle = Some(Cycle {
+                            charge_start: Some(now),
+                            ..Cycle::default()
+                        });
+                    }
+                }
                 format!("Charging to {} V", v.0)
             }
-            Event::Charged(v) => format!("Charged ({} V on its own sensor)", v.0),
+            Event::Charged(v) => {
+                if let Some(c) = self.cycle.as_mut() {
+                    c.charged = Some(now);
+                }
+                format!("Charged ({} V on its own sensor)", v.0)
+            }
+            Event::ChargingDuringAnalysis => {
+                "Analysing AND charging (D-29): the capacitor charges in case a shock is advised"
+                    .to_string()
+            }
+            Event::EmptyingStarted => {
+                "Lets go of the capacitor: emptying in the background into the internal load"
+                    .to_string()
+            }
+            Event::ChargeBurnedOff => "Unused charge burned off (no shock)".to_string(),
+            Event::PadContactPoor(o) => {
+                format!("Pads on but {} Ω: above the 175 Ω shock range (poor contact)", o.0)
+            }
+            Event::CancelIgnoredDuringSelfTest => {
+                "Cancel pressed during the self-test: ignored (D-31)".to_string()
+            }
+            Event::CancelStuck => "Cancel control STUCK (held too long)".to_string(),
             Event::Plan(p) => format!(
                 "Shock plan: {:.2} ms + {:.2} ms gap + {:.2} ms, expects {:.1} J",
                 f64::from(p.phase1.0) / 1e3,
@@ -934,6 +992,20 @@ impl Simulation {
                 self.log(Source::Responder, format!("Pads attached ({ohms:.0} Ω)."));
             }
         }
+        if let Some(at) = self.press_pads_at {
+            if now >= at {
+                self.press_pads_at = None;
+                if let Some(ohms) = self.scenario.responder.pressing_pads_brings_ohms_to {
+                    if self.plant.borrow().pad_ohms.is_some() {
+                        self.plant.borrow_mut().pad_ohms = Some(ohms);
+                        self.log(
+                            Source::Responder,
+                            format!("Presses the pads down firmly: now {ohms:.0} Ω."),
+                        );
+                    }
+                }
+            }
+        }
         if let Some(at) = self.reattach_at {
             if now >= at {
                 self.reattach_at = None;
@@ -993,14 +1065,24 @@ impl Simulation {
     fn responder_hears(&mut self, prompt: Prompt) {
         let now = self.now();
         let want = match prompt {
-            Prompt::StartCpr | Prompt::DeviceFaultContinueCpr | Prompt::SeriousFaultContinueCpr => {
-                Some(true)
-            }
+            Prompt::StartCpr
+            | Prompt::DeviceFaultContinueCpr
+            | Prompt::SeriousFaultContinueCpr
+            | Prompt::CancelStuckContinueCpr => Some(true),
             Prompt::AnalysingDoNotTouch
             | Prompt::StopCprAnalysing
             | Prompt::DoNotTouchPatient
+            | Prompt::ShockAdvised
             | Prompt::ShockAdvisedCharging
             | Prompt::StandClear => Some(false),
+            Prompt::PressPadsFirmly => {
+                if self.scenario.responder.pressing_pads_brings_ohms_to.is_some()
+                    && self.press_pads_at.is_none()
+                {
+                    self.press_pads_at = Some(now.saturating_add(self.scenario.responder.reaction_ms));
+                }
+                None
+            }
             Prompt::AttachPads => {
                 let off = self.plant.borrow().pad_ohms.is_none();
                 if off && self.pads_on_at.is_some() && self.reattach_at.is_none() {
@@ -1075,22 +1157,22 @@ impl Simulation {
         let state = self.rescue.state();
         let stuck = faults.contains(&Fault::DischargeStuck);
         let frozen = faults.contains(&Fault::MainFreeze);
-        if state == RescueState::Fault && final_v >= empty && !stuck {
+        // The Fault state is entered at once and the capacitor empties in
+        // the background (the main controller checks it against its own
+        // time limit), so a run that ends within that time is not a failure.
+        if state == RescueState::Fault && final_v >= empty && !stuck && !self.rescue.emptying() {
             self.violate(
                 Rule::FaultLeftCharged,
                 format!("{final_v:.0} V at the end"),
                 None,
             );
         }
+        // Charged on purpose (or still emptying in the background, which
+        // the main controller checks against its own time limit).
         let armed_now = !frozen
-            && matches!(
-                state,
-                RescueState::SelfTest
-                    | RescueState::Charging
-                    | RescueState::Countdown
-                    | RescueState::Delivering
-                    | RescueState::Disarming
-            );
+            && (state == RescueState::SelfTest
+                || state.holds_charge()
+                || self.rescue.emptying());
         if stuck
             && !armed_now
             && final_v >= empty
@@ -1109,7 +1191,15 @@ impl Simulation {
                 None,
             );
         }
+        let charges_burned = self.rescue.counters().charges_burned;
+        let (charger_energy_j, dump_energy_j) = {
+            let p = self.plant.borrow();
+            (p.charger_energy_j, p.dump_energy_j)
+        };
         RunResult {
+            charges_burned,
+            charger_energy_j,
+            dump_energy_j,
             scenario: self.scenario,
             timeline: self.timeline,
             prompts,

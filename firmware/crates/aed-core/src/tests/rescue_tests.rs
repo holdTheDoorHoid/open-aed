@@ -28,8 +28,17 @@ fn reach(b: &mut Bench, state: RescueState, max_ms: u32) {
     );
 }
 
-/// After an abort or fault, the capacitor is empty and both holds are off.
-fn assert_capacitor_emptied(b: &Bench) {
+/// After an abort or fault: the main controller has already let go (hold
+/// off, charger off), and the capacitor, emptying in the background, is
+/// confirmed empty within the emptying time limit.
+fn assert_capacitor_emptied(b: &mut Bench) {
+    assert!(!b.board.main_hold, "main still holding");
+    assert!(b.board.charger.is_none(), "charger still on");
+    let limit = b.config.disarm_time_limit_ms;
+    assert!(
+        b.run_until(limit, |b| !b.rescue.emptying()) || !b.rescue.emptying(),
+        "emptying not confirmed within {limit} ms"
+    );
     assert!(
         b.board.cap_v < 50.0,
         "capacitor still at {} V",
@@ -57,13 +66,14 @@ fn full_rescue_vf_shock_cpr_normal_rhythm_cpr_exact_states_and_prompts() {
         vec![
             S::SelfTest,
             S::AttachPads, // self-test passed; pads already on
-            S::Analysing,
+            S::AnalysingCharging,
+            // The fake analyser says "shock" after 1 s, before the 8 s mock
+            // charge is done, so the device waits for the charge.
             S::Charging,
             S::Countdown,
             S::Delivering,
-            S::Disarming,
-            S::Cpr,
-            S::Analysing,
+            S::Cpr, // the remaining charge empties in the background
+            S::AnalysingCharging,
             S::Cpr,
         ]
     );
@@ -79,8 +89,6 @@ fn full_rescue_vf_shock_cpr_normal_rhythm_cpr_exact_states_and_prompts() {
             Prompt::AnalysingDoNotTouch,
             Prompt::ShockAdvisedCharging,
             Prompt::StandClear,
-            Prompt::Countdown(5),
-            Prompt::Countdown(4),
             Prompt::Countdown(3),
             Prompt::Countdown(2),
             Prompt::Countdown(1),
@@ -100,6 +108,8 @@ fn full_rescue_vf_shock_cpr_normal_rhythm_cpr_exact_states_and_prompts() {
     assert_eq!(b.rescue.counters().analyses, 2);
     assert!(b.has_event(|e| *e == Event::Shock(ShockOutcome::Delivered)));
     assert!(b.has_event(|e| *e == Event::SelfTestPassed));
+    // The second analysis charged too, and that charge was burned off.
+    assert_eq!(b.rescue.counters().charges_burned, 1);
     b.assert_no_violations();
 }
 
@@ -109,7 +119,7 @@ fn shock_then_cpr_then_reanalyse_and_shock_again_if_still_shockable() {
     b.board.rhythm = SHOCKABLE;
     reach(&mut b, S::Cpr, 60_000);
     let cpr_start = b.board.now;
-    reach(&mut b, S::Analysing, 130_000);
+    reach(&mut b, S::AnalysingCharging, 130_000);
     let cpr_length = b.board.now - cpr_start;
     assert!(
         (120_000..=120_010).contains(&cpr_length),
@@ -126,7 +136,7 @@ fn analyzer_is_reset_after_delivery() {
     let mut b = Bench::new();
     reach(&mut b, S::Delivering, 60_000);
     let before = b.resets.get();
-    reach(&mut b, S::Disarming, 2_000);
+    reach(&mut b, S::Cpr, 2_000);
     assert_eq!(b.resets.get(), before + 1);
     assert_eq!(b.rescue.last_decision(), None);
 }
@@ -134,14 +144,18 @@ fn analyzer_is_reset_after_delivery() {
 #[test]
 fn residual_charge_is_emptied_and_verified_after_shock() {
     let mut b = Bench::new();
-    reach(&mut b, S::Disarming, 60_000);
+    reach(&mut b, S::Cpr, 60_000);
     assert_eq!(b.shocks_fired(), 1);
+    // "Start CPR" comes at once; the residual charge empties in the background.
     assert!(
         b.board.cap_v > 50.0,
         "model keeps residual charge after a shock"
     );
-    reach(&mut b, S::Cpr, 5_000);
+    assert!(b.rescue.emptying());
+    assert!(!b.board.main_hold && b.board.charger.is_none());
+    assert!(b.run_until(b.config.disarm_time_limit_ms, |b| !b.rescue.emptying()));
     assert!(b.board.cap_v < 50.0);
+    assert_eq!(b.state(), S::Cpr);
     let events: Vec<Event> = b.rescue.events().iter().map(|e| e.event).collect();
     let shock = events
         .iter()
@@ -165,12 +179,16 @@ fn shock_is_requested_once_per_shock() {
 // ----- the decision rules ----------------------------------------------------------
 
 #[test]
-fn indeterminate_never_charges() {
+fn indeterminate_never_leads_to_a_countdown_or_a_shock() {
+    // With charging during analysis (D-29) the capacitor charges during
+    // every analysis; "not sure" must still never lead to a countdown,
+    // a shock request or a shock.
     let mut b = Bench::new();
     b.board.rhythm = NOT_SURE;
     reach(&mut b, S::Cpr, 60_000);
     b.run_ms(300_000);
     assert!(!b.state_sequence().contains(&S::Charging));
+    assert!(!b.state_sequence().contains(&S::Countdown));
     assert_eq!(b.board.requests.len(), 0);
     assert_eq!(b.shocks_fired(), 0);
     // "Not sure" for ever ends each analysis as inconclusive, never as a shock.
@@ -179,26 +197,38 @@ fn indeterminate_never_charges() {
 }
 
 #[test]
-fn non_shockable_goes_to_cpr_without_charging() {
+fn non_shockable_goes_to_cpr_at_once_and_the_charge_is_burned_off() {
     let mut b = Bench::new();
     b.board.rhythm = NON;
     reach(&mut b, S::Cpr, 60_000);
     assert_eq!(
         b.state_sequence(),
-        vec![S::SelfTest, S::AttachPads, S::Analysing, S::Cpr]
+        vec![S::SelfTest, S::AttachPads, S::AnalysingCharging, S::Cpr]
     );
     assert_eq!(b.board.requests.len(), 0);
-    assert!(b.board.cap_v < 1.0);
+    // "No shock advised" and "Start CPR" at the same moment: the device does
+    // not wait for the capacitor to empty before telling the responder.
+    let p = &b.board.prompts;
+    let no_shock = p.iter().find(|&&(_, x)| x == Prompt::NoShockAdvised).unwrap().0;
+    let cpr = p.iter().find(|&&(_, x)| x == Prompt::StartCpr).unwrap().0;
+    assert_eq!(no_shock, cpr);
+    assert!(b.board.cap_v > 50.0, "the charge from the analysis is still there");
+    assert!(!b.board.main_hold && b.board.charger.is_none());
+    assert!(b.run_until(b.config.disarm_time_limit_ms, |b| !b.rescue.emptying()));
+    assert!(b.board.cap_v < 50.0);
+    assert!(b.has_event(|e| matches!(e, Event::CapacitorEmptied(_))));
+    assert_eq!(b.rescue.counters().charges_burned, 1);
 }
 
 #[test]
-fn only_shockable_can_start_charging() {
+fn only_shockable_can_lead_to_a_countdown() {
     for rhythm in [SHOCKABLE, NON, NOT_SURE] {
         let mut b = Bench::new();
         b.board.rhythm = rhythm;
         b.run_ms(30_000);
-        let charged = b.state_sequence().contains(&S::Charging);
-        assert_eq!(charged, rhythm == SHOCKABLE, "rhythm {rhythm:?}");
+        let counted = b.state_sequence().contains(&S::Countdown);
+        assert_eq!(counted, rhythm == SHOCKABLE, "rhythm {rhythm:?}");
+        assert_eq!(!b.board.requests.is_empty(), rhythm == SHOCKABLE, "rhythm {rhythm:?}");
     }
 }
 
@@ -220,10 +250,11 @@ fn not_sure_wins_over_shockable_within_one_analysis() {
     b.board.rhythm = NOT_SURE;
     b.run_ms(100);
     // "Not sure" is not final, so the analysis carries on; it must not charge.
-    assert_eq!(b.state(), S::Analysing);
+    assert_eq!(b.state(), S::AnalysingCharging);
     let max = b.config.analysis_time_limit_ms + 1_000;
     reach(&mut b, S::Cpr, max);
     assert!(!b.state_sequence().contains(&S::Charging));
+    assert!(!b.state_sequence().contains(&S::Countdown));
     assert_eq!(b.board.requests.len(), 0);
 }
 
@@ -258,7 +289,7 @@ fn not_sure_during_analysis_is_not_final_and_a_later_shockable_charges() {
     b.run_to_analysing();
     run_decisions(&mut b, 2);
     b.run_ms(10);
-    assert_eq!(b.state(), S::Analysing, "two 'not sure' answers must not end the analysis");
+    assert_eq!(b.state(), S::AnalysingCharging, "two 'not sure' answers must not end the analysis");
     assert!(!b.board.prompts_only().contains(&Prompt::NoShockAdvised));
     b.board.rhythm = SHOCKABLE;
     reach(&mut b, S::Charging, 3_000);
@@ -310,6 +341,7 @@ fn not_sure_for_the_whole_analysis_goes_to_cpr_at_the_limit_as_inconclusive() {
     let i = p.iter().position(|&x| x == Prompt::AnalysisInconclusive).unwrap();
     assert_eq!(p.get(i + 1), Some(&Prompt::StartCpr));
     assert!(!b.state_sequence().contains(&S::Charging));
+    assert!(!b.state_sequence().contains(&S::Countdown));
     assert_eq!(b.shocks_fired(), 0);
 }
 
@@ -341,7 +373,7 @@ fn not_sure_during_countdown_still_aborts_the_shock() {
     assert_eq!(b.shocks_fired(), 0);
     assert_eq!(b.board.requests.len(), 0);
     assert!(b.has_event(|e| *e == Event::ShockAborted(AbortReason::RhythmChanged)));
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -359,6 +391,7 @@ fn analysis_timeout_counts_as_not_sure_and_goes_to_cpr() {
     );
     assert!(b.has_event(|e| *e == Event::AnalysisTimedOut));
     assert!(!b.state_sequence().contains(&S::Charging));
+    assert!(!b.state_sequence().contains(&S::Countdown));
 }
 
 #[test]
@@ -372,7 +405,8 @@ fn analysis_keeps_running_during_charging_and_countdown() {
         .skip_while(|e| !matches!(e.event, Event::ChargeStarted(_)))
         .filter(|e| matches!(e.event, Event::Decision(_)))
         .count();
-    // Roughly one per second over about 13 s of charging and countdown.
+    // Roughly one per second over about 11 s of analysing while charging,
+    // charging and counting down.
     assert!(decisions_while_armed >= 10, "only {decisions_while_armed}");
 }
 
@@ -390,7 +424,7 @@ fn no_shock_when_rhythm_turns_non_shockable_during_countdown() {
         .board
         .prompts_only()
         .contains(&Prompt::RhythmChangedNoShock));
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -402,7 +436,7 @@ fn no_shock_when_rhythm_turns_indeterminate_during_charging() {
     reach(&mut b, S::Cpr, 10_000);
     assert!(!b.state_sequence().contains(&S::Countdown));
     assert_eq!(b.shocks_fired(), 0);
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -422,10 +456,13 @@ fn rhythm_that_flickers_non_shockable_once_still_aborts() {
 
 #[test]
 fn stale_confirmation_at_delivery_gives_no_shock() {
-    // Analyser decides only every 15 s, so at the end of the countdown the
-    // last "shockable" is about 13 s old: older than the 5 s allowed.
+    // Analyser decides only every 15 s. The capacitor charged during the
+    // analysis, so the countdown starts at once and at its end the last
+    // "shockable" is about 3 s old: older than the 2 s allowed here.
     let config = Config {
         analysis_time_limit_ms: 20_000,
+        max_charged_ms: 30_000,
+        confirmation_max_age_ms: 2_000,
         ..Config::default()
     };
     let mut b = Bench::with_all(config, FakePlanner::default(), 250 * 15);
@@ -467,7 +504,7 @@ fn plan_is_made_from_resistance_measured_just_before_delivery() {
     let mut b = Bench::new();
     b.board.pad_ohms = 60;
     b.run_to_countdown();
-    b.run_ms(4_000);
+    b.run_ms(b.config.countdown_ms - 1_000);
     b.board.pad_ohms = 150;
     reach(&mut b, S::Cpr, 10_000);
     let plan = b.board.requests[0].plan;
@@ -481,16 +518,18 @@ fn plan_error_at_delivery_disarms_without_shock() {
     let mut b = Bench::new();
     b.run_to_countdown();
     // Just before the end: too quick for the debounced pad monitor to notice,
-    // but the fresh reading used for the plan sees it.
-    b.run_ms(4_900);
+    // but the fresh reading used for the plan sees it. Shorted pads are not
+    // on a patient, so the device asks for the pads at once (finding F-6).
+    b.run_ms(b.config.countdown_ms - 100);
     b.board.pad_ohms = 10;
-    reach(&mut b, S::Cpr, 10_000);
+    reach(&mut b, S::AttachPads, 10_000);
+    b.run_ms(b.config.disarm_time_limit_ms);
     assert_eq!(b.shocks_fired(), 0);
     assert_eq!(b.board.requests.len(), 0);
     assert!(b.has_event(
         |e| *e == Event::ShockAborted(AbortReason::PlanRefused(PlanError::ImpedanceTooLow))
     ));
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -503,7 +542,7 @@ fn plan_voltage_that_does_not_match_the_charge_is_a_fault() {
     reach(&mut b, S::Fault, 60_000);
     assert_eq!(b.rescue.fault(), Some(FaultKind::PlanMismatch));
     assert_eq!(b.shocks_fired(), 0);
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -531,7 +570,7 @@ fn pads_removed_during_countdown_aborts() {
     assert_eq!(b.board.requests.len(), 0);
     assert!(b.has_event(|e| *e == Event::ShockAborted(AbortReason::PadsOff)));
     assert!(b.board.prompts_only().contains(&Prompt::CheckPads));
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -543,7 +582,7 @@ fn pads_removed_during_charging_aborts() {
     b.run_ms(2_000);
     assert!(!b.state_sequence().contains(&S::Countdown));
     assert!(b.has_event(|e| *e == Event::ShockAborted(AbortReason::PadsOff)));
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -563,7 +602,7 @@ fn pads_off_during_cpr_goes_to_attach_pads_and_reattaching_reanalyses() {
     b.board.pad_ohms = 2_000;
     reach(&mut b, S::AttachPads, 1_000);
     b.board.pad_ohms = 90;
-    reach(&mut b, S::Analysing, 1_000);
+    reach(&mut b, S::AnalysingCharging, 1_000);
     assert_eq!(
         b.board.prompts_only().last(),
         Some(&Prompt::AnalysingDoNotTouch)
@@ -578,7 +617,7 @@ fn pad_glitch_shorter_than_debounce_is_ignored_during_analysis() {
     b.run_ms(100);
     b.board.pad_ohms = 80;
     b.run_ms(500);
-    assert_eq!(b.state(), S::Analysing);
+    assert_eq!(b.state(), S::AnalysingCharging);
 }
 
 #[test]
@@ -614,7 +653,7 @@ fn cancel_during_countdown_empties_capacitor() {
     assert!(b.has_event(|e| *e == Event::ShockAborted(AbortReason::Cancelled)));
     assert!(b.has_event(|e| *e == Event::CancelPressed));
     assert!(b.board.prompts_only().contains(&Prompt::ShockCancelled));
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -625,18 +664,23 @@ fn cancel_during_charging_empties_capacitor() {
     b.board.cancel = true;
     reach(&mut b, S::Cpr, 5_000);
     assert_eq!(b.shocks_fired(), 0);
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
-fn cancel_during_analysis_goes_to_cpr_without_charging() {
+fn cancel_during_analysis_goes_to_cpr_and_empties_the_capacitor() {
     let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 2_500);
     b.run_to_analysing();
+    b.run_ms(3_000); // part-charged by now
+    assert!(b.board.cap_v > 300.0);
     b.board.cancel = true;
     reach(&mut b, S::Cpr, 1_000);
     b.board.cancel = false;
     assert!(!b.state_sequence().contains(&S::Charging));
+    assert!(!b.state_sequence().contains(&S::Countdown));
     assert!(b.board.prompts_only().contains(&Prompt::AnalysisCancelled));
+    b.run_ms(b.config.disarm_time_limit_ms);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -654,35 +698,36 @@ fn cancel_during_delivering_withdraws_the_request() {
 }
 
 #[test]
-fn cancel_during_self_test_empties_and_faults_with_continue_cpr() {
+fn cancel_during_self_test_is_ignored_and_the_self_test_passes() {
+    // D-31: a stray press while the device is drawn and switched on must not
+    // disable it.
     let mut b = Bench::new();
     // Into the charge step of the self-test.
     assert!(b.run_until(5_000, |b| b.board.cap_v > 200.0));
     b.board.cancel = true;
-    reach(&mut b, S::Fault, 5_000);
-    assert_eq!(
-        b.rescue.fault(),
-        Some(FaultKind::SelfTest(SelfTestFailure::Cancelled))
-    );
-    assert_eq!(
-        b.board.prompts_only().last(),
-        Some(&Prompt::DeviceFaultContinueCpr)
-    );
-    assert_capacitor_emptied(&b);
+    b.run_ms(300);
+    b.board.cancel = false;
+    reach(&mut b, S::Cpr, 60_000);
+    assert_eq!(b.rescue.self_test_result(), Some(Ok(())));
+    assert!(b.has_event(|e| *e == Event::CancelIgnoredDuringSelfTest));
+    assert!(!b.has_event(|e| matches!(e, Event::Fault(_))));
+    assert_eq!(b.shocks_fired(), 1, "the device still shocks");
+    b.assert_no_violations();
 }
 
 #[test]
 fn cancel_works_in_every_state() {
     // Press cancel on entry to each state of a shockable rescue. In every case
     // there must be no shock in that cycle and the capacitor must end empty.
+    // In the self-test cancel is ignored (D-31); the press then still
+    // counts in the states that follow, so no shock may come either.
     let states = [
         S::SelfTest,
         S::AttachPads,
-        S::Analysing,
+        S::AnalysingCharging,
         S::Charging,
         S::Countdown,
         S::Delivering,
-        S::Disarming,
         S::Cpr,
     ];
     for target in states {
@@ -698,7 +743,10 @@ fn cancel_works_in_every_state() {
         }
         let shocks_before = b.shocks_fired();
         b.board.cancel = true;
-        b.run_ms(10_000);
+        // Shorter than the stuck-button time, then let go.
+        b.run_ms(b.config.cancel_stuck_ms / 2);
+        b.board.cancel = false;
+        b.run_ms(5_000);
         assert_eq!(
             b.shocks_fired(),
             shocks_before,
@@ -708,7 +756,11 @@ fn cancel_works_in_every_state() {
             b.board.cap_v < 50.0,
             "capacitor not empty after cancel in {target:?}"
         );
-        assert!(b.has_event(|e| *e == Event::CancelPressed), "{target:?}");
+        if target == S::SelfTest {
+            assert!(b.has_event(|e| *e == Event::CancelIgnoredDuringSelfTest));
+        } else {
+            assert!(b.has_event(|e| *e == Event::CancelPressed), "{target:?}");
+        }
         b.assert_no_violations();
     }
 }
@@ -726,7 +778,7 @@ fn patient_mode_change_during_countdown_aborts() {
     assert!(b.has_event(|e| *e == Event::ShockAborted(AbortReason::ModeChanged)));
     assert!(b.has_event(|e| *e == Event::PatientModeChanged(PatientMode::Child)));
     assert!(b.board.prompts_only().contains(&Prompt::ChildModeFrontBack));
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]
@@ -755,7 +807,7 @@ fn cpr_metronome_runs_at_configured_rate_and_cpr_lasts_its_period() {
     b.board.rhythm = NON;
     reach(&mut b, S::Cpr, 60_000);
     let start = b.board.now;
-    b.run_until_state(S::Analysing, 130_000);
+    b.run_until_state(S::AnalysingCharging, 130_000);
     let beats: Vec<u32> = b
         .board
         .beats
@@ -950,12 +1002,12 @@ fn capacitor_not_emptied_is_a_serious_fault_with_its_own_prompt() {
 }
 
 #[test]
-fn disarming_never_lasts_longer_than_its_limit() {
+fn emptying_is_confirmed_or_faulted_within_its_limit() {
     let mut b = Bench::new();
     b.run_to_countdown();
     b.board.dump_broken = true;
     b.board.cancel = true;
-    reach(&mut b, S::Disarming, 1_000);
+    assert!(b.run_until(1_000, |b| b.rescue.emptying()));
     let start = b.board.now;
     reach(&mut b, S::Fault, 10_000);
     let took = b.board.now - start;
@@ -997,12 +1049,14 @@ fn supervisor_latched_fault_puts_main_in_fault() {
 
 #[test]
 fn charging_never_lasts_longer_than_its_limit() {
+    // The limit runs from the moment charging is asked for, which with
+    // charging during analysis is the start of the analysis.
     let mut b = Bench::new();
     b.run_to_analysing();
     b.board.charger_broken = true;
-    reach(&mut b, S::Charging, 10_000);
     let start = b.board.now;
-    reach(&mut b, S::Disarming, 20_000);
+    reach(&mut b, S::Charging, 10_000);
+    reach(&mut b, S::Fault, 20_000);
     let took = b.board.now - start;
     assert!(
         took <= Config::default().charge_time_limit_ms + 4,
@@ -1024,7 +1078,7 @@ fn main_alone_cannot_fire() {
     assert_eq!(b.shocks_fired(), 0, "but nothing fired");
     assert!(b.has_event(|e| *e == Event::Shock(ShockOutcome::TimedOut)));
     assert!(b.board.prompts_only().contains(&Prompt::ShockNotDelivered));
-    assert_capacitor_emptied(&b);
+    assert_capacitor_emptied(&mut b);
 }
 
 #[test]

@@ -57,11 +57,10 @@ fn limit(c: &Config, s: RescueState) -> Option<u32> {
                 + c.self_test_agree_wait_ms
                 + c.disarm_time_limit_ms,
         ),
-        S::Analysing => Some(c.analysis_time_limit_ms),
+        S::Analysing | S::AnalysingCharging => Some(c.analysis_time_limit_ms),
         S::Charging => Some(c.charge_time_limit_ms),
         S::Countdown => Some(c.countdown_ms),
         S::Delivering => Some(c.delivery_timeout_ms),
-        S::Disarming => Some(c.disarm_time_limit_ms),
         S::Cpr => Some(c.cpr_period_ms),
         S::AttachPads | S::Fault => None,
     }
@@ -71,6 +70,7 @@ fn limit(c: &Config, s: RescueState) -> Option<u32> {
 struct Watcher {
     entered: (RescueState, u32),
     main_dead_since: Option<u32>,
+    emptying_since: Option<u32>,
     fires_checked: usize,
     failures: Vec<String>,
 }
@@ -80,6 +80,7 @@ impl Watcher {
         Watcher {
             entered: (S::SelfTest, 0),
             main_dead_since: None,
+            emptying_since: None,
             fires_checked: 0,
             failures: Vec::new(),
         }
@@ -128,15 +129,31 @@ impl Watcher {
 
         // 5. After Fault, the charger is off and the hold released; and outside
         //    the charging states the main controller never holds or charges.
-        let charging_state = matches!(
-            state,
-            S::SelfTest | S::Charging | S::Countdown | S::Delivering
-        );
+        let charging_state = state == S::SelfTest || state.holds_charge();
         if !charging_state && (b.board.main_hold || b.board.charger.is_some()) {
             self.failures.push(format!(
                 "t={now} {state:?} with hold {} charger {:?}",
                 b.board.main_hold, b.board.charger
             ));
+        }
+        // 5b. While a charge is being emptied in the background, the main
+        //     controller neither holds nor charges (no new charge starts).
+        if b.rescue.emptying() && (b.board.main_hold || b.board.charger.is_some()) {
+            self.failures.push(format!(
+                "t={now} {state:?}: holding or charging while still emptying"
+            ));
+        }
+        // 5c. Emptying is confirmed within its limit, or the device is in
+        //     Fault (the serious fault).
+        match (b.rescue.emptying(), self.emptying_since) {
+            (true, None) => self.emptying_since = Some(now),
+            (true, Some(since)) => {
+                if now - since > c.disarm_time_limit_ms + 2 * b.tick_ms {
+                    self.failures
+                        .push(format!("t={now} emptying not resolved in time"));
+                }
+            }
+            (false, _) => self.emptying_since = None,
         }
         if state == S::Fault && b.board.request.is_some() {
             self.failures
@@ -182,7 +199,9 @@ fn random_walk(seed: u64, length_ms: u32) -> Vec<String> {
                 };
             }
             if rng.chance(25) {
-                b.board.pad_ohms = [80, 140, 3_000, 10, 24, 176][rng.below(6) as usize];
+                // Includes 176 to 250 Ω: pads on but above the shock range (D-32).
+                b.board.pad_ohms =
+                    [80, 140, 3_000, 10, 24, 176, 200, 250, 251][rng.below(9) as usize];
             } else if b.board.pad_ohms != 80 && rng.chance(200) {
                 b.board.pad_ohms = 80;
             }
@@ -278,11 +297,10 @@ fn random_walks_actually_reach_every_state() {
     }
     for s in [
         S::AttachPads,
-        S::Analysing,
+        S::AnalysingCharging,
         S::Charging,
         S::Countdown,
         S::Delivering,
-        S::Disarming,
         S::Cpr,
     ] {
         assert!(seen.contains(&s), "{s:?} never reached");

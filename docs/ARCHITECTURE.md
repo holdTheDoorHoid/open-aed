@@ -1,6 +1,6 @@
 # System architecture
 
-Version 0.2, 27 November 2026. Decision numbers (D-xx) refer to [DECISIONS.md](../DECISIONS.md).
+Version 0.3, 27 November 2026. Decision numbers (D-xx) refer to [DECISIONS.md](../DECISIONS.md).
 
 **Everything in this document is a design on paper and in simulation. No hardware exists. Figures marked *model* come from arithmetic, not measurement.**
 
@@ -71,19 +71,19 @@ stateDiagram-v2
     [*] --> SelfTest: switched on
     SelfTest --> AttachPads: passed
     SelfTest --> Fault: failed
-    AttachPads --> Analysing: pads on a patient
-    Analysing --> Charging: shock advised
-    Analysing --> Cpr: no shock advised, or not sure
+    AttachPads --> AnalysingCharging: pads on a patient
+    AnalysingCharging --> Countdown: shock advised, already charged
+    AnalysingCharging --> Charging: shock advised, still charging
     Charging --> Countdown: charged
+    AnalysingCharging --> Cpr: no shock advised, or no clear answer in time
     Countdown --> Delivering: still shockable, pads on, not cancelled
-    Countdown --> Disarming: rhythm changed, pads off, or cancelled
+    Countdown --> Cpr: rhythm changed or cancelled
+    Countdown --> AttachPads: pads came off
     Delivering --> Cpr: shock delivered
-    Disarming --> Cpr: capacitor emptied
-    Cpr --> Analysing: two minutes of CPR done
-    Analysing --> AttachPads: pads came off
+    Cpr --> AnalysingCharging: two minutes of CPR done
+    AnalysingCharging --> AttachPads: pads came off
     Cpr --> AttachPads: pads came off
-    Charging --> Disarming: fault or cancel
-    Disarming --> Fault: could not empty the capacitor
+    Cpr --> Fault: capacitor could not be emptied
     Fault --> [*]
 ```
 
@@ -93,7 +93,10 @@ Points that matter:
 - **The rhythm is checked right up to delivery.** During the countdown the analysis keeps running. If the rhythm stops being shockable, the shock is abandoned and the capacitor emptied.
 - **Any fault leads to "continue CPR"**, with the capacitor emptied. A faulty device must never leave a responder waiting for it.
 - **Cancel works in every state.**
-- Charging while analysing, to save seconds, is a later optimisation. The first version charges only after a shock is advised.
+- **The capacitor charges while the rhythm is being analysed** (D-29), so a shock can follow the decision after only the 3-second countdown (D-30). If no shock is advised, the charge is burned off in the internal load.
+- **Emptying the capacitor happens in the background.** Whenever a charge is not going to be used, and after every shock, the device lets go of the capacitor and gives the responder the next instruction at once. It then confirms the capacitor is empty, will not start another charge until it is, and raises its most serious fault if it cannot confirm within the limit.
+- **Pads that are on but making poor contact** (resistance above the range a shock is designed for, up to about 250 ohms) are still analysed, with the prompt "Press pads firmly". A shock is given only if the resistance is in range at the moment of delivery (D-32).
+- **Cancel is ignored during the switch-on self-test**, and a cancel button held for 10 seconds is treated as stuck and reported as a fault (D-31).
 
 Timings (CPR period, countdown length, time limits) are settings in one place in the firmware, to be set from the current resuscitation guidelines and the purchased standard, not scattered through the code.
 

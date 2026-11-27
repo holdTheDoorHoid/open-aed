@@ -128,10 +128,10 @@ fn supervisor_holds_only_while_main_claims_charging_or_armed() {
         (S::AttachPads, false),
         (S::Analysing, false),
         (S::SelfTest, true),
+        (S::AnalysingCharging, true),
         (S::Charging, true),
         (S::Countdown, true),
         (S::Delivering, true),
-        (S::Disarming, false),
         (S::Cpr, false),
         (S::Fault, false),
     ] {
@@ -296,7 +296,7 @@ fn permit_is_available_again_after_a_new_arming() {
     // Main disarms, goes to CPR, then arms again.
     s.board.main_hold = false;
     s.board.charger = None;
-    s.claim(S::Disarming);
+    s.claim(S::Cpr);
     s.run_ms(1_000);
     s.claim(S::Cpr);
     s.run_ms(1_000);
@@ -483,6 +483,11 @@ fn provoke(kind: SupervisorFault) -> SupBench {
             s.claim(S::Countdown);
             s.run_ms(s.config.disagreement_persist_ms + 200);
         }
+        SupervisorFault::CancelStuck => {
+            s.claim(S::Cpr);
+            s.board.cancel = true;
+            s.run_ms(s.config.cancel_stuck_ms + 100);
+        }
     }
     s
 }
@@ -494,6 +499,7 @@ fn supervisor_alarm_is_on_for_every_supervisor_fault_kind() {
         SupervisorFault::ChargedTooLong,
         SupervisorFault::Overvoltage,
         SupervisorFault::VoltageDisagreement,
+        SupervisorFault::CancelStuck,
     ] {
         let mut s = provoke(kind);
         assert_eq!(s.sup.fault(), Some(kind));
@@ -528,4 +534,144 @@ fn supervisor_sounds_its_alarm_if_the_main_controller_never_starts() {
     // supervisor_does_not_hold_before_hearing_main).
     assert_eq!(s.sup.fault(), None);
     assert!(!s.board.sup_hold);
+}
+
+// ----- charging during analysis (D-29) ---------------------------------------------
+
+/// Fake main: hold on and charge while claiming "analysing and charging".
+fn precharge(s: &mut SupBench, ms: u32) {
+    s.board.main_hold = true;
+    s.board.charger = Some(Volts(s.planned));
+    s.claim(S::AnalysingCharging);
+    s.run_ms(ms);
+}
+
+#[test]
+fn supervisor_holds_and_accepts_a_charged_capacitor_during_analysis_without_a_permit() {
+    let mut s = SupBench::new();
+    precharge(&mut s, 12_000);
+    assert!(s.board.cap_v > 1_750.0);
+    assert!(s.board.sup_hold, "holds while analysing and charging");
+    assert!(!s.board.permit);
+    assert_eq!(s.sup.fault(), None, "a charged capacitor during analysis is not a fault");
+    assert!(s
+        .sup
+        .events()
+        .iter()
+        .all(|e| e.event != Event::SupervisorPermitted));
+}
+
+#[test]
+fn supervisor_refuses_permit_straight_from_analysing_and_charging() {
+    // A main controller that skips the countdown after charging during
+    // analysis gets no permit.
+    let mut s = SupBench::new();
+    precharge(&mut s, 9_000);
+    s.claim(S::Delivering);
+    s.run_ms(3_000);
+    assert!(s.refused(PermitRefusal::CountdownTooShort));
+    assert!(s
+        .sup
+        .events()
+        .iter()
+        .all(|e| e.event != Event::SupervisorPermitted));
+}
+
+#[test]
+fn supervisor_permits_after_charging_during_analysis_only_after_the_full_countdown() {
+    let mut s = SupBench::new();
+    precharge(&mut s, 9_000);
+    s.claim(S::Countdown);
+    s.run_ms(s.config.countdown_ms - 500);
+    s.claim(S::Delivering);
+    s.step();
+    assert!(!s.board.permit);
+    assert!(s.refused(PermitRefusal::CountdownTooShort));
+    s.run_ms(600);
+    assert!(s
+        .sup
+        .events()
+        .iter()
+        .any(|e| e.event == Event::SupervisorPermitted));
+}
+
+#[test]
+fn supervisor_charged_too_long_limit_still_applies_while_analysing_and_charging() {
+    let mut s = SupBench::new();
+    let ms = s.config.max_charged_ms + 500;
+    precharge(&mut s, ms);
+    assert_eq!(s.sup.fault(), Some(SupervisorFault::ChargedTooLong));
+    assert!(!s.board.sup_hold);
+}
+
+// ----- the shock range (D-32) ------------------------------------------------------
+
+#[test]
+fn supervisor_refuses_permit_above_the_shock_range_even_inside_the_sensing_range() {
+    for ohms in [176, 200, 250] {
+        let mut s = SupBench::new();
+        s.board.sup_pad_ohms = Some(ohms);
+        s.arm_and_count_down();
+        s.claim(S::Delivering);
+        s.step();
+        assert!(!s.board.permit, "{ohms} Ω");
+        assert!(s.refused(PermitRefusal::PadsOutOfRange), "{ohms} Ω");
+    }
+}
+
+// ----- cancel (D-31) ---------------------------------------------------------------
+
+#[test]
+fn supervisor_ignores_cancel_while_main_is_in_its_self_test() {
+    let mut s = SupBench::new();
+    s.board.main_hold = true;
+    s.board.charger = Some(Volts(400));
+    s.claim(S::SelfTest);
+    s.run_ms(100);
+    s.board.cancel = true;
+    s.run_ms(500);
+    assert!(s.board.sup_hold, "a press during the self-test must not stop it");
+    assert!(s.board.cap_v > 350.0);
+    assert_eq!(s.sup.fault(), None);
+    // Outside the self-test, cancel lets go at once.
+    s.claim(S::AnalysingCharging);
+    s.run_ms(10);
+    assert!(!s.board.sup_hold);
+}
+
+#[test]
+fn supervisor_latches_a_stuck_cancel_and_sounds_its_alarm() {
+    let mut s = SupBench::new();
+    s.claim(S::Cpr);
+    s.board.cancel = true;
+    s.run_ms(s.config.cancel_stuck_ms - 100);
+    assert_eq!(s.sup.fault(), None, "not yet stuck");
+    s.run_ms(200);
+    assert_eq!(s.sup.fault(), Some(SupervisorFault::CancelStuck));
+    assert!(s.board.sup_alarm);
+}
+
+// ----- finding F-5 -----------------------------------------------------------------
+
+#[test]
+fn no_already_used_refusal_is_recorded_for_a_delayed_delivering_echo() {
+    // After a good shock the main controller's "delivering" can still arrive
+    // in delayed status messages for a while. That is not a second request.
+    let mut s = SupBench::new();
+    s.arm_and_count_down();
+    s.claim(S::Delivering);
+    s.step();
+    assert!(s.board.permit);
+    // The shock: most of the charge leaves; main lets go.
+    s.board.cap_v *= 0.2;
+    s.board.main_hold = false;
+    s.board.charger = None;
+    // The delayed "delivering" keeps arriving for 150 ms, then CPR.
+    s.run_ms(150);
+    s.claim(S::Cpr);
+    s.run_ms(500);
+    assert!(
+        !s.refused(PermitRefusal::AlreadyUsed),
+        "spurious 'already used' refusal recorded"
+    );
 }

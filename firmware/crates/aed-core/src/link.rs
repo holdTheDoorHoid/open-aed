@@ -42,6 +42,10 @@ pub enum SupervisorFault {
     /// The supervisor's own voltage reading and the main controller's claim
     /// disagreed for longer than allowed.
     VoltageDisagreement,
+    /// The supervisor's own view of the cancel control read pressed without
+    /// a break for [`crate::Config::cancel_stuck_ms`] (D-31). A stuck cancel
+    /// would block every permit, silently, so it is a fault.
+    CancelStuck,
 }
 
 /// The supervisor's report back to the main controller.

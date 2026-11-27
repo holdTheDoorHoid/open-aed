@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Finding F-2 (fixed): the two independent voltage sensors and how much
 //! they may disagree, and what the allowed voltage window means for the
-//! delivered energy. SIMULATION ONLY: model sensors, model shock energy,
-//! provisional settings.
+//! delivered energy (finding F-9). Since owner decision D-28 the sensors
+//! are assumed accurate to ±1 % ± 7 V. SIMULATION ONLY: model sensors,
+//! model shock energy, provisional settings.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
 mod common;
 
 use aed_core::{Config, RescueState};
-use aed_sim::{by_name, run, Rule, RunResult, Scenario, SensorModel};
+use aed_sim::{by_name, run, RunResult, Scenario, SensorModel};
 use aed_types::{PatientMode, ShockPlanner};
 use aed_waveform::{BtePlanner, WaveformConfig};
-use common::{assert_invariants, assert_invariants_except, fail};
+use common::{assert_invariants, fail};
 
-/// The sensor accuracy the default `Config` assumes: ±2 % ± 10 V.
-const GAIN_ERROR: f64 = 0.02;
-const OFFSET_ERROR: f64 = 10.0;
+/// The sensor accuracy the default `Config` assumes (D-28): ±1 % ± 7 V.
+const GAIN_ERROR: f64 = 0.01;
+const OFFSET_ERROR: f64 = 7.0;
 
 fn sensor(sign: f64) -> SensorModel {
     SensorModel {
@@ -55,18 +56,27 @@ fn supervisor_does_not_fault_with_opposite_sensor_errors_inside_the_budget() {
 }
 
 #[test]
-fn supervisor_faults_when_one_sensor_is_eight_percent_off() {
+fn device_faults_when_one_sensor_is_outside_the_budget() {
+    // Outside the D-28 budget: one sensor 5 % or 8 % off, the other perfect.
     for name in ["adult-vf", "child-vf"] {
-        for (main_gain, sup_gain) in [(1.08, 1.0), (0.92, 1.0), (1.0, 1.08), (1.0, 0.92)] {
+        for (main_gain, sup_gain) in [
+            (1.05, 1.0),
+            (0.95, 1.0),
+            (1.0, 1.05),
+            (1.0, 0.95),
+            (1.08, 1.0),
+            (0.92, 1.0),
+            (1.0, 1.08),
+            (1.0, 0.92),
+        ] {
             let mut s = rescue(name);
             s.plant.main_voltage_sensor.gain = main_gain;
             s.plant.supervisor_voltage_sensor.gain = sup_gain;
             let r = run(&s).unwrap();
-            // A main sensor reading 8 % low never sees the 400 V self-test
-            // charge as reached, so the self-test waits its full charge time
-            // limit before reporting the fault: the known, still open,
-            // finding F-7 (silent switch-on), not part of this check.
-            assert_invariants_except(&r, &[Rule::SilentAtPowerOn]);
+            // A main sensor reading low never sees the 400 V self-test charge
+            // as reached; since the F-7 fix the self-test reports that after
+            // about 1 s, so the device is no longer silent at switch-on.
+            assert_invariants(&r);
             if !r.shocks.is_empty() || r.final_state != RescueState::Fault {
                 fail(&r, &format!("{name}: main gain {main_gain}, supervisor gain {sup_gain}: expected a fault and no shock"));
             }
@@ -183,16 +193,9 @@ fn delivered_energy_at_the_edges_of_the_allowed_voltage_window() {
         println!("{row}");
     }
     println!("outside ±{:.0} %: {outside:?}", tolerance * 100.0);
-    // Adult mode, both edges, and the bottom edge in child mode, stay in
-    // tolerance at every resistance. The top edge in child mode does NOT at
-    // low resistance: a conflict between sensor accuracy and the energy
-    // tolerance, parked as a finding in findings.rs
-    // (`child_energy_at_the_top_of_the_voltage_window_is_within_tolerance`).
-    for (edge, ohms, err) in &outside {
-        assert!(
-            edge.mode == PatientMode::Child && edge.high,
-            "{edge:?} at {ohms} Ω is {:+.1} % off target",
-            err * 100.0
-        );
-    }
+    // With the D-28 sensors (±1 % ± 7 V) and the at-plan window set from
+    // them (1 % + 12 V), both modes stay within tolerance at both edges and
+    // every resistance (finding F-9 closed; it is also checked on its own in
+    // findings.rs).
+    assert!(outside.is_empty(), "outside tolerance: {outside:?}");
 }

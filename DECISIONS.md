@@ -42,6 +42,8 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-30 | **Stand-clear countdown is 3 seconds.** | **Confirmed by owner, 27 Nov 2026** | Users are trained responders; saves 2 s of hands-off time. To be checked against the purchased standard. |
 | D-31 | **Cancel is ignored during the switch-on self-test.** A button held down throughout is reported as a stuck-button fault. | **Confirmed by owner, 27 Nov 2026** | A stray press while drawing the device must not disable it. |
 | D-32 | **Pads are sensed up to about 250 ohms.** Above the 175 ohm shock range the device still analyses and says "press pads firmly", but shocks only once the resistance is in range; otherwise CPR continues. Widening the shock range itself is to be studied once the standard is bought. | **Confirmed by owner, 27 Nov 2026** | Finding F-8: pads that are on but read slightly high must not leave the responder with only "attach pads". |
+| D-33 | **Emptying the capacitor runs in the background.** The responder gets the next instruction at once; the device confirms empty, will not recharge until it is, and faults if it cannot confirm. | Provisional | Waiting for the capacitor to empty delayed the responder by up to a second on every cycle for no safety gain. |
+| D-34 | **Moving the adult/child switch during an analysis** recharges for the new mode without stopping the analysis. After a shock is advised, a switch change still cancels it. | Provisional (Q-19) | A switch moved as pads go on is most likely a correction; sending the patient to two minutes of CPR first would cost more. |
 
 ## Owner questions
 
@@ -76,6 +78,12 @@ All seven were answered on 27 November 2026.
 | Q-16 | Pads on but resistance just over 175 ohms? | Sense wider and prompt now; study a wider shock range later | D-32 |
 | Q-17 | Child shock overshoot? | Require more accurate sensors | D-28 |
 | Q-18 | Supervisor alarm when the main controller never starts? | Keep it | D-26 |
+
+## Open questions
+
+**Q-19. Adult/child switch moved during analysis.** The firmware recharges for the new mode and keeps analysing (D-34). The alternative is to stop, go to CPR and analyse again in the new mode. Confirm or overrule.
+
+**Q-20. The last-seconds blind spot (finding F-4).** A heart that recovers in the last 2 seconds before delivery is still shocked, because the analysis looks at a 4-second stretch of signal. Options: add a fast "has the rhythm just changed?" check during the countdown; shorten the analysis window (costs accuracy); or accept it, as commercial fully automatic units have a similar gap. Needs a clinician's view.
 
 ## Things that need a professional, not a guess
 

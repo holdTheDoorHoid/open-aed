@@ -1,38 +1,72 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The rescue sequence: the main controller's state machine.
 //!
-//! This follows the diagram in ARCHITECTURE.md, "The rescue sequence":
+//! This follows the diagram in ARCHITECTURE.md, "The rescue sequence", with
+//! charging during analysis (owner decision D-29):
 //!
 //! ```text
-//! SelfTest -> AttachPads -> Analysing -> Charging -> Countdown -> Delivering -> Cpr
-//!                              |            |            |             |
-//!                              +-> Cpr      +-> Disarming (empty the capacitor) -> Cpr
-//!                                                        |
-//!                                                        +-> Fault (if it cannot be emptied)
-//! Cpr -> Analysing after the CPR period; Analysing/Cpr -> AttachPads if pads come off.
-//! Any fault: Disarming -> Fault ("continue CPR").
+//! SelfTest -> AttachPads -> AnalysingCharging --(shock, charged)--------> Countdown -> Delivering -> Cpr
+//!                              |        \--(shock, still charging)-> Charging -/
+//!                              +-> Cpr (no shock / not sure to the limit / cancel)
+//!                              +-> AttachPads (pads off)
+//! Cpr -> AnalysingCharging after the CPR period; Cpr -> AttachPads if pads come off.
+//! Charging / Countdown / Delivering -> Cpr if the shock is abandoned
+//!                                      (-> AttachPads if the pads came off).
+//! Any fault: -> Fault ("continue CPR").
 //! ```
+//!
+//! (With [`Config::charge_during_analysis`] switched off the device uses
+//! `Analysing` instead of `AnalysingCharging` and charges only after a shock
+//! is advised, as in the first design.)
+//!
+//! **Emptying runs in the background.** Whenever the device leaves a state
+//! in which it holds the capacitor charged (and on any fault), it lets go of
+//! the discharge path, which empties the capacitor into the internal load,
+//! and goes at once to its next state and instruction ("No shock advised.
+//! Start CPR.", "Shock delivered. Start CPR."). It does not wait for the
+//! capacitor to empty first: a responder is never left waiting on the
+//! device. Meanwhile it checks, every tick, that its own voltage reading
+//! (and the supervisor's) shows empty within [`Config::disarm_time_limit_ms`].
+//! Until it does, the device holds nothing and starts no new charge. If its
+//! own reading is not empty by the limit, that is the most serious fault
+//! ("Serious device fault. Do not touch the device. Continue CPR."), from
+//! whatever state the device has got to. The capacitor empties by itself
+//! when let go (hardware rule, discharge by default), so not waiting does
+//! not leave it charged; it only changes when the responder is told.
 //!
 //! The rules it keeps (each has a test that names it):
 //!
-//! * Only a `Shockable` decision can start charging. `NonShockable` ends the
-//!   analysis with "No shock advised" and CPR. "Not sure" (`Indeterminate`)
-//!   does not end it: the device repeats "Do not touch the patient" and keeps
-//!   analysing until it gets `Shockable` or `NonShockable`, or the analysis
-//!   time limit runs out ("inconclusive": no shock, CPR).
-//! * Analysis keeps running while charging and counting down. Any decision
-//!   other than `Shockable`, pads coming off, cancel, or a change of the
-//!   adult/child switch abandons the shock: the capacitor is emptied and the
-//!   device goes to CPR.
+//! * Only a `Shockable` decision can lead to a countdown and a shock.
+//!   `NonShockable` ends the analysis with "No shock advised" and CPR. "Not
+//!   sure" (`Indeterminate`) does not end it: the device repeats "Do not
+//!   touch the patient" and keeps analysing until it gets `Shockable` or
+//!   `NonShockable`, or the analysis time limit runs out ("inconclusive":
+//!   no shock, CPR).
+//! * The capacitor charges while the analysis runs (D-29), but only after
+//!   the self-test has passed, only once the supervisor reports that it is
+//!   holding the discharge path, and only once any earlier charge is
+//!   confirmed empty. A charge that is not used is burned off in the
+//!   internal load and counted ([`Counters::charges_burned`]).
+//! * Analysis keeps running while charging and counting down. After a shock
+//!   is advised, any decision other than `Shockable`, pads coming off,
+//!   cancel, or a change of the adult/child switch abandons the shock: the
+//!   capacitor is emptied and the device goes to CPR. (A switch change
+//!   during the analysis itself empties the capacitor and recharges for the
+//!   new mode without stopping the analysis.)
 //! * At the moment of delivery the latest decision must be `Shockable` and no
 //!   older than [`Config::confirmation_max_age_ms`], and no other decision may
-//!   have arrived since charging began.
+//!   have arrived since the shock was advised.
 //! * The shock plan is made from a fresh pad-resistance reading taken just
-//!   before delivery. If no plan can be made, no shock.
+//!   before delivery. If no plan can be made, no shock. Pads that are on but
+//!   read above the shock range (175 to 250 Ω, D-32) are analysed as normal
+//!   and the responder is asked to press them firmly; at delivery, if they
+//!   still read above the shock range: "Poor pad contact. No shock." and CPR.
 //! * The shock is requested once. Its outcome is recorded. Afterwards the
 //!   rhythm analysis is reset, the remaining charge is emptied and checked,
 //!   and the device goes to CPR.
-//! * Cancel works in every state.
+//! * Cancel works in every state except the switch-on self-test, where it
+//!   is ignored (D-31). A cancel that reads pressed without a break for
+//!   [`Config::cancel_stuck_ms`] is a stuck-button fault with its own prompt.
 //! * Any fault empties the capacitor and ends in the Fault state, whose prompt
 //!   tells the responder to continue CPR. If the capacitor cannot be
 //!   confirmed empty, that is its own, more serious fault.
@@ -45,8 +79,8 @@ use crate::link::{MainStatus, SupervisorFault, SupervisorReport};
 use crate::prompts::Prompt;
 use crate::selftest::{LinkSnapshot, SelfTest, SelfTestFailure, SelfTestProgress};
 use aed_types::{
-    EcgSample, Millis, Ohms, PatientMode, PlanError, RhythmAnalyzer, RhythmDecision, ShockPlan,
-    ShockPlanner, Volts, MAX_PATIENT_OHMS, MIN_PATIENT_OHMS,
+    pads_sensed, EcgSample, Millis, PatientMode, PlanError, RhythmAnalyzer, RhythmDecision,
+    ShockPlan, ShockPlanner, Volts, MAX_PATIENT_OHMS,
 };
 
 /// The states of the rescue sequence (ARCHITECTURE.md diagram).
@@ -56,20 +90,49 @@ pub enum RescueState {
     SelfTest,
     /// Waiting for the pads to be on a patient.
     AttachPads,
-    /// Analysing the heart rhythm; nobody may touch the patient.
+    /// Analysing the heart rhythm, without charging; nobody may touch the
+    /// patient. Used only when [`Config::charge_during_analysis`] is off.
     Analysing,
-    /// A shock is advised; charging the capacitor.
+    /// Analysing the heart rhythm while the capacitor charges, or is held
+    /// charged, in case a shock is advised (decision D-29); nobody may touch
+    /// the patient. No shock can be given from this state: a shock needs the
+    /// countdown first, and the supervisor gives no permit here.
+    AnalysingCharging,
+    /// A shock is advised; waiting for the capacitor to finish charging.
     Charging,
     /// Charged; counting down aloud before the automatic shock.
     Countdown,
     /// The shock has been requested; waiting for the hardware to deliver it.
     Delivering,
-    /// Emptying the capacitor into the internal load and checking it is empty.
-    Disarming,
     /// CPR period, with the compression metronome running.
     Cpr,
     /// The device has a fault and will not shock. Prompts continue CPR.
     Fault,
+}
+
+impl RescueState {
+    /// True for the two analysing states.
+    #[must_use]
+    pub const fn is_analysing(self) -> bool {
+        matches!(
+            self,
+            RescueState::Analysing | RescueState::AnalysingCharging
+        )
+    }
+
+    /// True for the states in which the main controller holds the
+    /// capacitor charged (or charging): charging during analysis, charging,
+    /// counting down and delivering.
+    #[must_use]
+    pub const fn holds_charge(self) -> bool {
+        matches!(
+            self,
+            RescueState::AnalysingCharging
+                | RescueState::Charging
+                | RescueState::Countdown
+                | RescueState::Delivering
+        )
+    }
 }
 
 /// Why a shock being prepared was abandoned.
@@ -84,6 +147,8 @@ pub enum AbortReason {
     /// The adult/child switch was moved.
     ModeChanged,
     /// The planner could not make a plan for the measured pad resistance.
+    /// `ImpedanceTooHigh` with the pads still on (175 to 250 Ω) is the
+    /// "poor pad contact" case of D-32.
     PlanRefused(PlanError),
     /// No recent enough `Shockable` decision at the moment of delivery.
     ConfirmationStale,
@@ -115,7 +180,7 @@ pub enum FaultKind {
     /// The main controller read a voltage over the limit.
     Overvoltage,
     /// The capacitor voltage drifted away from the planned voltage (up or
-    /// down) during the countdown.
+    /// down) after it had charged.
     ChargeOffTarget,
     /// The capacitor was armed for longer than the limit.
     ArmedTooLong,
@@ -129,6 +194,9 @@ pub enum FaultKind {
     SupervisorLinkLost,
     /// The battery cannot power a rescue.
     BatteryDepleted,
+    /// The cancel control read pressed for longer than
+    /// [`Config::cancel_stuck_ms`] (D-31). It would block every shock.
+    CancelStuck,
     /// The capacitor could not be confirmed empty within the limit.
     /// The most serious fault: it has its own prompt.
     CapacitorNotEmptied,
@@ -149,6 +217,10 @@ pub struct Counters {
     pub shocks_delivered: u16,
     /// Shocks advised but abandoned or not delivered.
     pub shocks_not_given: u16,
+    /// Charges emptied into the internal load without a shock (every
+    /// analysis that charges and ends without a shock burns one: the
+    /// battery and heat cost of D-29).
+    pub charges_burned: u16,
     /// Analyses started.
     pub analyses: u16,
     /// CPR periods started.
@@ -157,24 +229,23 @@ pub struct Counters {
     pub metronome_beats: u32,
 }
 
-/// Where to go once the capacitor is confirmed empty.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AfterDisarm {
-    Cpr,
-    Fault(FaultKind),
-}
-
-/// Debounced pad contact.
+/// Debounced on/off condition (pad contact, poor pad contact).
 #[derive(Debug, Clone, Copy)]
-struct PadMonitor {
+struct Debounced {
     on: bool,
     change_since: Option<Millis>,
 }
 
-impl PadMonitor {
-    /// Returns `Some(new_state)` when contact has changed for long enough.
-    fn update(&mut self, ohms: Ohms, now: Millis, debounce_ms: u32) -> Option<bool> {
-        let raw = pads_in_range(ohms);
+impl Debounced {
+    const fn off() -> Self {
+        Debounced {
+            on: false,
+            change_since: None,
+        }
+    }
+
+    /// Returns `Some(new_state)` when the raw condition has changed for long enough.
+    fn update(&mut self, raw: bool, now: Millis, debounce_ms: u32) -> Option<bool> {
         if raw == self.on {
             self.change_since = None;
             return None;
@@ -188,12 +259,14 @@ impl PadMonitor {
             None
         }
     }
-}
 
-/// True if a pad resistance is in the range the device must shock into.
-#[must_use]
-pub fn pads_in_range(ohms: Ohms) -> bool {
-    ohms >= MIN_PATIENT_OHMS && ohms <= MAX_PATIENT_OHMS
+    /// Take a fresh reading's word for it at once (used when the reading
+    /// taken for a shock plan shows the pads off before the smoothing has
+    /// caught up).
+    fn force(&mut self, on: bool) {
+        self.on = on;
+        self.change_since = None;
+    }
 }
 
 /// What ended an armed state early.
@@ -219,8 +292,10 @@ pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner> {
     state_changed: bool,
     self_test: SelfTest,
     self_test_result: Option<Result<(), SelfTestFailure>>,
-    pads: PadMonitor,
+    pads: Debounced,
+    poor_contact: Debounced,
     cancel_was_pressed: bool,
+    cancel_since: Option<Millis>,
     mode: PatientMode,
     mode_known: bool,
     mode_at_arming: PatientMode,
@@ -228,12 +303,16 @@ pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner> {
     analysis_result: Option<RhythmDecision>,
     not_sure_seen: bool,
     hands_off_reminded_at: Option<Millis>,
+    press_pads_reminded_at: Millis,
     last_decision: Option<(RhythmDecision, Millis)>,
     veto: bool,
     target: Volts,
     armed_since: Option<Millis>,
+    charged_at: Option<Millis>,
+    charger_was_on: bool,
+    shocked_this_arming: bool,
+    emptying_since: Option<Millis>,
     plan: Option<ShockPlan>,
-    after_disarm: AfterDisarm,
     fault: Option<FaultKind>,
     countdown_spoken: u8,
     next_beat: Millis,
@@ -264,11 +343,10 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             state_changed: true,
             self_test: SelfTest::new(config, config.self_test_voltage),
             self_test_result: None,
-            pads: PadMonitor {
-                on: false,
-                change_since: None,
-            },
+            pads: Debounced::off(),
+            poor_contact: Debounced::off(),
             cancel_was_pressed: false,
+            cancel_since: None,
             mode: PatientMode::Adult,
             mode_known: false,
             mode_at_arming: PatientMode::Adult,
@@ -276,12 +354,16 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             analysis_result: None,
             not_sure_seen: false,
             hands_off_reminded_at: None,
+            press_pads_reminded_at: Millis(0),
             last_decision: None,
             veto: false,
             target: Volts(0),
             armed_since: None,
+            charged_at: None,
+            charger_was_on: false,
+            shocked_this_arming: false,
+            emptying_since: None,
             plan: None,
-            after_disarm: AfterDisarm::Cpr,
             fault: None,
             countdown_spoken: 0,
             next_beat: Millis(0),
@@ -301,7 +383,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         self.state
     }
 
-    /// The fault that put the device in the Fault state (or is about to), if any.
+    /// The fault that put the device in the Fault state, if any.
     #[must_use]
     pub const fn fault(&self) -> Option<FaultKind> {
         self.fault
@@ -313,7 +395,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         self.self_test_result
     }
 
-    /// Running totals (shocks, analyses, CPR periods, metronome beats).
+    /// Running totals (shocks, burned charges, analyses, CPR periods, metronome beats).
     #[must_use]
     pub const fn counters(&self) -> Counters {
         self.counters
@@ -355,6 +437,13 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         self.mode
     }
 
+    /// True while the capacitor is being emptied in the background and is
+    /// not yet confirmed empty. No new charge starts until it is.
+    #[must_use]
+    pub const fn emptying(&self) -> bool {
+        self.emptying_since.is_some()
+    }
+
     /// Milliseconds since switch-on.
     #[must_use]
     pub fn elapsed_ms(&self, now: Millis) -> u32 {
@@ -371,13 +460,11 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
     /// only while analysing, charging, counting down or delivering; during CPR
     /// the signal is full of compression movement and is not analysed.
     pub fn on_ecg_sample(&mut self, sample: EcgSample, now: Millis) {
-        let analysing = matches!(
-            self.state,
-            RescueState::Analysing
-                | RescueState::Charging
-                | RescueState::Countdown
-                | RescueState::Delivering
-        );
+        let analysing = self.state.is_analysing()
+            || matches!(
+                self.state,
+                RescueState::Charging | RescueState::Countdown | RescueState::Delivering
+            );
         if !analysing {
             return;
         }
@@ -386,7 +473,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         };
         self.events.push(now, Event::Decision(decision));
         self.last_decision = Some((decision, now));
-        if self.state == RescueState::Analysing {
+        if self.state.is_analysing() {
             // Answers not yet acted on: "no shock" wins over everything, and
             // "not sure" wins over "shock".
             let pending = self.analysis_result;
@@ -420,17 +507,24 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         }
 
         let ohms = hw.pad_resistance();
-        match self.pads.update(ohms, now, self.config.pad_debounce_ms) {
+        match self
+            .pads
+            .update(pads_sensed(ohms), now, self.config.pad_debounce_ms)
+        {
             Some(true) => self.events.push(now, Event::PadsOn),
             Some(false) => self.events.push(now, Event::PadsOff),
             None => {}
         }
-
-        let cancel = hw.cancel_pressed();
-        if cancel && !self.cancel_was_pressed {
-            self.events.push(now, Event::CancelPressed);
+        let poor_raw = pads_sensed(ohms) && ohms > MAX_PATIENT_OHMS;
+        if self
+            .poor_contact
+            .update(poor_raw, now, self.config.pad_debounce_ms)
+            == Some(true)
+        {
+            self.events.push(now, Event::PadContactPoor(ohms));
         }
-        self.cancel_was_pressed = cancel;
+
+        let cancel = self.read_cancel(hw, now);
 
         let mode = hw.patient_mode();
         if !self.mode_known {
@@ -465,14 +559,18 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         }
 
         let voltage = hw.capacitor_voltage();
+        self.check_emptying(hw, now, voltage);
+
         match self.state {
-            RescueState::SelfTest => self.tick_self_test(hw, now, cancel),
+            RescueState::SelfTest => self.tick_self_test(hw, now),
             RescueState::AttachPads => self.tick_attach_pads(hw, now),
             RescueState::Analysing => self.tick_analysing(hw, now, cancel),
+            RescueState::AnalysingCharging => {
+                self.tick_analysing_charging(hw, now, cancel, voltage);
+            }
             RescueState::Charging => self.tick_charging(hw, now, cancel, voltage),
             RescueState::Countdown => self.tick_countdown(hw, now, cancel, voltage),
             RescueState::Delivering => self.tick_delivering(hw, now, cancel, voltage),
-            RescueState::Disarming => self.tick_disarming(hw, now, voltage),
             RescueState::Cpr => self.tick_cpr(hw, now),
             RescueState::Fault => self.tick_fault(hw, now),
         }
@@ -481,16 +579,105 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         self.send_status_if_due(hw, now);
     }
 
+    /// Read the cancel control: record presses, detect a stuck button, and
+    /// return whether cancel is in force. During the switch-on self-test a
+    /// press is recorded but ignored (D-31).
+    fn read_cancel(&mut self, hw: &mut impl MainHardware, now: Millis) -> bool {
+        let raw = hw.cancel_pressed();
+        if raw && !self.cancel_was_pressed {
+            self.events.push(
+                now,
+                if self.state == RescueState::SelfTest {
+                    Event::CancelIgnoredDuringSelfTest
+                } else {
+                    Event::CancelPressed
+                },
+            );
+        }
+        self.cancel_was_pressed = raw;
+        if raw {
+            let since = *self.cancel_since.get_or_insert(now);
+            let stuck = now.since(since) >= self.config.cancel_stuck_ms;
+            if stuck
+                && self.fault != Some(FaultKind::CancelStuck)
+                && self.state != RescueState::Fault
+            {
+                self.events.push(now, Event::CancelStuck);
+                self.begin_fault(FaultKind::CancelStuck, hw, now);
+            }
+        } else {
+            self.cancel_since = None;
+        }
+        raw && self.state != RescueState::SelfTest
+    }
+
+    // ----- background emptying ----------------------------------------------
+
+    /// Let go of the capacitor so it empties into the internal load, and
+    /// start checking that it does. The caller moves on at once.
+    fn start_emptying(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        hw.set_charger(None);
+        hw.withdraw_shock_request();
+        hw.set_discharge_hold(false);
+        if self.emptying_since.is_none() {
+            self.emptying_since = Some(now);
+            self.events.push(now, Event::EmptyingStarted);
+        }
+    }
+
+    /// Confirm a background emptying, or raise the serious fault if the
+    /// capacitor is not empty in time.
+    ///
+    /// "Empty" needs the main controller's own reading to show empty and,
+    /// so that the supervisor's own "charged too long" timer is also reset
+    /// before a new charge starts, a supervisor report sent after emptying
+    /// began whose reading shows empty too. If no such report comes by the
+    /// time limit (supervisor link problems, which have their own faults),
+    /// the main controller's own reading is enough.
+    fn check_emptying(&mut self, hw: &mut impl MainHardware, now: Millis, voltage: Volts) {
+        let Some(since) = self.emptying_since else {
+            return;
+        };
+        let own_empty = self.config.reads_empty(voltage);
+        let supervisor_empty = self.link.is_some_and(|l| {
+            l.received_at >= since
+                && now.since(l.received_at) <= self.config.heartbeat_timeout_ms
+                && self.config.reads_empty(l.report.capacitor_voltage)
+        });
+        let overdue = now.since(since) > self.config.disarm_time_limit_ms;
+        if own_empty && (supervisor_empty || overdue) {
+            self.emptying_since = None;
+            self.events.push(now, Event::CapacitorEmptied(voltage));
+        } else if !own_empty && overdue {
+            self.emptying_since = None;
+            self.serious_fault(hw, now);
+        }
+    }
+
+    /// The capacitor could not be confirmed empty: the most serious fault,
+    /// from whatever state the device is in.
+    fn serious_fault(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        let kind = FaultKind::CapacitorNotEmptied;
+        self.events.push(now, Event::Fault(kind));
+        self.fault = Some(kind);
+        if self.state == RescueState::Fault {
+            self.last_reminder = now;
+            hw.prompt(self.fault_prompt());
+        } else {
+            if self.state == RescueState::SelfTest {
+                self.self_test.abort(hw);
+            }
+            self.go(RescueState::Fault, hw, now);
+        }
+        // Already tried and failed: do not start checking again.
+        self.emptying_since = None;
+    }
+
     // ----- state handlers -------------------------------------------------
 
-    fn tick_self_test(&mut self, hw: &mut impl MainHardware, now: Millis, cancel: bool) {
-        if cancel {
-            // The device has not yet shown it can empty its capacitor safely,
-            // so a cancelled self-test is treated as a failed one.
-            self.self_test.abort(hw);
-            self.finish_self_test_failed(SelfTestFailure::Cancelled, hw, now);
-            return;
-        }
+    fn tick_self_test(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        // Cancel is ignored here (D-31): a stray press while the device is
+        // drawn and switched on must not disable it.
         match self.self_test.step(hw, self.link) {
             SelfTestProgress::Running => {}
             SelfTestProgress::Finished(Ok(pass)) => {
@@ -534,7 +721,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         self.events.push(now, Event::SelfTestFailed(f));
         if f == SelfTestFailure::DischargeTimeout {
             // Emptying has already been tried and failed: straight to the serious fault.
-            self.enter_fault(FaultKind::CapacitorNotEmptied, hw, now);
+            self.serious_fault(hw, now);
         } else {
             self.begin_fault(FaultKind::SelfTest(f), hw, now);
         }
@@ -542,10 +729,112 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
 
     fn tick_attach_pads(&mut self, hw: &mut impl MainHardware, now: Millis) {
         if self.pads.on {
-            self.go(RescueState::Analysing, hw, now);
+            self.enter_analysis(hw, now);
         } else if now.since(self.last_reminder) >= self.config.attach_pads_repeat_ms {
             self.last_reminder = now;
             hw.prompt(Prompt::AttachPads);
+        }
+    }
+
+    /// Start an analysis: with charging during analysis (D-29), set up the
+    /// charge first, then enter the analysing state.
+    fn enter_analysis(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        if self.config.charge_during_analysis {
+            if !self.begin_arming(hw, now) {
+                return;
+            }
+            self.events.push(now, Event::ChargingDuringAnalysis);
+            self.go(RescueState::AnalysingCharging, hw, now);
+        } else {
+            self.go(RescueState::Analysing, hw, now);
+        }
+    }
+
+    /// Set the charge target for the current mode and start a new arming.
+    /// Returns false (after starting the fault path) if the planner's charge
+    /// voltage does not fit the limits.
+    fn begin_arming(&mut self, hw: &mut impl MainHardware, now: Millis) -> bool {
+        let target = self.planner.charge_voltage(self.mode);
+        // The whole "at the planned voltage" window must lie above "empty"
+        // and below the overvoltage limit.
+        let window = self.config.at_plan_allowance(target).0;
+        let lowest_sensible = self.config.empty_voltage.0.saturating_add(window);
+        let highest_sensible = self.config.overvoltage_limit.0.saturating_sub(window);
+        if target.0 <= lowest_sensible || target.0 >= highest_sensible {
+            self.begin_fault(FaultKind::PlanMismatch, hw, now);
+            return false;
+        }
+        self.target = target;
+        self.armed_since = Some(now);
+        self.charged_at = None;
+        self.charger_was_on = false;
+        self.shocked_this_arming = false;
+        self.mode_at_arming = self.mode;
+        self.veto = false;
+        self.plan = None;
+        self.events.push(now, Event::ChargeStarted(target));
+        true
+    }
+
+    /// Analysis decisions shared by both analysing states. Returns true if
+    /// the state was left.
+    fn analysis_step(&mut self, hw: &mut impl MainHardware, now: Millis) -> bool {
+        match self.analysis_result.take() {
+            Some(RhythmDecision::Shockable) => {
+                self.shock_advised(hw, now);
+                return true;
+            }
+            Some(RhythmDecision::NonShockable) => {
+                hw.prompt(Prompt::NoShockAdvised);
+                self.go(RescueState::Cpr, hw, now);
+                return true;
+            }
+            Some(RhythmDecision::Indeterminate) => {
+                // Not final: movement is the likely cause. Ask again for
+                // hands off (not too often) and keep analysing.
+                self.not_sure_seen = true;
+                let due = self
+                    .hands_off_reminded_at
+                    .is_none_or(|t| now.since(t) >= self.config.hands_off_reminder_ms);
+                if due {
+                    self.hands_off_reminded_at = Some(now);
+                    hw.prompt(Prompt::DoNotTouchPatient);
+                }
+            }
+            None => {}
+        }
+        if self.time_in_state_ms(now) > self.config.analysis_time_limit_ms {
+            // Neither "shock" nor "no shock" in time. Never leave the
+            // responder waiting: say so and go to CPR (which says "Start CPR").
+            self.events.push(
+                now,
+                if self.not_sure_seen {
+                    Event::AnalysisInconclusive
+                } else {
+                    Event::AnalysisTimedOut
+                },
+            );
+            hw.prompt(Prompt::AnalysisInconclusive);
+            self.go(RescueState::Cpr, hw, now);
+            return true;
+        }
+        false
+    }
+
+    /// A shock is advised: straight to the countdown if the capacitor is
+    /// already charged, otherwise wait for the charge to finish.
+    fn shock_advised(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        if self.state == RescueState::Analysing && !self.begin_arming(hw, now) {
+            return;
+        }
+        // From now on any other answer stops the shock.
+        self.veto = false;
+        if self.charged_at.is_some() && self.emptying_since.is_none() {
+            hw.prompt(Prompt::ShockAdvised);
+            self.go(RescueState::Countdown, hw, now);
+        } else {
+            hw.prompt(Prompt::ShockAdvisedCharging);
+            self.go(RescueState::Charging, hw, now);
         }
     }
 
@@ -556,66 +845,72 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             hw.prompt(Prompt::AnalysisCancelled);
             self.go(RescueState::Cpr, hw, now);
         } else {
-            match self.analysis_result.take() {
-                Some(RhythmDecision::Shockable) => {
-                    self.start_charging(hw, now);
-                    return;
-                }
-                Some(RhythmDecision::NonShockable) => {
-                    hw.prompt(Prompt::NoShockAdvised);
-                    self.go(RescueState::Cpr, hw, now);
-                    return;
-                }
-                Some(RhythmDecision::Indeterminate) => {
-                    // Not final: movement is the likely cause. Ask again for
-                    // hands off (not too often) and keep analysing.
-                    self.not_sure_seen = true;
-                    let due = self
-                        .hands_off_reminded_at
-                        .is_none_or(|t| now.since(t) >= self.config.hands_off_reminder_ms);
-                    if due {
-                        self.hands_off_reminded_at = Some(now);
-                        hw.prompt(Prompt::DoNotTouchPatient);
-                    }
-                }
-                None => {}
-            }
-            if self.time_in_state_ms(now) > self.config.analysis_time_limit_ms {
-                // Neither "shock" nor "no shock" in time. Never leave the
-                // responder waiting: say so and go to CPR (which says "Start CPR").
-                self.events.push(
-                    now,
-                    if self.not_sure_seen {
-                        Event::AnalysisInconclusive
-                    } else {
-                        Event::AnalysisTimedOut
-                    },
-                );
-                hw.prompt(Prompt::AnalysisInconclusive);
-                self.go(RescueState::Cpr, hw, now);
-            }
+            self.analysis_step(hw, now);
         }
     }
 
-    fn start_charging(&mut self, hw: &mut impl MainHardware, now: Millis) {
-        let target = self.planner.charge_voltage(self.mode);
-        // The whole "at the planned voltage" window must lie above "empty"
-        // and below the overvoltage limit.
-        let window = self.config.at_plan_allowance(target).0;
-        let lowest_sensible = self.config.empty_voltage.0.saturating_add(window);
-        let highest_sensible = self.config.overvoltage_limit.0.saturating_sub(window);
-        if target.0 <= lowest_sensible || target.0 >= highest_sensible {
-            self.begin_fault(FaultKind::PlanMismatch, hw, now);
+    fn tick_analysing_charging(
+        &mut self,
+        hw: &mut impl MainHardware,
+        now: Millis,
+        cancel: bool,
+        voltage: Volts,
+    ) {
+        if !self.pads.on {
+            self.go(RescueState::AttachPads, hw, now);
             return;
         }
-        self.target = target;
-        self.armed_since = Some(now);
-        self.mode_at_arming = self.mode;
-        self.veto = false;
-        self.plan = None;
-        self.events.push(now, Event::ChargeStarted(target));
-        hw.prompt(Prompt::ShockAdvisedCharging);
-        self.go(RescueState::Charging, hw, now);
+        if cancel {
+            hw.prompt(Prompt::AnalysisCancelled);
+            self.go(RescueState::Cpr, hw, now);
+            return;
+        }
+        if self.mode != self.mode_at_arming {
+            // The switch was moved while analysing: empty the capacitor and
+            // charge again for the new mode. The analysis itself carries on.
+            self.burn_charge_if_any(now);
+            self.start_emptying(hw, now);
+            if !self.begin_arming(hw, now) {
+                return;
+            }
+        }
+        if let Some(kind) = self.charge_check(now, voltage) {
+            self.begin_fault(kind, hw, now);
+            return;
+        }
+        self.analysis_step(hw, now);
+    }
+
+    /// Charging progress and limits while the capacitor is meant to be
+    /// charging or charged (charging during analysis, and Charging).
+    /// Records "charged" the first time the plan is reached.
+    fn charge_check(&mut self, now: Millis, voltage: Volts) -> Option<FaultKind> {
+        if voltage > self.config.overvoltage_limit {
+            return Some(FaultKind::Overvoltage);
+        }
+        let armed_for = self.armed_since.map_or(0, |t| now.since(t));
+        if armed_for > self.config.max_charged_ms {
+            return Some(FaultKind::ArmedTooLong);
+        }
+        // Readings only count once this arming's own charge is under way
+        // (not while an earlier charge is still being emptied).
+        let charging = self.emptying_since.is_none() && self.charger_was_on;
+        match self.charged_at {
+            None => {
+                if charging && self.config.reached_plan(voltage, self.target) {
+                    self.charged_at = Some(now);
+                    self.events.push(now, Event::Charged(voltage));
+                } else if armed_for > self.config.charge_time_limit_ms {
+                    return Some(FaultKind::ChargeTimeout);
+                }
+            }
+            Some(_) => {
+                if !self.config.is_at_plan(voltage, self.target) {
+                    return Some(FaultKind::ChargeOffTarget);
+                }
+            }
+        }
+        None
     }
 
     /// Checks shared by Charging, Countdown and Delivering.
@@ -658,11 +953,14 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
     ) {
         if let Some(exit) = self.armed_check(now, cancel, voltage) {
             self.handle_armed_exit(exit, hw, now);
-        } else if self.config.reached_plan(voltage, self.target) {
-            self.events.push(now, Event::Charged(voltage));
+            return;
+        }
+        if let Some(kind) = self.charge_check(now, voltage) {
+            self.begin_fault(kind, hw, now);
+            return;
+        }
+        if self.charged_at.is_some() {
             self.go(RescueState::Countdown, hw, now);
-        } else if self.time_in_state_ms(now) > self.config.charge_time_limit_ms {
-            self.begin_fault(FaultKind::ChargeTimeout, hw, now);
         }
     }
 
@@ -686,7 +984,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             self.deliver(hw, now);
             return;
         }
-        // Speak the number of whole seconds left, rounded up: 5, 4, 3, 2, 1.
+        // Speak the number of whole seconds left, rounded up: 3, 2, 1.
         let remaining = self.config.countdown_ms.saturating_sub(elapsed);
         let seconds = remaining.saturating_add(999) / 1000;
         let seconds = u8::try_from(seconds).unwrap_or(u8::MAX);
@@ -711,6 +1009,13 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         match self.planner.plan(self.mode, ohms) {
             Err(e) => {
                 self.events.push(now, Event::PlanRefused(e));
+                if !pads_sensed(ohms) && self.pads.on {
+                    // The fresh reading shows the pads off (or shorted)
+                    // before the smoothed contact has caught up: treat it as
+                    // pads off now, so the device asks for the pads at once.
+                    self.pads.force(false);
+                    self.events.push(now, Event::PadsOff);
+                }
                 self.abort(AbortReason::PlanRefused(e), hw, now);
             }
             Ok(plan) => {
@@ -741,10 +1046,11 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                 hw.withdraw_shock_request();
                 self.events.push(now, Event::Shock(ShockOutcome::Delivered));
                 self.counters.shocks_delivered = self.counters.shocks_delivered.saturating_add(1);
+                self.shocked_this_arming = true;
                 self.analyzer.reset();
                 self.last_decision = None;
                 hw.prompt(Prompt::ShockDelivered);
-                self.disarm(AfterDisarm::Cpr, hw, now);
+                self.go(RescueState::Cpr, hw, now);
             }
             ShockStatus::Fault => {
                 hw.withdraw_shock_request();
@@ -757,7 +1063,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                     .push(now, Event::Shock(ShockOutcome::RefusedByInterlock));
                 self.not_given();
                 hw.prompt(Prompt::ShockNotDelivered);
-                self.disarm(AfterDisarm::Cpr, hw, now);
+                self.go(RescueState::Cpr, hw, now);
             }
             ShockStatus::Pending | ShockStatus::Idle => {
                 if let Some(exit) = self.armed_check(now, cancel, voltage) {
@@ -772,21 +1078,9 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                     self.events.push(now, Event::Shock(ShockOutcome::TimedOut));
                     self.not_given();
                     hw.prompt(Prompt::ShockNotDelivered);
-                    self.disarm(AfterDisarm::Cpr, hw, now);
+                    self.go(RescueState::Cpr, hw, now);
                 }
             }
-        }
-    }
-
-    fn tick_disarming(&mut self, hw: &mut impl MainHardware, now: Millis, voltage: Volts) {
-        if self.config.reads_empty(voltage) {
-            self.events.push(now, Event::CapacitorEmptied(voltage));
-            match self.after_disarm {
-                AfterDisarm::Cpr => self.go(RescueState::Cpr, hw, now),
-                AfterDisarm::Fault(kind) => self.enter_fault(kind, hw, now),
-            }
-        } else if self.time_in_state_ms(now) > self.config.disarm_time_limit_ms {
-            self.enter_fault(FaultKind::CapacitorNotEmptied, hw, now);
         }
     }
 
@@ -796,8 +1090,14 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             return;
         }
         self.metronome(hw, now);
+        if self.poor_contact.on
+            && now.since(self.press_pads_reminded_at) >= self.config.press_pads_repeat_ms
+        {
+            self.press_pads_reminded_at = now;
+            hw.prompt(Prompt::PressPadsFirmly);
+        }
         if self.time_in_state_ms(now) >= self.config.cpr_period_ms {
-            self.go(RescueState::Analysing, hw, now);
+            self.enter_analysis(hw, now);
         }
     }
 
@@ -819,6 +1119,19 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         self.state = to;
         self.state_since = now;
         self.state_changed = true;
+        // Leaving the charge-holding states (or a self-test that may have
+        // charged), and on any fault: let go, and empty in the background.
+        let was_charged = from.holds_charge() || from == RescueState::SelfTest;
+        if !to.holds_charge() && (was_charged || to == RescueState::Fault) {
+            if from.holds_charge() {
+                self.burn_charge_if_any(now);
+                self.armed_since = None;
+                self.charged_at = None;
+            }
+            if from != RescueState::SelfTest || to == RescueState::Fault {
+                self.start_emptying(hw, now);
+            }
+        }
         match to {
             RescueState::AttachPads => {
                 self.last_reminder = now;
@@ -826,14 +1139,19 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                     hw.prompt(Prompt::AttachPads);
                 }
             }
-            RescueState::Analysing => {
+            RescueState::Analysing | RescueState::AnalysingCharging => {
                 self.analyzer.reset();
                 self.analysis_result = None;
                 self.not_sure_seen = false;
                 self.hands_off_reminded_at = None;
                 self.last_decision = None;
-                self.armed_since = None;
                 self.counters.analyses = self.counters.analyses.saturating_add(1);
+                if self.poor_contact.on {
+                    // Pads on but above the shock range (D-32): ask for them
+                    // to be pressed down before the hands-off instruction.
+                    self.press_pads_reminded_at = now;
+                    hw.prompt(Prompt::PressPadsFirmly);
+                }
                 hw.prompt(if from == RescueState::Cpr {
                     Prompt::StopCprAnalysing
                 } else {
@@ -844,14 +1162,9 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                 self.countdown_spoken = 0;
                 hw.prompt(Prompt::StandClear);
             }
-            RescueState::Disarming => {
-                hw.set_charger(None);
-                hw.withdraw_shock_request();
-                hw.set_discharge_hold(false);
-            }
             RescueState::Cpr => {
-                self.armed_since = None;
                 self.next_beat = now;
+                self.press_pads_reminded_at = now;
                 self.counters.cpr_periods = self.counters.cpr_periods.saturating_add(1);
                 hw.prompt(Prompt::StartCpr);
             }
@@ -860,7 +1173,6 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                 hw.withdraw_shock_request();
                 hw.set_discharge_hold(false);
                 hw.set_ready_indicator(false);
-                self.armed_since = None;
                 self.next_beat = now;
                 self.last_reminder = now;
                 hw.prompt(self.fault_prompt());
@@ -869,69 +1181,64 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         }
     }
 
+    /// Count a charge that is being emptied without a shock.
+    fn burn_charge_if_any(&mut self, now: Millis) {
+        if self.charger_was_on && !self.shocked_this_arming {
+            self.counters.charges_burned = self.counters.charges_burned.saturating_add(1);
+            self.events.push(now, Event::ChargeBurnedOff);
+        }
+        self.charger_was_on = false;
+    }
+
     fn abort(&mut self, reason: AbortReason, hw: &mut impl MainHardware, now: Millis) {
         self.events.push(now, Event::ShockAborted(reason));
         self.not_given();
         hw.prompt(match reason {
             AbortReason::Cancelled => Prompt::ShockCancelled,
             AbortReason::RhythmChanged => Prompt::RhythmChangedNoShock,
+            AbortReason::PlanRefused(PlanError::ImpedanceTooHigh) if self.pads.on => {
+                Prompt::PadContactPoorNoShock
+            }
             AbortReason::PadsOff | AbortReason::PlanRefused(_) => Prompt::CheckPads,
             AbortReason::ModeChanged | AbortReason::ConfirmationStale => Prompt::ShockNotDelivered,
         });
-        self.disarm(AfterDisarm::Cpr, hw, now);
+        // With the pads off the device can neither analyse nor shock, so the
+        // one instruction is to put them back (finding F-6): straight to
+        // "Attach pads", not "Start CPR" followed at once by "Attach pads".
+        let next = if self.pads.on {
+            RescueState::Cpr
+        } else {
+            RescueState::AttachPads
+        };
+        self.go(next, hw, now);
     }
 
     fn not_given(&mut self) {
         self.counters.shocks_not_given = self.counters.shocks_not_given.saturating_add(1);
     }
 
-    fn disarm(&mut self, after: AfterDisarm, hw: &mut impl MainHardware, now: Millis) {
-        self.after_disarm = after;
-        self.go(RescueState::Disarming, hw, now);
-    }
-
-    /// Start the fault path: empty the capacitor, then the Fault state.
+    /// Start the fault path: stop everything, empty the capacitor in the
+    /// background, and go to the Fault state at once ("continue CPR").
     fn begin_fault(&mut self, kind: FaultKind, hw: &mut impl MainHardware, now: Millis) {
-        match self.state {
-            RescueState::Fault => {}
-            RescueState::Disarming => {
-                if self.after_disarm == AfterDisarm::Cpr {
-                    self.events.push(now, Event::Fault(kind));
-                    self.fault = Some(kind);
-                    self.after_disarm = AfterDisarm::Fault(kind);
-                }
-            }
-            _ => {
-                self.events.push(now, Event::Fault(kind));
-                self.fault = Some(kind);
-                if self.state == RescueState::SelfTest {
-                    self.self_test.abort(hw);
-                }
-                if self.state == RescueState::Delivering {
-                    hw.withdraw_shock_request();
-                }
-                self.disarm(AfterDisarm::Fault(kind), hw, now);
-            }
+        if self.state == RescueState::Fault {
+            return;
         }
-    }
-
-    fn enter_fault(&mut self, kind: FaultKind, hw: &mut impl MainHardware, now: Millis) {
-        if kind.is_serious() {
-            // Recorded even if another fault started the path: this one matters most.
-            self.events.push(now, Event::Fault(kind));
-            self.fault = Some(kind);
-        } else if self.fault.is_none() {
-            self.events.push(now, Event::Fault(kind));
-            self.fault = Some(kind);
+        self.events.push(now, Event::Fault(kind));
+        self.fault = Some(kind);
+        if self.state == RescueState::SelfTest {
+            self.self_test.abort(hw);
         }
+        hw.withdraw_shock_request();
         self.go(RescueState::Fault, hw, now);
     }
 
     fn fault_prompt(&self) -> Prompt {
-        if self.fault.is_some_and(FaultKind::is_serious) {
-            Prompt::SeriousFaultContinueCpr
-        } else {
-            Prompt::DeviceFaultContinueCpr
+        match self.fault {
+            Some(k) if k.is_serious() => Prompt::SeriousFaultContinueCpr,
+            Some(FaultKind::CancelStuck | FaultKind::Supervisor(SupervisorFault::CancelStuck)) => {
+                Prompt::CancelStuckContinueCpr
+            }
+            _ => Prompt::DeviceFaultContinueCpr,
         }
     }
 
@@ -954,26 +1261,43 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
 
     /// Re-assert every output for the current state, every tick. Hold before
     /// charging (and charge only once the supervisor reports it holds too);
-    /// stop charging before releasing.
+    /// stop charging before releasing. While an earlier charge is still being
+    /// emptied, hold nothing and charge nothing.
     fn apply_outputs(&mut self, hw: &mut impl MainHardware) {
+        let emptying = self.emptying_since.is_some();
         match self.state {
             // The self-test sequencer drives the outputs itself.
             RescueState::SelfTest => {}
-            RescueState::Charging | RescueState::Countdown => {
+            RescueState::AnalysingCharging | RescueState::Charging | RescueState::Countdown
+                if !emptying =>
+            {
                 hw.set_discharge_hold(true);
                 // The charger cannot run until the supervisor holds too
                 // (interlock rule), so ask for it only once the supervisor
-                // reports that it is holding.
-                let supervisor_holding = self.link.is_some_and(|l| l.report.holding);
-                hw.set_charger(supervisor_holding.then_some(self.target));
+                // reports that it is holding, in a report that arrived after
+                // this charge was asked for (not one left over from the
+                // self-test or an earlier charge).
+                let since = self.armed_since;
+                let supervisor_holding = self
+                    .link
+                    .is_some_and(|l| l.report.holding && since.is_some_and(|a| l.received_at > a));
+                if supervisor_holding {
+                    self.charger_was_on = true;
+                    hw.set_charger(Some(self.target));
+                } else {
+                    hw.set_charger(None);
+                }
             }
-            RescueState::Delivering => {
+            RescueState::Delivering if !emptying => {
                 hw.set_discharge_hold(true);
                 hw.set_charger(None);
             }
             RescueState::AttachPads
             | RescueState::Analysing
-            | RescueState::Disarming
+            | RescueState::AnalysingCharging
+            | RescueState::Charging
+            | RescueState::Countdown
+            | RescueState::Delivering
             | RescueState::Cpr
             | RescueState::Fault => {
                 hw.set_charger(None);
@@ -993,10 +1317,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         self.state_changed = false;
         self.last_status_at = Some(now);
         self.status_sequence = self.status_sequence.wrapping_add(1);
-        let armed = matches!(
-            self.state,
-            RescueState::Charging | RescueState::Countdown | RescueState::Delivering
-        );
+        let armed = self.state.holds_charge();
         let planned_voltage = if armed {
             self.target
         } else if self.state == RescueState::SelfTest && self.self_test.is_charging() {

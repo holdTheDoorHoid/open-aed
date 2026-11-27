@@ -53,17 +53,23 @@ pub fn assert_expected(r: &RunResult) {
             ok(r.shocks.len() == n, &format!("expected {n} shock(s)"));
             ok(r.final_fault.is_none(), "expected no fault");
         }
-        Expect::NeverCharges => {
-            ok(r.charges_started == 0, "must never start charging for a shock");
+        Expect::NeverCountsDown => {
+            ok(!r.entered(RescueState::Countdown), "must never count down to a shock");
+            ok(!r.entered(RescueState::Charging), "must never advise a shock");
             ok(r.shocks.is_empty(), "must never shock");
-            // Only the self-test's small charge (400 V) is allowed.
-            let self_test = f64::from(r.config.self_test_voltage.0);
-            ok(r.max_cap_v <= self_test, "capacitor charged above the self-test voltage");
+            // Charging during analysis (D-29) charges to the shock voltage at
+            // most; every such charge must be burned off.
+            let ceiling = 2_000.0;
+            ok(r.max_cap_v <= ceiling, "capacitor charged above the 2,000 V ceiling");
+            ok(
+                usize::from(r.charges_burned) + 1 >= r.charges_started as usize,
+                "an unused charge was not burned off",
+            );
         }
         Expect::AbortedNoShock => {
             ok(r.shocks.is_empty(), "must not shock");
             ok(r.charges_started >= 1, "a shock should have been prepared");
-            ok(r.entered(RescueState::Disarming), "must go through Disarming");
+            ok(r.entered(RescueState::Countdown), "a shock should have been advised");
             ok(r.final_state != RescueState::Fault, "abort is not a fault");
             ok(r.final_cap_v < empty, "capacitor must end empty");
         }

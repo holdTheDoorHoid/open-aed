@@ -3,6 +3,7 @@
 //! board with a crude capacitor model, a fake rhythm analyser and a fake
 //! shock planner. No real hardware is involved.
 
+mod decision_tests;
 mod mock;
 mod parts_tests;
 mod rescue_tests;

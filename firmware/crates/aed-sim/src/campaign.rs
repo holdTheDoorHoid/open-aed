@@ -101,7 +101,7 @@ pub fn random_scenario(seed: u32) -> Scenario {
                 let state = pick(
                     &mut rng,
                     &[
-                        RescueState::Analysing,
+                        RescueState::AnalysingCharging,
                         RescueState::Charging,
                         RescueState::Countdown,
                         RescueState::Cpr,
@@ -137,13 +137,16 @@ pub struct CampaignSummary {
     pub with_fault: usize,
     /// Count of final states.
     pub final_states: BTreeMap<String, usize>,
+    /// Count of the main controller's fault, for runs that ended in Fault.
+    pub final_faults: BTreeMap<String, usize>,
     /// Count of violations per rule (after classifying the known limitations below).
     pub violations: BTreeMap<String, usize>,
     /// Shocks fired on a non-shockable rhythm within the analyser's
     /// detection latency of the rhythm changing (a known limitation).
     pub late_rhythm_change_shocks: usize,
-    /// Runs where the device stayed silent after switch-on (finding: the
-    /// self-test charge step waits the full charge time limit).
+    /// Runs where the device stayed silent after switch-on. Before the F-7
+    /// fix: a charger failing during the self-test made it wait the full
+    /// 12 s charge time limit.
     pub silent_at_power_on: usize,
     /// Seeds of the runs counted in `late_rhythm_change_shocks`, with details.
     pub late_seeds: Vec<(u32, String)>,
@@ -155,6 +158,16 @@ pub struct CampaignSummary {
     pub shockable_clean_unshocked: Vec<(u32, String)>,
     /// Seeds of runs with an unexplained violation, for replay.
     pub failing_seeds: Vec<(u32, String)>,
+    /// Charges burned off without a shock, over all runs (the cost of D-29).
+    pub charges_burned: usize,
+    /// Charges started for a shock, over all runs.
+    pub charges_started: usize,
+    /// Energy burned off in the internal load, over all runs, joules (model).
+    pub dump_energy_j: f64,
+    /// The most energy burned off in any one run, joules (model), and its seed.
+    pub max_dump_energy_j: (f64, u32),
+    /// Simulated time over all runs, ms.
+    pub simulated_ms: u64,
 }
 
 impl CampaignSummary {
@@ -169,11 +182,22 @@ impl CampaignSummary {
 fn tally(sum: &mut CampaignSummary, seed: u32, r: &RunResult) {
     sum.runs += 1;
     sum.shocks += r.shocks.len();
+    sum.charges_burned += usize::from(r.charges_burned);
+    sum.charges_started += r.charges_started as usize;
+    sum.dump_energy_j += r.dump_energy_j;
+    if r.dump_energy_j > sum.max_dump_energy_j.0 {
+        sum.max_dump_energy_j = (r.dump_energy_j, seed);
+    }
+    sum.simulated_ms += u64::from(r.scenario.duration_ms);
     if !r.shocks.is_empty() {
         sum.runs_with_shock += 1;
     }
     if r.final_state == RescueState::Fault {
         sum.ended_in_fault += 1;
+        *sum
+            .final_faults
+            .entry(format!("{:?}", r.final_fault))
+            .or_insert(0) += 1;
     }
     if !r.injected.is_empty() {
         sum.with_fault += 1;
@@ -282,9 +306,30 @@ pub fn campaign_text(s: &CampaignSummary) -> String {
     let _ = writeln!(out, "  Runs with at least one shock: {}", s.runs_with_shock);
     let _ = writeln!(out, "  Shocks in total:              {}", s.shocks);
     let _ = writeln!(out, "  Runs ending in Fault:         {}", s.ended_in_fault);
+    let runs = s.runs.max(1) as f64;
+    let _ = writeln!(
+        out,
+        "  Charges started / burned off without a shock: {} / {} ({:.1} burned per run)",
+        s.charges_started,
+        s.charges_burned,
+        s.charges_burned as f64 / runs
+    );
+    let _ = writeln!(
+        out,
+        "  Energy burned off in the internal load (model): {:.0} J per run on average \
+         ({:.0} J per simulated minute), most {:.0} J (seed {})",
+        s.dump_energy_j / runs,
+        s.dump_energy_j / (s.simulated_ms.max(1) as f64 / 60_000.0),
+        s.max_dump_energy_j.0,
+        s.max_dump_energy_j.1
+    );
     let _ = writeln!(out, "  Final states:");
     for (k, v) in &s.final_states {
         let _ = writeln!(out, "    {k:<12} {v}");
+    }
+    let _ = writeln!(out, "  Faults at the end:");
+    for (k, v) in &s.final_faults {
+        let _ = writeln!(out, "    {k:<40} {v}");
     }
     let _ = writeln!(
         out,
@@ -297,7 +342,7 @@ pub fn campaign_text(s: &CampaignSummary) -> String {
     }
     let _ = writeln!(
         out,
-        "  Known finding, device silent for over 8 s after switch-on: {}",
+        "  Device silent for over 8 s after switch-on (was finding F-7): {}",
         s.silent_at_power_on
     );
     let _ = writeln!(

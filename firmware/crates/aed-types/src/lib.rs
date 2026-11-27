@@ -43,15 +43,44 @@ impl Millis {
     }
 }
 
-/// Lowest patient resistance the device must shock into (defibrillator standard test range).
+/// Lowest patient resistance the device must shock into (defibrillator
+/// standard test range). This is also the bottom of the pad-sensing range:
+/// anything lower is treated as pads shorted or touching, not as a patient.
 pub const MIN_PATIENT_OHMS: Ohms = Ohms(25);
-/// Highest patient resistance the device must shock into.
+/// Highest patient resistance the device will shock into: the top of the
+/// **shock range** (25 to 175 Ω). The shock planner refuses anything above
+/// it and the supervisor gives no permit above it. Unchanged by D-32.
 pub const MAX_PATIENT_OHMS: Ohms = Ohms(175);
+/// Highest pad resistance that still counts as "pads on a patient": the top
+/// of the **pad-sensing range** (25 to 250 Ω, decision D-32).
+///
+/// Between 175 and 250 Ω the pads are taken to be on the chest but making
+/// poor contact (dry gel, hair, not pressed down). The device then analyses
+/// as normal and asks for the pads to be pressed firmly, but shocks only if
+/// the resistance has come down into the shock range by the moment of
+/// delivery. Provisional: 250 Ω, from the owner's decision; other devices
+/// are reported to accept 180 to 230 Ω (not checked against the standard).
+pub const PAD_SENSE_MAX_OHMS: Ohms = Ohms(250);
+
+/// True if a pad resistance is in the shock range (25 to 175 Ω): the
+/// device may shock into it.
+#[must_use]
+pub const fn in_shock_range(ohms: Ohms) -> bool {
+    ohms.0 >= MIN_PATIENT_OHMS.0 && ohms.0 <= MAX_PATIENT_OHMS.0
+}
+
+/// True if a pad resistance means the pads are on a patient (25 to 250 Ω),
+/// whether or not it is low enough to shock into (see [`in_shock_range`]).
+#[must_use]
+pub const fn pads_sensed(ohms: Ohms) -> bool {
+    ohms.0 >= MIN_PATIENT_OHMS.0 && ohms.0 <= PAD_SENSE_MAX_OHMS.0
+}
 
 /// Which patient the device is set for (decision D-04: child mode is a switch, not a different pad).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatientMode {
-    /// Adult: 150 J target (D-03).
+    /// Adult: 150 J target, and only 150 J (D-03: no higher-energy adult
+    /// setting is planned or allowed for).
     Adult,
     /// Child: 50 J target (D-04).
     Child,
@@ -111,9 +140,11 @@ pub enum PlanError {
 ///
 /// # How the rescue sequence treats each answer
 ///
-/// **While analysing** (before any shock is advised):
+/// **While analysing** (before any shock is advised; the capacitor is
+/// normally already charging, decision D-29):
 ///
-/// * `Shockable` advises a shock: charging starts.
+/// * `Shockable` advises a shock: straight to the countdown if the capacitor
+///   is charged, otherwise once it is.
 /// * `NonShockable` is final: "No shock advised", then CPR.
 /// * `Indeterminate` ("not sure") is **not** final. Movement, such as
 ///   compressions that went on into the analysis, is the usual cause, so the
@@ -124,10 +155,10 @@ pub enum PlanError {
 /// * If `Indeterminate` and `Shockable` arrive together (before the device
 ///   has acted on either), "not sure" wins: no charging on that answer.
 ///
-/// **While armed** (charging, counting down, delivering): only `Shockable`
-/// keeps the shock going. Any other answer, `Indeterminate` included,
-/// abandons the shock at once and empties the capacitor, even if later
-/// answers say `Shockable` again.
+/// **Once a shock is advised** (waiting for the charge, counting down,
+/// delivering): only `Shockable` keeps the shock going. Any other answer,
+/// `Indeterminate` included, abandons the shock at once and empties the
+/// capacitor, even if later answers say `Shockable` again.
 ///
 /// **During CPR** answers are not used: the signal is full of compressions.
 pub trait RhythmAnalyzer {

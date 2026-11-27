@@ -260,7 +260,10 @@ fn self_test_checks_have_time_limits() {
     let mut b = board();
     b.charger_broken = true;
     let (_, took, _) = run_self_test(&mut b, Volts(400), GOOD_LINK);
-    assert!(took <= c.charge_time_limit_ms + 10, "charge step {took} ms");
+    assert!(
+        took <= c.charge_time_limit_for(Volts(400)) + 10,
+        "charge step {took} ms"
+    );
     let mut b = board();
     let (_, took, _) = run_self_test(
         &mut b,
@@ -271,6 +274,34 @@ fn self_test_checks_have_time_limits() {
         },
     );
     assert!(took <= c.self_test_link_wait_ms + 10, "link step {took} ms");
+}
+
+#[test]
+fn self_test_charge_step_limit_scales_with_the_test_voltage() {
+    // Finding F-7: the charge step's limit follows the stored energy (the
+    // square of the voltage), with a 1 s floor.
+    let c = Config::default();
+    assert_eq!(c.charge_time_limit_for(Volts(400)), 1_000);
+    assert_eq!(c.charge_time_limit_for(Volts(0)), 1_000);
+    assert_eq!(c.charge_time_limit_for(Volts(1_950)), 11_407);
+    assert_eq!(c.charge_time_limit_for(Volts(2_000)), 12_000);
+    assert_eq!(c.charge_time_limit_for(Volts(3_000)), 12_000, "never above the full limit");
+    assert_eq!(SelfTest::new(c, Volts(400)).charge_time_limit_ms(), 1_000);
+}
+
+#[test]
+fn weak_charger_is_reported_about_a_second_into_the_self_test() {
+    let mut b = board();
+    b.charger_broken = true;
+    let (r, took, _) = run_self_test(&mut b, Volts(400), GOOD_LINK);
+    assert_eq!(r, Err(SelfTestFailure::ChargeTimeout));
+    assert!(took <= 1_100, "reported after {took} ms");
+    // A charger that only gets part way is caught the same way.
+    let mut b = board();
+    b.charge_rate = 0.02; // about a tenth of the normal speed
+    let (r, took, _) = run_self_test(&mut b, Volts(400), GOOD_LINK);
+    assert_eq!(r, Err(SelfTestFailure::ChargeTimeout));
+    assert!(took <= 1_100, "reported after {took} ms");
 }
 
 #[test]
@@ -285,7 +316,7 @@ fn only_pad_problems_are_advisory() {
         F::Overvoltage,
         F::VoltageReadingsDisagree,
         F::DischargeTimeout,
-        F::Cancelled,
+        F::Aborted,
     ] {
         assert!(!f.is_advisory(), "{f:?}");
     }
@@ -305,7 +336,7 @@ fn self_test_abort_releases_capacitor() {
     b.now += 2;
     assert_eq!(
         st.step(&mut MainView(&mut b), None),
-        SelfTestProgress::Finished(Err(SelfTestFailure::Cancelled))
+        SelfTestProgress::Finished(Err(SelfTestFailure::Aborted))
     );
 }
 
@@ -350,14 +381,22 @@ fn default_config_is_valid_and_matches_documented_values() {
     let c = Config::default();
     assert_eq!(c.validate(), Ok(()));
     assert_eq!(c.cpr_period_ms, 120_000);
-    assert_eq!(c.countdown_ms, 5_000);
+    // D-30: "Stand clear. Three, two, one."
+    assert_eq!(c.countdown_ms, 3_000);
+    // D-29: charge during analysis.
+    assert!(c.charge_during_analysis);
+    assert_eq!(c.max_charged_ms, 25_000);
+    // D-31: a cancel held for 10 s is stuck.
+    assert_eq!(c.cancel_stuck_ms, 10_000);
+    assert_eq!(c.press_pads_repeat_ms, 15_000);
     assert_eq!(c.charge_time_limit_ms, 12_000);
     assert_eq!(c.empty_voltage, Volts(50));
     assert_eq!(c.metronome_interval_ms(), 545);
     assert_eq!(c.analysis_time_limit_ms, 12_000);
     assert_eq!(c.hands_off_reminder_ms, 3_000);
-    assert_eq!((c.at_plan_percent, c.at_plan_abs_volts), (2, Volts(20)));
-    assert_eq!((c.agree_percent, c.agree_abs_volts), (2, Volts(15)));
+    // D-28: sensors accurate to 1 % + 7 V; allowances 1 % + 12 V.
+    assert_eq!((c.at_plan_percent, c.at_plan_abs_volts), (1, Volts(12)));
+    assert_eq!((c.agree_percent, c.agree_abs_volts), (1, Volts(12)));
 }
 
 /// A reading from a sensor with a gain error (percent) and an offset (volts).
@@ -368,13 +407,13 @@ fn sensor(true_v: u16, percent: i32, offset: i32) -> Volts {
 
 #[test]
 fn two_sensors_with_opposite_errors_inside_their_allowance_agree_and_read_at_plan() {
-    // The accuracy the defaults assume: each sensor ±2 % ± 10 V. At the
-    // adult and child charge voltages and the self-test voltage, two
+    // The accuracy the defaults assume (D-28): each sensor ±1 % ± 7 V. At
+    // the adult and child charge voltages and the self-test voltage, two
     // sensors with opposite errors must agree and each must read "at plan".
     let c = Config::default();
     for v in [1_950, 1_150, 400] {
-        let high = sensor(v, 2, 10);
-        let low = sensor(v, -2, -10);
+        let high = sensor(v, 1, 7);
+        let low = sensor(v, -1, -7);
         assert!(c.readings_agree(high, low), "{v} V: {high:?} vs {low:?}");
         assert!(c.readings_agree(low, high));
         for r in [high, low] {
@@ -385,10 +424,12 @@ fn two_sensors_with_opposite_errors_inside_their_allowance_agree_and_read_at_pla
 }
 
 #[test]
-fn a_sensor_eight_percent_off_disagrees_at_the_charge_voltages() {
+fn a_sensor_five_or_eight_percent_off_disagrees_at_the_charge_voltages() {
+    // Outside the D-28 budget (two sensors may differ by 2 % + 24 V): one
+    // sensor 5 % (or 8 %) off, the other perfect.
     let c = Config::default();
     for v in [1_950, 1_150] {
-        for off in [8, -8] {
+        for off in [5, -5, 8, -8] {
             assert!(
                 !c.readings_agree(sensor(v, off, 0), Volts(v)),
                 "{v} V, one sensor {off} %"
@@ -405,7 +446,7 @@ fn empty_is_only_reported_when_the_true_voltage_is_below_the_empty_voltage() {
     // "empty" for a capacitor at or above 50 V.
     let c = Config::default();
     for true_v in 50..200 {
-        let low = sensor(true_v, -2, -15);
+        let low = sensor(true_v, -1, -12);
         assert!(!c.reads_empty(low), "{true_v} V true reads {low:?} and counted as empty");
     }
     assert!(c.reads_empty(Volts(0)));
@@ -445,6 +486,23 @@ fn contradictory_config_is_refused() {
             ConfigError::MaxChargedTooShort,
         ),
         (
+            // 12 s (analysis or charge) + 3 s countdown + 1 s delivery + 3 s
+            // emptying = 19 s: a limit of exactly that would cut off a
+            // normal pre-charged shock cycle.
+            Config {
+                max_charged_ms: 19_000,
+                ..base
+            },
+            ConfigError::MaxChargedTooShort,
+        ),
+        (
+            Config {
+                cancel_stuck_ms: 0,
+                ..base
+            },
+            ConfigError::ZeroTimeLimit,
+        ),
+        (
             Config {
                 heartbeat_timeout_ms: 50,
                 ..base
@@ -453,7 +511,7 @@ fn contradictory_config_is_refused() {
         ),
         (
             Config {
-                self_test_voltage: Volts(80),
+                self_test_voltage: Volts(70),
                 ..base
             },
             ConfigError::SelfTestVoltageTooLow,
@@ -507,7 +565,7 @@ fn contradictory_config_is_refused() {
         ),
         (
             Config {
-                at_plan_percent: 1,
+                at_plan_percent: 0,
                 ..base
             },
             ConfigError::AtPlanNarrowerThanSensorError,
@@ -540,6 +598,7 @@ fn every_prompt_has_short_plain_text() {
         Prompt::StopCprAnalysing,
         Prompt::DoNotTouchPatient,
         Prompt::AnalysisInconclusive,
+        Prompt::ShockAdvised,
         Prompt::ShockAdvisedCharging,
         Prompt::StandClear,
         Prompt::ShockDelivered,
@@ -552,6 +611,9 @@ fn every_prompt_has_short_plain_text() {
         Prompt::DeviceFaultContinueCpr,
         Prompt::SeriousFaultContinueCpr,
         Prompt::LowBattery,
+        Prompt::PressPadsFirmly,
+        Prompt::PadContactPoorNoShock,
+        Prompt::CancelStuckContinueCpr,
     ];
     for p in all {
         let t = p.text();
@@ -569,6 +631,9 @@ fn fault_prompts_tell_the_responder_to_continue_cpr() {
         .text()
         .contains("Continue CPR"));
     assert!(Prompt::SeriousFaultContinueCpr
+        .text()
+        .contains("Continue CPR"));
+    assert!(Prompt::CancelStuckContinueCpr
         .text()
         .contains("Continue CPR"));
 }
