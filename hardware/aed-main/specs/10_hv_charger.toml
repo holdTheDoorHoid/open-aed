@@ -1,0 +1,1464 @@
+# 10_hv_charger — HIGH VOLTAGE capacitor charger (work package WP-E).
+# NOT FOR CONSTRUCTION — unreviewed design. Drawn with AI assistance; not reviewed by a qualified high-voltage or
+# medical-device engineer (SAFETY.md §2a). Nothing here is an instruction to build, power or test anything.
+#
+# Source: docs/HARDWARE_DESIGN.md v0.2 §B4 (charger), §B8.2 (charger gates), §B12 (net classes), §13, §F-3;
+# hardware/aed-main/contract.md issue 2 (§2 refs, §4 rails, §5.5 nets, §8 parts, §9 WP-E decisions); D-25, D-29,
+# D-41, D-44, D-60. Arithmetic, part choices, datasheet versions, failure table and open problems:
+# hardware/aed-main/capture-notes/WP-E.md. References 1001-1099 (contract §2).
+
+[sheet]
+name = "10_hv_charger"
+title = "HIGH VOLTAGE: LT3751 flyback charger, TPS25982 eFuse, 1:50 transformer, two series rectifiers + fusible resistor, child FB ceiling"
+source = "docs/HARDWARE_DESIGN.md §B4; contract.md §5.5; capture notes WP-E.md"
+date = "2026-11-27"
+comments = [
+  "HIGH VOLTAGE: HV_* nets reach about 2,200 V (2,420 V capacitor test rating). Classes HV / HV_PULSE (hierarchy.toml). No test point on any HV_* net (contract R9).",
+  "Charger runs only when VTRANS_EN (eFuse) and CHARGE_EN AND local VTRANS-good (CHARGE pin) are high; both come from sheet 09 = request AND both discharge paths proven held AND not test mode (D-25).",
+  "Child ceiling: FB divider active only while MODE_CHILD_HW is high; open/absent contact = FB grounded = adult (D-60). MODE_HW_RB_N reads back the FB-switch gate drive.",
+]
+
+[nets]
+power = ["GND", "5V0_SYS", "VBAT_SYS", "HV_RTN", "VTRANS"]
+global = [
+  "VTRANS_EN",      # 09 -> 10, eFuse enable (session)            default resistor here: R1005 100k to GND
+  "CHARGE_EN",      # 09 -> 10, CHARGE request (regulation)        default resistor here: R1010 100k to GND
+  "CHG_DONE_N",     # 10 (LT3751 DONE, open collector) -> 04       pulled up on 04
+  "CHG_FAULT_N",    # 10 (LT3751 FAULT, open collector) -> 04      pulled up on 04
+  "MODE_CHILD_HW",  # 06 (switch pole B to 5V0_SYS in CHILD) -> 10 default resistor here: R1042 100k to GND (= adult)
+  "MODE_HW_RB_N",   # 10 (open drain, low = child ceiling active) -> 04, pulled up on 04
+  "HV_CAP_P",       # 10 -> 11, 13: storage capacitor positive (class HV_PULSE)
+]
+flag_nodes = ["VTRANS_IN"]   # eFuse input: fed from VBAT_SYS through F1001 and L1001 (passive parts)
+
+# ---------------------------------------------------------------------------------------------- ERC acceptances
+# KiCad reports an undriven rail once, at the rail's power symbol, without the net name, so each acceptance below
+# names the generated power symbol (#PWR number, stable for a given spec; if the spec changes and the number moves,
+# the build fails loudly rather than accepting something new). The rail named in each reason was checked against
+# 10_hv_charger.kicad_sch.
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR10000 Pin"
+until_sheet = "01_power_battery"
+reason = "VBAT_SYS is made on 01_power_battery (after F101), a placeholder in this worktree; contract §4: no package flags another package's rail."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR10001 Pin"
+until_sheet = "01_power_battery"
+reason = "GND is made on 01_power_battery (pack negative), a placeholder in this worktree; contract §4."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR10035 Pin"
+until_sheet = "03_power_rails"
+reason = "5V0_SYS is made on 03_power_rails (TPS62130), a placeholder in this worktree; contract §4."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR10070 Pin"
+until_sheet = "11_hv_storage"
+reason = "HV_RTN is made on 11_hv_storage (NT1101 || NT1102 to GND), a placeholder in this worktree; contract §4."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "MODE_HW_RB_N"
+until_sheet = "04_main_mcu"
+reason = "The reader and its 100k pull-up to 3V3_MAIN are on 04_main_mcu (contract §5.5), a placeholder in this worktree. (The other inter-sheet nets also have a second pin on this sheet, so KiCad does not flag them.)"
+
+# ---------------------------------------------------------------------------------------------- groups
+[[group]]
+id = "input"
+title = "Transformer supply: F1001 backup fuse, L1001 filter, TPS25982 eFuse (VTRANS_EN, soft start, 13 A circuit breaker, 4 retries then latch-off)"
+note = """
+VBAT_SYS -> F1001 (backup if the eFuse fails short) -> L1001 1 uH -> eFuse IN -> eFuse OUT = VTRANS -> bulk. The inductor sits BEFORE the eFuse, so the eFuse carries only the filtered battery current (about 10 A maximum) and its output sees only capacitors (no negative inductive kick at turn-off). The 21-23 A primary peaks come from the bulk capacitors.
+ILIM 113 Ohm: 1460/113 + 0.11 = 13.0 A nominal, about 11.4-14.5 A over temperature (datasheet rows scaled). Fast trip 2.1 x ILIM within 400 ns. Circuit-breaker variant: overload beyond ITIMER (470 pF: 0.11-0.48 ms) turns the FET off. RETRY_DLY 2.2 nF + NRETRY open: 4 automatic retries 92 ms apart, then latch-off (a nuisance trip heals itself; a real short ends latched after about 0.4 s). The latch resets only with VTRANS_EN low (< 0.8 V): firmware lowering CHG_SESSION, or HOLD_OK loss.
+dVdt 2.2 nF: 4600/2200 = 2.1 V/ms (0.8-3.2 V/ms with the dVdt current tolerance) -> inrush 0.6-2.3 A into about 720 uF; VTRANS reaches 8.4 V in 2.6-10 ms.
+OVLO 16.9 V variant: harmless extra cut-off far above the 8.4 V pack. EN abs max 7 V: VTRANS_EN is 5 V logic. D1005 limits the input spike when the eFuse opens against the inductor current (1 uH x 13 A^2 / 2 = 85 uJ into 20 uF: +4 V).
+"""
+
+[[group]]
+id = "bulk"
+title = "VTRANS bulk: 4 x 22 uF X7R + 2 x 330 uF polymer (carry the 7.2 A RMS ripple of the primary)"
+note = """
+Primary current at full charge: 21-23 A peaks, 9-10 A average, 11-12.4 A RMS -> 6.7-7.2 A RMS ripple, about 27-43 kHz (capture notes §4). The polymers carry most of the fundamental; the ceramics carry the edges. Place at the transformer primary and switch, smallest loop (LT3751 layout item 3).
+"""
+
+[[group]]
+id = "vtgood"
+title = "VTRANS_GOOD: TLV3012B (1.242 V reference) rises at 4.99-5.29 V, falls at 4.76-5.07 V; then >= 1 ms delay; AND CHARGE_EN -> CHARGE"
+note = """
+R-5: CHARGE must not rise before VTRANS is above the LT3751 UVLO1 band (4.58-4.85 V, see the controller box), or the part latches FAULT. Comparator: IN+ = VTRANS x 100k/(309k+100k) with 7.68M positive feedback from OUT; IN- = REF. Rising = 1.242 x 4.130 = 5.13 V nominal, falling 4.93 V nominal (hysteresis 0.20 V at a 5.0 V output swing).
+Delay: 100k + 22 nF into a Schmitt input of U1004 (VT+ 2.39-3.04 V at 5 V) = 1.27-2.29 ms after VTRANS is good; D1006 empties the capacitor at once when VTRANS drops.
+U1004 SN74LVC1G97 wired as a 2-input AND with Schmitt inputs: TI function Y = C'.B + C.A; B (pin 1) = GND gives Y = A.C = CHARGE_EN AND VTRANS-good-delayed. Push-pull everywhere: an open comparator, open delay node or open gate input is pulled low (R11). R1011 holds CHARGE low if U1004's output is open.
+"""
+
+[[group]]
+id = "ctrl"
+title = "LT3751IUFD controller: charge mode (adult), UVLO/OVLO, RVTRANS/RVOUT/RDCM/RBG, DONE and FAULT to the main controller"
+note = """
+VCC = 5V0_SYS; LVGATE tied to HVGATE (VCC <= 8 V, datasheet Note 8); CLAMP to VCC (5.6 V gate clamp; the gate swings to VCC with LVGATE active).
+Lockouts (V = 1.225 V + 50 uA x R; pin threshold 1.195-1.255 V, pin current 48.5-51.5 uA): UVLO1 69.8k -> VTRANS 4.58/4.72/4.85 V; OVLO1 154k -> 8.66/8.93/9.19 V; UVLO2 71.5k -> VCC 4.66/4.80/4.94 V; OVLO2 87.6k -> 5.44/5.61/5.77 V. 470 pF on each pin (datasheet: 100 pF-1 nF against false trips).
+Primary-side output trip (VOUT comparator): Vout = 0.98 x N x RVOUT/RBG - Vdiode = 0.98 x 50 x 40.2k/931 = 2,116 V sensed, minus the rectifier and R1004 drops at the trip. RVTRANS = RVOUT = 40.2k, RDCM = 18.2k (= 0.45 x RVTRANS; datasheet Table 2 row for VTRANS 5-80 V), all 0.1 %. Keep RVOUT/RDCM/RVTRANS nodes short with no plane underneath (datasheet layout items 4).
+DONE and FAULT are latched open collectors; both pulse low for microseconds at every CHARGE rise. 10k + 1 nF (10 us) filters that pulse (datasheet: 5-20 us RC); the pull-ups (100k to 3V3_MAIN) are on 04.
+"""
+
+[[group]]
+id = "power"
+title = "Primary power stage: 2 x BSC070N10LS5 in parallel, 5 mOhm Kelvin sense (21.2 A peak), RC snubber, diode + 45 V TVS clamp"
+note = """
+Current limit 106 mV (100-112) / 5 mOhm = 21.2 A (19.8-22.9 A incl. 1 % resistor and 180 ns delay at 8.4 V). Switch drain: VTRANS (<= 8.4 V) + reflected (Vout + drops)/50 (<= 45.7 V at the trip top) + leakage spike clamped by D1003 + D1004 (SMCJ45A: VBR >= 50 V, about 75 V at 23 A) -> about 90 V peak against 100 V (and EAS 55 mJ avalanche rating as backup).
+Two FETs share the 12.4 A RMS: about 0.5 W each in conduction at 4.5-5 V gate (8.5 mOhm max at 25 C, x1.55 hot). Individual 2.2 Ohm gate resistors; 10k gate-source resistors keep the FETs off if 5V0_SYS is absent while VTRANS is present.
+Snubber across the primary 10 Ohm + 1 nF (tau 10 ns < 1 us, datasheet). The sense resistor is Kelvin-connected: CSP and CSN are dedicated traces to its sense pads (datasheet layout).
+"""
+
+[[group]]
+id = "hv_out"
+title = "HIGH VOLTAGE secondary: T1001 1:50 (made to order), D1001 + D1002 UX-F5B in series (each blocks the full voltage, R-15), R1004 fusible -> HV_CAP_P"
+note = """
+Each UX-F5B is rated 8 kV repetitive (Sanken rev 1.6); worst reverse voltage = capacitor 2,420 V (test) + 50 x 9.2 V = 2,880 V -> 2.8 x margin per diode; no voltage sharing is relied on (no grading resistors). Average current <= IPK/2N = 0.23 A vs 0.35 A rating; trr 0.15 us max is ABOVE the LT3751's < 100 ns recommendation (capture notes).
+R1004 (about 10 Ohm, high-voltage fusible) limits and then breaks a capacitor discharge into the secondary if both diodes short (R-15). No catalogue part found that states >= 3 kV across the open element: qualification part (footprint and MPN to be decided).
+HV_SEC, HV_D_MID, HV_RECT: class HV (12.5 mm placeholder). HV_CAP_P: class HV_PULSE. HV_RTN: class RTN_PULSE. No test points (R9).
+"""
+
+[[group]]
+id = "fb"
+title = "Child-mode voltage ceiling (D-60): FB divider 14 x 2.87 MOhm + 36.9 kOhm (0.1 %), grounded by Q1003 || Q1004 unless MODE_CHILD_HW is high; readback MODE_HW_RB_N"
+note = """
+Adult and default: Q1003 and Q1004 on, FB about 0 V -> charge mode (the LT3751 runs until CHARGE falls or the VOUT comparator trips). Child: MODE_CHILD_HW high -> U1005 drives FB_GATE low -> both FETs off -> FB = Vout/1,089.9 -> hand-over to regulation >= 1,206 V, regulation 1,282-1,365 V, no-load stop <= 1,507 V.
+Fail direction: MODE_CHILD_HW open or unpowered -> R1042 pulls it low -> FB_GATE high -> adult; U1005 output open -> R1043 pulls FB_GATE high -> adult. One FET open -> the other still grounds FB (adult kept; this is why there are two). U1005 output stuck low -> child ceiling in the adult position, seen on MODE_HW_RB_N (U1006 open drain follows FB_GATE: low = child ceiling active). Either FET shorted = adult ceiling always (design fault 36, not read back).
+Top string: 14 x TNPV1210 2.87 MOhm 0.1 % 25 ppm/K thin film (the contract's 4.02 MOhm 0.1 % thin film is not made: Vishay TNPV tops out at 3.01 MOhm) -> 40.18 MOhm, ratio 1,089.9 vs the design's 1,090.4. 157 V and 8.6 mW per element at 2,200 V (part rated 1,000 V). Every node HV_FB_n is class HV. CHG_FB is low voltage but its creepage to HV_FB_13 must follow the in-string rule (0.6 mm + 0.005 mm/V).
+C1024 2.2 nF on FB (datasheet: small capacitor FB to ground lowers injected ripple) gives tau 81 us with the 36.9k.
+"""
+
+[[group]]
+id = "tp"
+title = "Test points (design §15): VTRANS_EN, CHARGE_EN, VTRANS-good after the delay, CHG_DONE_N. None on HV nets."
+note = "Bare copper pads. No procedure is attached to them (SAFETY.md §2a)."
+
+# ============================================================================================== input / eFuse
+[[part]]
+ref = "F1001"
+group = "input"
+lib_id = "Device:Fuse"
+value = "15A very fast 65VDC"
+footprint = "Fuse:Fuse_Littelfuse-NANO2-451_453"
+mpn = "0453015.MR"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/products/fuses/surface-mount-fuses/nano-2-fuses/453.aspx"
+description = "Backup fuse in series with the eFuse (contract F1001 15 A). NANO2 453, 15 A, 65 V AC/DC (distributor data; maker datasheet not opened)"
+fields = { DocRef = "F1001", Verify = "maker datasheet not opened: 65 VDC rating, DC breaking capacity (distributors give 150-300 A DC), I2t; fast-acting chosen instead of the design's time-lag (capture notes, departures)" }
+between = ["VBAT_SYS", "VTRANS_FUSED"]
+
+[[part]]
+ref = "L1001"
+group = "input"
+lib_id = "Device:L"
+value = "1.0uH 30A sat"
+footprint = "Inductor_SMD:L_Coilcraft_XAL1010-XXX"
+mpn = "XAL1010-102MEB"
+manufacturer = "Coilcraft"
+datasheet = "https://www.coilcraft.com/en-us/products/power/shielded-inductors/molded-inductor/xal/xal1010/"
+description = "Input filter inductor ahead of the eFuse: 1.0 uH; requirement Isat >= 25 A, Irms >= 12 A, DCR <= 3 mOhm, -40..+125 C"
+fields = { DocRef = "LC filter (design §B4.3)", Verify = "Coilcraft datasheet not opened: Isat, Irms, DCR of XAL1010-102" }
+between = ["VTRANS_FUSED", "VTRANS_IN"]
+
+[[part]]
+ref = "D1005"
+group = "input"
+lib_id = "Device:D_Zener"
+value = "SMBJ12A"
+footprint = "Diode_SMD:D_SMB"
+mpn = "SMBJ12A"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smbj-series-datasheet"
+description = "Unidirectional TVS 12 V standoff at the eFuse input (TI 'Transient Protection' recommendation); clamps the spike when the eFuse interrupts the inductor current"
+fields = { Verify = "Littelfuse datasheet not opened: VBR 13.3-14.7 V, VC 19.9 V at 30 A, 600 W (from memory)" }
+pins = """
+1 K VTRANS_IN
+2 A GND
+"""
+
+[[part]]
+ref = "C1001"
+group = "input"
+lib_id = "Device:C"
+value = "10uF 25V X7R"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "GRM31CR71E106KA12L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM31CR71E106KA12%23"
+description = "eFuse input capacitor (absorbs the inductor energy at turn-off with C1002)"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["VTRANS_IN", "GND"]
+
+[[part]]
+ref = "C1002"
+group = "input"
+lib_id = "Device:C"
+value = "10uF 25V X7R"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "GRM31CR71E106KA12L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM31CR71E106KA12%23"
+description = "eFuse input capacitor"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["VTRANS_IN", "GND"]
+
+[[part]]
+ref = "U1002"
+group = "input"
+lib_id = "aed_charger:TPS25982_RGE"
+value = "TPS259824ONRGER"
+footprint = "aed_charger:TI_RGE0024M_VQFN-24_4x4mm_P0.5mm_2EP"
+footprint_todo = true
+mpn = "TPS259824ONRGER"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps25982.pdf"
+description = "eFuse on the transformer supply: enable = VTRANS_EN, ILIM 13 A, circuit breaker, latch-off, dV/dt soft start"
+fields = { DocRef = "U1002 (R-5, R-16)", Verify = "recommended junction temperature is -15..125 C (datasheet 6.3) although orderables list -40..125 C: operation at -20 C (D-44) is outside the recommended range; pad 25/26 = IN/GND pairing" }
+new_row = true
+pins = """
+1  IN        VTRANS_IN
+2  IN        VTRANS_IN
+3  IN        VTRANS_IN
+16 IN        VTRANS_IN
+25 IN        VTRANS_IN     # exposed 'Thermal Pad 1' (IN)
+6  EN/UVLO   VTRANS_EN     # > 1.23 V on, < 0.8 V resets a latched fault
+7  ITIMER    EF_ITIMER
+8  ILIM      EF_ILIM
+15 dVdt      EF_DVDT
+10 RETRY_DLY EF_RETRY      # 2.2 nF: 91.7 ms between retries (Table 7-5)
+11 NRETRY    NC            # open = 4 auto-retries, then latch-off (Table 7-3)
+12 LDSTRT    GND           # handshake not used (datasheet: connect to GND)
+17 OUT       VTRANS
+18 OUT       VTRANS
+19 OUT       VTRANS
+20 OUT       VTRANS
+21 OUT       VTRANS
+22 OUT       VTRANS
+23 OUT       VTRANS
+24 OUT       VTRANS
+9  IMON      EF_IMON
+13 PG        NC            # open-drain power good not used (an open PG would read 'good': R11)
+4  GND       GND
+5  GND       GND
+14 GND       GND
+26 GND       GND           # exposed 'Pad 2' (GND)
+"""
+
+[[part]]
+ref = "R1002"
+group = "input"
+lib_id = "Device:R"
+value = "113 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603113RFKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "RILIM: ILIM = 1460/113 + 0.11 = 13.0 A (TPS25982 eq. 4). Open = 0 A limit (FET off), short = fault: both fail safe"
+between = ["EF_ILIM", "GND"]
+
+[[part]]
+ref = "C1003"
+group = "input"
+lib_id = "Device:C"
+value = "2.2nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H222JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H222JA01%23"
+description = "CdVdt: slew 4600/2200 pF = 2.1 V/ms (rating needed >= VIN + 4 V)"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["EF_DVDT", "GND"]
+
+[[part]]
+ref = "C1004"
+group = "input"
+lib_id = "Device:C"
+value = "470pF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H471JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H471JA01%23"
+description = "CITIMER: blanking 470 pF x 0.98 V / 2.1 uA = 0.22 ms (0.11-0.48 ms): rides through the input-filter ringing (half period 84 us); TI recommends > 100 us"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["EF_ITIMER", "GND"]
+
+[[part]]
+ref = "C1027"
+group = "input"
+lib_id = "Device:C"
+value = "2.2nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H222JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H222JA01%23"
+description = "CRETRY_DLY: 91.7 ms between automatic retries (TPS25982 Table 7-5); with NRETRY open the part retries 4 times, then latches off until VTRANS_EN goes low"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["EF_RETRY", "GND"]
+
+[[part]]
+ref = "R1003"
+group = "input"
+lib_id = "Device:R"
+value = "1k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW06031K00FKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "RIMON: monitor output terminated (246 uA/A x 14.5 A x 1k = 3.6 V max at the limit; not read by any controller)"
+between = ["EF_IMON", "GND"]
+
+[[part]]
+ref = "R1005"
+group = "input"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "VTRANS_EN default resistor (contract §5.5: sheet 10, 100k to GND): open or unpowered driver = eFuse off"
+fields = { DocRef = "contract §5.5 VTRANS_EN" }
+between = ["VTRANS_EN", "GND"]
+
+# ============================================================================================== bulk
+[[part]]
+ref = "C1005"
+group = "bulk"
+lib_id = "Device:C"
+value = "22uF 25V X7R"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "GRM32ER71E226KE15L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM32ER71E226KE15%23"
+description = "VTRANS ceramic bulk (about 13 uF effective at 8.4 V DC bias [EST])"
+fields = { Verify = "ordering code and DC-bias capacitance not checked against the maker's page" }
+between = ["VTRANS", "GND"]
+
+[[part]]
+ref = "C1006"
+group = "bulk"
+lib_id = "Device:C"
+value = "22uF 25V X7R"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "GRM32ER71E226KE15L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM32ER71E226KE15%23"
+description = "VTRANS ceramic bulk"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["VTRANS", "GND"]
+
+[[part]]
+ref = "C1007"
+group = "bulk"
+lib_id = "Device:C"
+value = "22uF 25V X7R"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "GRM32ER71E226KE15L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM32ER71E226KE15%23"
+description = "VTRANS ceramic bulk"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["VTRANS", "GND"]
+
+[[part]]
+ref = "C1008"
+group = "bulk"
+lib_id = "Device:C"
+value = "22uF 25V X7R"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "GRM32ER71E226KE15L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM32ER71E226KE15%23"
+description = "VTRANS ceramic bulk"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["VTRANS", "GND"]
+
+[[part]]
+ref = "C1009"
+group = "bulk"
+lib_id = "Device:C_Polarized"
+value = "330uF 16V polymer"
+footprint = "Capacitor_SMD:CP_Elec_8x10.5"
+mpn = "16SEPF330M"
+manufacturer = "Panasonic (OS-CON SEPF)"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/os-con"
+description = "VTRANS polymer bulk. Requirement: 330 uF, >= 16 V, ESR <= 20 mOhm at 100 kHz, ripple >= 3.5 A RMS at 105 C, -40 C rated"
+fields = { Verify = "series, ordering code, ESR, ripple rating and case size not checked against a datasheet (not opened)" }
+pins = """
+1 ~ VTRANS
+2 ~ GND
+"""
+
+[[part]]
+ref = "C1010"
+group = "bulk"
+lib_id = "Device:C_Polarized"
+value = "330uF 16V polymer"
+footprint = "Capacitor_SMD:CP_Elec_8x10.5"
+mpn = "16SEPF330M"
+manufacturer = "Panasonic (OS-CON SEPF)"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/os-con"
+description = "VTRANS polymer bulk (see C1009)"
+fields = { Verify = "series, ordering code, ESR, ripple rating and case size not checked against a datasheet (not opened)" }
+pins = """
+1 ~ VTRANS
+2 ~ GND
+"""
+
+# ============================================================================================== VTRANS good + AND
+[[part]]
+ref = "U1003"
+group = "vtgood"
+lib_id = "aed_charger:TLV3012_DBV"
+value = "TLV3012BIDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TLV3012BIDBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv3012.pdf"
+description = "VTRANS_GOOD comparator, push-pull, own 1.242 V reference (+-1.5 %, 100 ppm/K max)"
+fields = { DocRef = "U1003 VTRANS_GOOD comparator (contract §2)" }
+pins = """
+3 IN+ VTG_SNS
+4 IN- VTG_REF
+5 REF VTG_REF
+1 OUT VTG_CMP
+6 V+  5V0_SYS
+2 V-  GND
+"""
+
+[[part]]
+ref = "R1006"
+group = "vtgood"
+lib_id = "Device:R"
+value = "309k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW0603309KBEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "VTRANS divider top"
+between = ["VTRANS", "VTG_SNS"]
+
+[[part]]
+ref = "R1007"
+group = "vtgood"
+lib_id = "Device:R"
+value = "100k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW0603100KBEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "VTRANS divider bottom"
+between = ["VTG_SNS", "GND"]
+
+[[part]]
+ref = "R1008"
+group = "vtgood"
+lib_id = "Device:R"
+value = "7.68M 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW06037M68FKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Hysteresis: 0.20 V at VTRANS for a 5.0 V output swing (Ra/Rh x Vout)"
+between = ["VTG_CMP", "VTG_SNS"]
+
+[[part]]
+ref = "C1011"
+group = "vtgood"
+lib_id = "Device:C"
+value = "100pF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H101JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H101JA01%23"
+description = "Switching-noise filter on the sense node (tau 7.5 us)"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["VTG_SNS", "GND"]
+
+[[part]]
+ref = "C1012"
+group = "vtgood"
+lib_id = "Device:C"
+value = "100nF 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "U1003 supply decoupling"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R1009"
+group = "vtgood"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Delay resistor: tau = 100k x 22 nF = 2.2 ms -> 1.27-2.29 ms to the Schmitt threshold"
+new_row = true
+between = ["VTG_CMP", "VTG_DLY"]
+
+[[part]]
+ref = "C1013"
+group = "vtgood"
+lib_id = "Device:C"
+value = "22nF 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H223KA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H223KA01%23"
+description = "Delay capacitor (open = no delay: the comparator still blocks CHARGE below 4.99 V; capture notes failure table)"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["VTG_DLY", "GND"]
+
+[[part]]
+ref = "D1006"
+group = "vtgood"
+lib_id = "Device:D"
+value = "1N4148WS"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "1N4148WS-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30098.pdf"
+description = "Fast reset of the delay capacitor when VTRANS_GOOD falls"
+fields = { Verify = "datasheet not opened; SOD-323 cathode = pad 1 by KiCad convention" }
+pins = """
+1 K VTG_CMP
+2 A VTG_DLY
+"""
+
+[[part]]
+ref = "U1004"
+group = "vtgood"
+lib_id = "74xGxx:74LVC1G97"
+value = "SN74LVC1G97DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC1G97DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g97.pdf"
+description = "AND with Schmitt inputs: CHARGE = CHARGE_EN AND VTRANS-good-delayed. TI names: pin 1 = B, pin 3 = A, pin 6 = C (KiCad: IN1, IN0, IN2)"
+fields = { DocRef = "§B4.4 'CHARGE_EN ANDed with VTRANS_GOOD on sheet 10'" }
+pins = """
+1 IN1 GND          # TI 'B' = 0 -> Y = A.C
+3 IN0 CHARGE_EN    # TI 'A'
+6 IN2 VTG_DLY      # TI 'C'
+4 Y   LT_CHARGE
+5 VCC 5V0_SYS
+2 GND GND
+"""
+
+[[part]]
+ref = "C1014"
+group = "vtgood"
+lib_id = "Device:C"
+value = "100nF 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "U1004 decoupling"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R1010"
+group = "vtgood"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "CHARGE_EN default resistor (contract §5.5: sheet 10, 100k to GND): open or unpowered driver = no charging"
+fields = { DocRef = "contract §5.5 CHARGE_EN" }
+between = ["CHARGE_EN", "GND"]
+
+[[part]]
+ref = "R1011"
+group = "vtgood"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Holds the LT3751 CHARGE pin below 0.3 V if U1004's output is open or unpowered"
+between = ["LT_CHARGE", "GND"]
+
+# ============================================================================================== LT3751
+[[part]]
+ref = "U1001"
+group = "ctrl"
+lib_id = "aed_charger:LT3751_UFD"
+value = "LT3751IUFD"
+footprint = "Package_DFN_QFN:QFN-20-1EP_4x5mm_P0.5mm_EP2.65x3.65mm"
+mpn = "LT3751IUFD#PBF"
+manufacturer = "Analog Devices"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/lt3751.pdf"
+description = "Flyback capacitor-charger controller; FB grounded (adult) = charge mode, FB divider (child) = regulation"
+fields = { DocRef = "U1001", Verify = "pin table read from a mirror of rev D (analog.com refused automated access)" }
+new_row = true
+pins = """
+19 RVTRANS  LT_RVT
+20 UVLO1    LT_UVLO1
+1  OVLO1    LT_OVLO1
+2  UVLO2    LT_UVLO2
+3  OVLO2    LT_OVLO2
+6  CHARGE   LT_CHARGE
+7  CLAMP    5V0_SYS     # tie to VCC: 5.6 V gate clamp
+8  FB       CHG_FB
+10 CSP      CS_P
+9  CSN      CS_N
+14 RBG      LT_RBG
+11 VCC      5V0_SYS
+13 HVGATE   GATE_DRV
+12 LVGATE   GATE_DRV    # tied to HVGATE (VCC <= 8 V, Note 8)
+16 RVOUT    LT_RVOUT
+17 RDCM     LT_RDCM
+5  ~{DONE}  LT_DONE_N
+4  ~{FAULT} LT_FAULT_N
+15 NC       NC
+18 NC       NC
+21 GND      GND         # exposed pad
+"""
+
+[[part]]
+ref = "C1015"
+group = "ctrl"
+lib_id = "Device:C"
+value = "10uF 10V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "GRM21BR71A106KA73L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM21BR71A106KA73%23"
+description = "VCC bypass (datasheet: X5R or better at the pin); supplies the 2 A gate-drive peaks"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "C1016"
+group = "ctrl"
+lib_id = "Device:C"
+value = "100nF 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "VCC high-frequency bypass"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R1012"
+group = "ctrl"
+lib_id = "Device:R"
+value = "69.8k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW060369K8BEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "UVLO1 (VTRANS under-voltage): 1.225 + 50 uA x 69.8k = 4.72 V (4.58-4.85 V)"
+fields = { DocRef = "§B4.3 UVLO1 69.8k" }
+between = ["VTRANS", "LT_UVLO1"]
+
+[[part]]
+ref = "R1013"
+group = "ctrl"
+lib_id = "Device:R"
+value = "154k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW0603154KBEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "OVLO1 (VTRANS over-voltage): 8.93 V (8.66-9.19 V). Contract 155k is not an E96/E192 value; nearest 154k"
+fields = { DocRef = "§B4.3 OVLO1 155k (rounded to 154k)" }
+between = ["VTRANS", "LT_OVLO1"]
+
+[[part]]
+ref = "R1014"
+group = "ctrl"
+lib_id = "Device:R"
+value = "71.5k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW060371K5BEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "UVLO2 (VCC under-voltage): 4.80 V nominal, 4.66-4.94 V (contract issue: top overlaps a 5V0_SYS at -2 %)"
+fields = { DocRef = "§B4.3 UVLO2 71.5k (R-20)" }
+between = ["5V0_SYS", "LT_UVLO2"]
+
+[[part]]
+ref = "R1015"
+group = "ctrl"
+lib_id = "Device:R"
+value = "87.6k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW060387K6BEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "OVLO2 (VCC over-voltage): 5.61 V (5.44-5.77 V). Contract 87.5k is not an E-series value; nearest E192 87.6k"
+fields = { DocRef = "§B4.3 OVLO2 87.5k (rounded to 87.6k)" }
+between = ["5V0_SYS", "LT_OVLO2"]
+
+[[part]]
+ref = "C1017"
+group = "ctrl"
+lib_id = "Device:C"
+value = "470pF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H471JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H471JA01%23"
+description = "UVLO1 pin filter (datasheet 100 pF-1 nF)"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["LT_UVLO1", "GND"]
+
+[[part]]
+ref = "C1018"
+group = "ctrl"
+lib_id = "Device:C"
+value = "470pF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H471JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H471JA01%23"
+description = "OVLO1 pin filter"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["LT_OVLO1", "GND"]
+
+[[part]]
+ref = "C1019"
+group = "ctrl"
+lib_id = "Device:C"
+value = "470pF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H471JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H471JA01%23"
+description = "UVLO2 pin filter"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["LT_UVLO2", "GND"]
+
+[[part]]
+ref = "C1020"
+group = "ctrl"
+lib_id = "Device:C"
+value = "470pF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H471JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H471JA01%23"
+description = "OVLO2 pin filter"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["LT_OVLO2", "GND"]
+
+[[part]]
+ref = "R1016"
+group = "ctrl"
+lib_id = "Device:R"
+value = "40.2k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW060340K2BEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "RVTRANS (common-mode reference of the DCM and VOUT comparators); equal to RVOUT"
+fields = { DocRef = "§B4.3 RVTRANS 40.2k" }
+between = ["VTRANS", "LT_RVT"]
+
+[[part]]
+ref = "R1017"
+group = "ctrl"
+lib_id = "Device:R"
+value = "40.2k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW060340K2BEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "RVOUT from the switch drain: primary-side output trip with RBG. Drain peak about 90 V: 50 V across the part, 0.75 mA above the 60 V pin clamp (limit 10 mA)"
+fields = { DocRef = "§B4.3 RVOUT 40.2k" }
+between = ["VTRANS_SW", "LT_RVOUT"]
+
+[[part]]
+ref = "R1018"
+group = "ctrl"
+lib_id = "Device:R"
+value = "18.2k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW060318K2BEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "RDCM from the switch drain (0.45 x RVTRANS, datasheet Table 2)"
+fields = { DocRef = "§B4.3 RDCM 18.2k" }
+between = ["VTRANS_SW", "LT_RDCM"]
+
+[[part]]
+ref = "R1019"
+group = "ctrl"
+lib_id = "Device:R"
+value = "931 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW0603931RBEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "RBG: trip current 0.98 V/931 = 1.05 mA (datasheet: best accuracy 100 uA-2 mA). Sensed trip 2,116 V (contract value kept; see contract issue on the band)"
+fields = { DocRef = "§B4.3 RBG 931 Ohm" }
+between = ["LT_RBG", "GND"]
+
+[[part]]
+ref = "R1020"
+group = "ctrl"
+lib_id = "Device:R"
+value = "10k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW060310K0FKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "DONE start-up-pulse filter (10 us with C1021); low level 3.3 V x 10k/110k = 0.30 V with the 100k pull-up on 04"
+between = ["LT_DONE_N", "CHG_DONE_N"]
+
+[[part]]
+ref = "C1021"
+group = "ctrl"
+lib_id = "Device:C"
+value = "1nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H102JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H102JA01%23"
+description = "DONE filter capacitor"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["CHG_DONE_N", "GND"]
+
+[[part]]
+ref = "R1021"
+group = "ctrl"
+lib_id = "Device:R"
+value = "10k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW060310K0FKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "FAULT start-up-pulse filter (10 us with C1022)"
+between = ["LT_FAULT_N", "CHG_FAULT_N"]
+
+[[part]]
+ref = "C1022"
+group = "ctrl"
+lib_id = "Device:C"
+value = "1nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H102JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H102JA01%23"
+description = "FAULT filter capacitor"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["CHG_FAULT_N", "GND"]
+
+# ============================================================================================== power stage
+[[part]]
+ref = "T1001"
+group = "power"
+lib_id = "aed_charger:T_FLYBACK_1to50"
+value = "1:50 7.5uH (made to order)"
+footprint = "aed_charger:T1001_made_to_order_TBD"
+footprint_todo = true
+mpn = "made to order per docs/HARDWARE_DESIGN.md §B4.5"
+manufacturer = "made to order (no maker selected)"
+datasheet = "docs/HARDWARE_DESIGN.md §B4.5"
+description = "Flyback transformer: 1:50 +-1 %, Lpri 7.5 uH +-10 %, <= 10 % L loss at 25 A, leakage <= 1 % Lpri, Csec <= 15 pF, >= 2,200 V DC working; terminals as defined by the symbol"
+fields = { DocRef = "T1001 (D-42)", Verify = "everything: no maker, no sample" }
+new_row = true
+pins = """
+1 PRI_DOT VTRANS
+2 PRI_FIN VTRANS_SW
+3 SEC_DOT HV_RTN
+4 SEC_HV  HV_SEC
+"""
+
+[[part]]
+ref = "Q1001"
+group = "power"
+lib_id = "aed_charger:BSC070N10LS5"
+value = "BSC070N10LS5"
+footprint = "Package_TO_SOT_SMD:TDSON-8-1"
+mpn = "BSC070N10LS5ATMA1"
+manufacturer = "Infineon"
+datasheet = "https://www.infineon.com/dgdl/Infineon-BSC070N10LS5-DataSheet-v02_02-EN.pdf?fileId=5546d4625b3ca4ec015b6ab7c2d73ab8"
+description = "Primary switch A (two in parallel; design 'one or two')"
+fields = { DocRef = "Q1001 primary switch", Verify = "ordering suffix ATMA1 not confirmed on the datasheet's ordering table" }
+pins = """
+4 G Q1_G
+5 D VTRANS_SW
+1 S VTRANS_ISNS
+2 S VTRANS_ISNS
+3 S VTRANS_ISNS
+"""
+
+[[part]]
+ref = "Q1002"
+group = "power"
+lib_id = "aed_charger:BSC070N10LS5"
+value = "BSC070N10LS5"
+footprint = "Package_TO_SOT_SMD:TDSON-8-1"
+mpn = "BSC070N10LS5ATMA1"
+manufacturer = "Infineon"
+datasheet = "https://www.infineon.com/dgdl/Infineon-BSC070N10LS5-DataSheet-v02_02-EN.pdf?fileId=5546d4625b3ca4ec015b6ab7c2d73ab8"
+description = "Primary switch B (parallel with Q1001)"
+fields = { DocRef = "Q1001 primary switch (second device)", Verify = "ordering suffix ATMA1 not confirmed on the datasheet's ordering table" }
+pins = """
+4 G Q2_G
+5 D VTRANS_SW
+1 S VTRANS_ISNS
+2 S VTRANS_ISNS
+3 S VTRANS_ISNS
+"""
+
+[[part]]
+ref = "R1022"
+group = "power"
+lib_id = "Device:R"
+value = "2.2 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW06032R20FKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Gate resistor Q1001 (decouples the paralleled gates)"
+between = ["GATE_DRV", "Q1_G"]
+
+[[part]]
+ref = "R1023"
+group = "power"
+lib_id = "Device:R"
+value = "2.2 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW06032R20FKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Gate resistor Q1002"
+between = ["GATE_DRV", "Q2_G"]
+
+[[part]]
+ref = "R1024"
+group = "power"
+lib_id = "Device:R"
+value = "10k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW060310K0FKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Gate-source hold-off Q1001 (gate defined with the controller unpowered)"
+between = ["Q1_G", "VTRANS_ISNS"]
+
+[[part]]
+ref = "R1025"
+group = "power"
+lib_id = "Device:R"
+value = "10k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW060310K0FKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Gate-source hold-off Q1002"
+between = ["Q2_G", "VTRANS_ISNS"]
+
+[[part]]
+ref = "R1001"
+group = "power"
+lib_id = "Device:R_Shunt"
+value = "5mOhm 1% 1W Kelvin"
+footprint = "Resistor_SMD:R_Shunt_Vishay_WSK2512_6332Metric_T1.19mm"
+mpn = "WSK25125L000FEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/30108/wsk2512.pdf"
+description = "Current sense 5.0 mOhm, 4-terminal (pads 1, 4 force; 2, 3 sense), 1 W at 70 C, 35 ppm/K, 0.5-5 nH. Dissipation 0.68 W worst during a charge (LT3751 eq.)"
+fields = { DocRef = "R1001 5.0 mOhm (design asked 2 W: departure, capture notes)" }
+pins = """
+1 ~ VTRANS_ISNS    # force, FET sources
+2 ~ CS_P           # sense at the FET end -> CSP
+3 ~ CS_N           # sense at the ground end -> CSN (dedicated trace)
+4 ~ GND            # force, power ground
+"""
+
+[[part]]
+ref = "D1003"
+group = "power"
+lib_id = "Device:D"
+value = "ES3D 200V 3A ultrafast"
+footprint = "Diode_SMD:D_SMC"
+mpn = "ES3D-E3/57T"
+manufacturer = "Vishay General Semiconductor"
+datasheet = "https://www.vishay.com/docs/88584/es3a.pdf"
+description = "Clamp steering diode drain -> TVS"
+fields = { Verify = "datasheet not opened: VRRM 200 V, IFSM, trr, forward-recovery overshoot" }
+pins = """
+1 K PRI_CLAMP
+2 A VTRANS_SW
+"""
+
+[[part]]
+ref = "D1004"
+group = "power"
+lib_id = "Device:D_Zener"
+value = "SMCJ45A"
+footprint = "Diode_SMD:D_SMC"
+mpn = "SMCJ45A"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smcj-series-datasheet"
+description = "Unidirectional TVS clamp above VTRANS: standoff 45 V, VBR 50.0-55.3 V, about 73-75 V at 21-23 A; absorbs about 2 W during the last second of a charge"
+fields = { Verify = "Littelfuse datasheet not opened: VBR, VC at 20.6 A, steady-state power (values from memory)" }
+pins = """
+1 K PRI_CLAMP
+2 A VTRANS
+"""
+
+[[part]]
+ref = "R1026"
+group = "power"
+lib_id = "Device:R"
+value = "10 1% 0.5W"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "CRCW120610R0FKEAHP"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20043/crcwhpe3.pdf"
+description = "Primary RC snubber resistor: about 0.12 W (1 nF x 52 V^2 x 43 kHz)"
+fields = { Verify = "HP (0.5 W) variant ordering code not checked" }
+between = ["VTRANS", "SNB_MID"]
+
+[[part]]
+ref = "C1023"
+group = "power"
+lib_id = "Device:C"
+value = "1nF 250V C0G"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "GRM31A5C2E102JW01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM31A5C2E102JW01%23"
+description = "Primary RC snubber capacitor: sees -9 V to about +80 V across the primary; 250 V C0G for margin"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["SNB_MID", "VTRANS_SW"]
+
+# ============================================================================================== HV secondary
+[[part]]
+ref = "D1001"
+group = "hv_out"
+lib_id = "Device:D"
+value = "UX-F5B 8kV 0.35A"
+footprint = "aed_charger:D_Axial_Sanken_UX-F5B_7mm_HV"
+footprint_todo = true
+mpn = "UX-F5B"
+manufacturer = "Sanken Electric"
+datasheet = "https://www.semicon.sanken-ele.co.jp/sk_content/ux-f5b_ds_en.pdf"
+description = "HV rectifier 1 of 2 (each alone blocks the full reverse voltage, R-15). VRM 8 kV, IF(AV) 0.35 A, VF 11 V typ / 14 V max at 0.35 A, trr 0.15 us max, Tj 120 C. Pin (1) cathode, (2) anode"
+fields = { DocRef = "D1001 (R-15)" }
+pins = """
+1 K HV_D_MID
+2 A HV_SEC
+"""
+
+[[part]]
+ref = "D1002"
+group = "hv_out"
+lib_id = "Device:D"
+value = "UX-F5B 8kV 0.35A"
+footprint = "aed_charger:D_Axial_Sanken_UX-F5B_7mm_HV"
+footprint_todo = true
+mpn = "UX-F5B"
+manufacturer = "Sanken Electric"
+datasheet = "https://www.semicon.sanken-ele.co.jp/sk_content/ux-f5b_ds_en.pdf"
+description = "HV rectifier 2 of 2 (each alone blocks the full reverse voltage, R-15)"
+fields = { DocRef = "D1002 (R-15)" }
+pins = """
+1 K HV_RECT
+2 A HV_D_MID
+"""
+
+[[part]]
+ref = "R1004"
+group = "hv_out"
+lib_id = "Device:R"
+value = "10 HV fusible (TBD)"
+footprint = "aed_charger:R1004_HV_fusible_TBD"
+footprint_todo = true
+mpn = "not selected - no catalogue part found (qualification part)"
+manufacturer = "TBD"
+datasheet = "docs/HARDWARE_DESIGN.md §14 (R1004 requirement)"
+description = "HV fusible resistor about 10 Ohm in series with the rectifiers. Requirement: opens within 10 ms at >= 5 J; >= 3 kV across the open element without restrike; carries 0.26 A RMS (0.7 W) for about 1 s and about 0.1 A for 7 s per charge"
+fields = { DocRef = "R1004 (R-15)", Verify = "part not found; every rating" }
+between = ["HV_RECT", "HV_CAP_P"]
+
+# ============================================================================================== FB / child ceiling
+[[part]]
+ref = "R1027"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 1/14 (top, at the capacitor): 157 V, 8.6 mW at 2,200 V; TNPV1210 Umax 1,000 V"
+between = ["HV_CAP_P", "HV_FB_1"]
+
+[[part]]
+ref = "R1028"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 2/14"
+between = ["HV_FB_1", "HV_FB_2"]
+
+[[part]]
+ref = "R1029"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 3/14"
+between = ["HV_FB_2", "HV_FB_3"]
+
+[[part]]
+ref = "R1030"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 4/14"
+between = ["HV_FB_3", "HV_FB_4"]
+
+[[part]]
+ref = "R1031"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 5/14"
+between = ["HV_FB_4", "HV_FB_5"]
+
+[[part]]
+ref = "R1032"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 6/14"
+between = ["HV_FB_5", "HV_FB_6"]
+
+[[part]]
+ref = "R1033"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 7/14"
+between = ["HV_FB_6", "HV_FB_7"]
+
+[[part]]
+ref = "R1034"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 8/14"
+between = ["HV_FB_7", "HV_FB_8"]
+
+[[part]]
+ref = "R1035"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 9/14"
+between = ["HV_FB_8", "HV_FB_9"]
+
+[[part]]
+ref = "R1036"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 10/14"
+between = ["HV_FB_9", "HV_FB_10"]
+
+[[part]]
+ref = "R1037"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 11/14"
+between = ["HV_FB_10", "HV_FB_11"]
+
+[[part]]
+ref = "R1038"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 12/14"
+between = ["HV_FB_11", "HV_FB_12"]
+
+[[part]]
+ref = "R1039"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 13/14"
+between = ["HV_FB_12", "HV_FB_13"]
+
+[[part]]
+ref = "R1040"
+group = "fb"
+lib_id = "Device:R"
+value = "2.87M 0.1% 25ppm"
+footprint = "Resistor_SMD:R_1210_3225Metric"
+mpn = "TNPV12102M87BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "FB string 14/14 (bottom of the HV string, into the FB node)"
+between = ["HV_FB_13", "CHG_FB"]
+
+[[part]]
+ref = "R1041"
+group = "fb"
+lib_id = "Device:R"
+value = "36.9k 0.1% 25ppm"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW060336K9BEEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "FB bottom resistor: ratio 1 + 40.18 M/36.9 k = 1,089.9"
+fields = { DocRef = "§B4.3 FB bottom 36.9k 0.1 %" }
+new_row = true
+between = ["CHG_FB", "GND"]
+
+[[part]]
+ref = "C1024"
+group = "fb"
+lib_id = "Device:C"
+value = "2.2nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H222JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H222JA01%23"
+description = "FB noise filter (tau 81 us)"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["CHG_FB", "GND"]
+
+[[part]]
+ref = "Q1003"
+group = "fb"
+lib_id = "Transistor_FET:BSS138"
+value = "BSS138"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS138"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss138-d.pdf"
+description = "FB-to-ground switch: ON (adult, default) grounds FB -> charge mode. 50 V, RDS(on) <= 6 Ohm at 4.5 V; IDSS <= 0.5 uA at 50 V, 25 C (leakage at 1.4 V and 60 C not specified)"
+fields = { DocRef = "§B4.3 'N-MOSFET from FB to ground, on by default'", Verify = "off-state leakage at VDS 1.2-1.4 V up to 60 C (adds to child ceiling)" }
+pins = """
+1 G FB_GATE
+2 S GND
+3 D CHG_FB
+"""
+
+[[part]]
+ref = "Q1004"
+group = "fb"
+lib_id = "Transistor_FET:BSS138"
+value = "BSS138"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS138"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss138-d.pdf"
+description = "Second FB-to-ground switch in parallel with Q1003: one FET (or joint) failing open must not put the child ceiling on an adult charge (capture notes, departure 3)"
+fields = { DocRef = "§B4.3 FB N-MOSFET (paralleled, capture addition)", Verify = "off-state leakage at VDS 1.2-1.4 V up to 60 C (two FETs: twice the leakage)" }
+pins = """
+1 G FB_GATE
+2 S GND
+3 D CHG_FB
+"""
+
+[[part]]
+ref = "U1005"
+group = "fb"
+lib_id = "74xGxx:74LVC1G04"
+value = "SN74LVC1G04DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G04DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g04.pdf"
+description = "Mode inverter: FB_GATE = NOT MODE_CHILD_HW (adult = high = FB grounded)"
+pins = """
+1 NC  NC
+2 ~   MODE_CHILD_HW
+3 GND GND
+4 ~   FB_GATE
+5 VCC 5V0_SYS
+"""
+
+[[part]]
+ref = "R1042"
+group = "fb"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "MODE_CHILD_HW default resistor (contract §5.5: sheet 10, 100k to GND): open contact or wire = adult ceiling (D-60)"
+fields = { DocRef = "contract §5.5 MODE_CHILD_HW" }
+between = ["MODE_CHILD_HW", "GND"]
+
+[[part]]
+ref = "R1043"
+group = "fb"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "FB_GATE pull-up: an open inverter output still gives the adult ceiling (D-60 fail direction)"
+between = ["FB_GATE", "5V0_SYS"]
+
+[[part]]
+ref = "U1006"
+group = "fb"
+lib_id = "74xGxx:74LVC1G07"
+value = "SN74LVC1G07DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G07DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g07.pdf"
+description = "Readback: open-drain copy of FB_GATE -> MODE_HW_RB_N (low = child ceiling active). Ioff: high-impedance when 5V0_SYS is off"
+fields = { DocRef = "contract §5.5 MODE_HW_RB_N" }
+pins = """
+1 NC  NC
+2 ~   FB_GATE
+3 GND GND
+4 ~   MODE_HW_RB_N
+5 VCC 5V0_SYS
+"""
+
+[[part]]
+ref = "C1025"
+group = "fb"
+lib_id = "Device:C"
+value = "100nF 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "U1005 decoupling"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "C1026"
+group = "fb"
+lib_id = "Device:C"
+value = "100nF 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "U1006 decoupling"
+fields = { Verify = "ordering code not checked against the maker's page" }
+between = ["5V0_SYS", "GND"]
+
+# ============================================================================================== test points
+[[part]]
+ref = "TP1001"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "VTRANS_EN"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "none (bare copper pad)"
+manufacturer = "none"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+pins = """
+1 1 VTRANS_EN
+"""
+
+[[part]]
+ref = "TP1002"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "CHARGE_EN"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "none (bare copper pad)"
+manufacturer = "none"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+pins = """
+1 1 CHARGE_EN
+"""
+
+[[part]]
+ref = "TP1003"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "VTRANS_GOOD (delayed)"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "none (bare copper pad)"
+manufacturer = "none"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+pins = """
+1 1 VTG_DLY
+"""
+
+[[part]]
+ref = "TP1004"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "CHG_DONE_N"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "none (bare copper pad)"
+manufacturer = "none"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+pins = """
+1 1 CHG_DONE_N
+"""

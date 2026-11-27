@@ -1,0 +1,197 @@
+# Custom symbols for work package WP-C (sheets 06_ui, 07_sense_main, 08_sense_sup).
+# Source of truth for hardware/lib/aed_uisense.kicad_sym: tools/build.sh regenerates that file from here.
+#
+# NOT FOR CONSTRUCTION — unreviewed design.
+#
+# Pin table columns:  number  name  electrical-type  side-of-body
+# Every pin row was copied from the datasheet table named in `pinout_source` (datasheets read 27 Nov 2026).
+# PinoutVerified reads "NO - drafted from datasheet ..., needs human check" until a person has checked the table
+# against the PDF and added   pinout_verified = "YES - <name>, <date>, checked against <doc rev>".
+#
+# Why these are custom and not stock KiCad symbols:
+#   - LS013B7DH05, REF3425, ADR3425, OPA388, TLV9031, LMV761: no stock KiCad 10 symbol.
+#   - MAX98357A: the stock Audio:MAX98357A hides pins 5, 6, 8, 11, 12, 13, 15 (two of them GND and VDD as passive),
+#     which would join nets silently; every pin is visible here.
+#   - SN74AUP1G04: the stock 74xGxx:74AUP1G04 has unnamed A/Y pins and a hidden NC pin; named and visible here.
+# Pin names cannot contain spaces: datasheet names such as "GND FORCE" are written GND_FORCE.
+
+[library]
+name = "aed_uisense"
+
+# ------------------------------------------------------------------------------------------------ 06_ui
+[[symbol]]
+name = "LS013B7DH05"
+reference = "U"
+value = "LS013B7DH05"
+footprint = "Connector_FFC-FPC:Hirose_FH12-10S-0.5SH_1x10-1MP_P0.50mm_Horizontal"
+datasheet = "https://cdn.eicom.ru/media/PDF/6421265.pdf"
+description = "Sharp 1.26 in 144x168 memory-in-pixel reflective LCD, 3.0 V (2.7-3.3 V), 10-way 0.5 mm FPC tail. Symbol is the module as seen through its FPC connector; pin MP = connector mounting pads (not a display terminal)."
+mpn = "LS013B7DH05"
+manufacturer = "Sharp"
+pinout_source = "Sharp spec LD-26912A (10 Sep 2014) §4 Table 4-1 'Signal name' (copy hosted by eicom; sharp site not reachable)"
+keywords = "memory LCD display Sharp"
+package_pins = 11
+pins = """
+1  SCLK     input    left
+2  SI       input    left
+3  SCS      input    left
+4  EXTCOMIN input    left
+5  DISP     input    left
+8  EXTMODE  input    left
+6  VDDA     power_in right
+7  VDD      power_in right
+9  VSS      power_in right
+10 VSSA     power_in right
+MP MP       passive  right
+"""
+
+[[symbol]]
+name = "MAX98357A_TQFN"
+reference = "U"
+value = "MAX98357AETE+T"
+footprint = "Package_DFN_QFN:TQFN-16-1EP_3x3mm_P0.5mm_EP1.23x1.23mm"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/MAX98357A-MAX98357B.pdf"
+description = "PCM (I2S) input class-D mono amplifier, 2.5-5.5 V, 3.2 W/4 Ohm at 5 V, filterless, -40..+85 C, 16-pin TQFN 3x3. EP not internally connected (connect to GND plane)."
+mpn = "MAX98357AETE+T"
+manufacturer = "Analog Devices (Maxim)"
+pinout_source = "MAX98357A/MAX98357B 19-6779 Rev 13 (7/19) p.15 'Pin Description', TQFN column (copy hosted by makerguides.com; analog.com not reachable)"
+keywords = "audio amplifier class D I2S"
+pins = """
+1  DIN       input     left
+16 BCLK      input     left
+14 LRCLK     input     left
+4  SD_MODE   input     left
+2  GAIN_SLOT input     left
+7  VDD       power_in  right
+8  VDD       power_in  right
+9  OUTP      output    right
+10 OUTN      output    right
+3  GND       power_in  bottom
+11 GND       power_in  bottom
+15 GND       power_in  bottom
+17 EP        passive   bottom
+5  NC        no_connect top
+6  NC        no_connect top
+12 NC        no_connect top
+13 NC        no_connect top
+"""
+min_width = 20.32
+
+[[symbol]]
+name = "SN74AUP1G04_DBV"
+reference = "U"
+value = "SN74AUP1G04DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74aup1g04.pdf"
+description = "Single inverter, 0.8-3.6 V, Ioff partial-power-down inputs/outputs, SOT-23-5 (DBV)"
+mpn = "SN74AUP1G04DBVR"
+manufacturer = "Texas Instruments"
+pinout_source = "TI SCES571K (Jun 2014) §6 'Pin Functions', DBV column"
+keywords = "inverter AUP Ioff"
+pins = """
+2 A   input      left
+1 NC  no_connect left
+4 Y   output     right
+5 VCC power_in   right
+3 GND power_in   right
+"""
+
+# ------------------------------------------------------------------------------------------------ 07_sense_main
+[[symbol]]
+name = "REF3425_DBV"
+reference = "U"
+value = "REF3425IDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+datasheet = "https://www.ti.com/lit/pdf/SBAS804"
+description = "2.5 V series reference, +-0.05 % initial, 6 ppm/K max (-40..125 C), force/sense, enable, SOT-23-6 (DBV)"
+mpn = "REF3425IDBVR"
+manufacturer = "Texas Instruments"
+pinout_source = "TI SBAS804G (Apr 2026) §5 Figure 5-1 and Table 5-1, REF34xx (DBV) column"
+keywords = "voltage reference 2.5V"
+pins = """
+4 IN    power_in  left
+3 EN    input     left
+6 OUT_F power_out right
+5 OUT_S passive   right
+1 GND_F power_in  bottom
+2 GND_S passive   bottom
+"""
+
+[[symbol]]
+name = "LMV761_DBV"
+reference = "U"
+value = "LMV761MF/NOPB"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+datasheet = "https://www.ti.com/lit/ds/symlink/lmv761.pdf"
+description = "Precision comparator, push-pull output, Vos 1 mV max over temperature, IB 50 pA max, 2.7-5.25 V, shutdown pin (low = off), SOT-23-6"
+mpn = "LMV761MF/NOPB"
+manufacturer = "Texas Instruments"
+pinout_source = "TI SNOS998I (Oct 2015) §5 'Pin Functions for SOT-23'"
+keywords = "comparator precision push-pull"
+pins = """
+1 +IN input    left
+3 -IN input    left
+5 SDB input    left
+4 OUT output   right
+6 V+  power_in right
+2 V-  power_in right
+"""
+
+# ------------------------------------------------------------------------------------------------ 08_sense_sup
+[[symbol]]
+name = "ADR3425_RJ"
+reference = "U"
+value = "ADR3425ARJZ-R7"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/ADR3412_3420_3425_3430_3433_3440_3450.pdf"
+description = "2.5 V micropower series reference, +-0.1 % initial, 8 ppm/K max (-40..125 C), force/sense, enable, SOT-23-6 (RJ)"
+mpn = "ADR3425ARJZ-R7"
+manufacturer = "Analog Devices"
+pinout_source = "ADI ADR3412/.../ADR3450 data sheet Rev. B, p.11 Table 12 'Pin Function Descriptions' (RS-hosted copy; analog.com not reachable; current revision not checked)"
+keywords = "voltage reference 2.5V"
+pins = """
+4 VIN        power_in  left
+3 ENABLE     input     left
+6 VOUT_FORCE power_out right
+5 VOUT_SENSE passive   right
+1 GND_FORCE  power_in  bottom
+2 GND_SENSE  passive   bottom
+"""
+
+[[symbol]]
+name = "OPA388_DBV"
+reference = "U"
+value = "OPA388IDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+datasheet = "https://www.ti.com/lit/ds/symlink/opa388.pdf"
+description = "Zero-drift (zero-crossover) rail-to-rail op amp, Vos 5 uV max, 2.5-5.5 V, -40..125 C, SOT-23-5 (DBV)"
+mpn = "OPA388IDBVR"
+manufacturer = "Texas Instruments"
+pinout_source = "TI SBOS777D (Jul 2020) §5 Figure 5-1 and 'Pin Functions: OPA388', DBV column"
+keywords = "op amp zero drift"
+pins = """
+3 +IN input    left
+4 -IN input    left
+1 OUT output   right
+5 V+  power_in right
+2 V-  power_in right
+"""
+
+[[symbol]]
+name = "TLV9031_DBV"
+reference = "U"
+value = "TLV9031DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv9031.pdf"
+description = "Precision comparator, push-pull output, Vos 2 mV max over temperature, fault-tolerant inputs (to 6 V regardless of V+), 1.65-5.5 V, SOT-23-5 (DBV), north-west pinout"
+mpn = "TLV9031DBVR"
+manufacturer = "Texas Instruments"
+pinout_source = "TI SNOSDA3H (Nov 2025) §4.1 Figure 4-2 and Table 4-1, TLV90x1 column"
+keywords = "comparator precision push-pull"
+pins = """
+3 IN+ input    left
+4 IN- input    left
+1 OUT output   right
+5 V+  power_in right
+2 V-  power_in right
+"""

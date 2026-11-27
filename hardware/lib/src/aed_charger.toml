@@ -1,0 +1,175 @@
+# Custom symbols for work package WP-E (sheet 10_hv_charger).
+# NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a).
+# Source of truth for hardware/lib/aed_charger.kicad_sym: tools/build.sh regenerates that file from here.
+#
+# Pin table columns:  number  name  electrical-type  side-of-body
+#
+# Electrical types: where a part has several pins on one net that are all drivers (power outputs, the two LT3751
+# gate pins), only one is typed as a driver and the rest are "passive", because KiCad's rule check treats two
+# drivers on one net as a conflict even inside one chip. The pin NAMES and NUMBERS are the datasheet's.
+
+[library]
+name = "aed_charger"
+
+# ---------------------------------------------------------------------------------------------------- LT3751
+# Why custom: KiCad has no LT3751. Pin numbers are for the 20-pin 4 x 5 mm QFN (UFD) package, LT3751IUFD.
+# IMPORTANT for reviewers: the QFN numbering is NOT a simple rotation of the TSSOP numbering. Datasheet pin table
+# "PIN FUNCTIONS (TSSOP/QFN)": RVTRANS 1/19, UVLO1 2/20, OVLO1 3/1, UVLO2 4/2, OVLO2 5/3, FAULT 6/4, DONE 7/5,
+# CHARGE 8/6, CLAMP 9/7, FB 10/8, CSN 11/9, CSP 12/10, VCC 13/11, LVGATE 14/12, HVGATE 15/13, RBG 16/14,
+# NC 17,19/15,18, RVOUT 18/16, RDCM 20/17, GND 21/21 (exposed pad). The UFD top-view drawing agrees (17 = RDCM,
+# 18 = NC). LVGATE is typed passive only to avoid a driver-driver conflict with HVGATE (they are tied, Note 8).
+[[symbol]]
+name = "LT3751_UFD"
+reference = "U"
+value = "LT3751IUFD"
+footprint = "Package_DFN_QFN:QFN-20-1EP_4x5mm_P0.5mm_EP2.65x3.65mm"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/lt3751.pdf"
+description = "High-voltage capacitor charger controller with regulation, 20-pin 4x5 mm QFN, -40..125 C (I grade). Exposed pad = GND (pin 21)."
+mpn = "LT3751IUFD#PBF"
+manufacturer = "Analog Devices (Linear Technology)"
+pinout_source = "LT3751 datasheet rev D (12/17, '3751fd'), Pin Configuration (UFD package top view) and Pin Functions (TSSOP/QFN) table, pages 2 and 7-8; read 27 Nov 2026 from the copy at https://static.chipdip.ru/lib/439/DOC011439824.pdf because analog.com refused automated access"
+keywords = "flyback capacitor charger high voltage"
+pins = """
+19 RVTRANS  input          left
+20 UVLO1    input          left
+1  OVLO1    input          left
+2  UVLO2    input          left
+3  OVLO2    input          left
+6  CHARGE   input          left
+7  CLAMP    input          left
+8  FB       input          left
+10 CSP      input          left
+9  CSN      input          left
+14 RBG      passive        left
+11 VCC      power_in       top
+13 HVGATE   output         right
+12 LVGATE   passive        right
+16 RVOUT    input          right
+17 RDCM     input          right
+5  ~{DONE}  open_collector right
+4  ~{FAULT} open_collector right
+15 NC       no_connect     right
+18 NC       no_connect     right
+21 GND      power_in       bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------- TPS25982
+# Why custom: KiCad has no TPS25982. VQFN-24 (RGE0024M), 4 x 4 mm, with TWO exposed pads: pad 25 = IN ("Thermal
+# Pad 1", the larger 1.45 mm pad beside pins 1-3) and pad 26 = GND ("Pad 2", 0.85 mm, beside pins 5-6). The pad
+# numbers 25/26 are taken from TI's package outline 4223975/B; the pin table calls them "Pad 1"/"Pad 2", and the
+# pairing pad 25 = IN, pad 26 = GND is read from the outline geometry against the pin-function figure
+# [UNVERIFIED pairing - a human must confirm against TI's land pattern before any footprint is drawn].
+# Only one OUT pin is power_out (the rest passive) to avoid a power_out-power_out conflict on one net.
+[[symbol]]
+name = "TPS25982_RGE"
+reference = "U"
+value = "TPS259824ONRGER"
+footprint = "aed_charger:TI_RGE0024M_VQFN-24_4x4mm_P0.5mm_2EP"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps25982.pdf"
+description = "2.7-24 V, 2.7 mOhm, 15 A eFuse; 'O' = circuit-breaker variant, '4' = 16.9 V OVLO variant; VQFN-24 RGE with two exposed pads"
+mpn = "TPS259824ONRGER"
+manufacturer = "Texas Instruments"
+pinout_source = "TPS25982 datasheet SLVSEI3D (Oct 2018, revised May 2026), Figure 5-1 'RGE 24-Pin QFN Top View', Table 5-1 Pin Functions, and package outline RGE0024M (4223975/B), read 27 Nov 2026 from ti.com"
+keywords = "efuse hot swap current limit"
+package_pins = 26
+pins = """
+1  IN        power_in  left
+2  IN        power_in  left
+3  IN        power_in  left
+16 IN        power_in  left
+25 IN        power_in  left
+6  EN/UVLO   input     left
+7  ITIMER    passive   left
+8  ILIM      passive   left
+15 dVdt      passive   left
+10 RETRY_DLY passive   left
+11 NRETRY    passive   left
+12 LDSTRT    input     left
+17 OUT       power_out right
+18 OUT       passive   right
+19 OUT       passive   right
+20 OUT       passive   right
+21 OUT       passive   right
+22 OUT       passive   right
+23 OUT       passive   right
+24 OUT       passive   right
+9  IMON      passive   right
+13 PG        open_collector right
+4  GND       power_in  bottom
+5  GND       power_in  bottom
+14 GND       power_in  bottom
+26 GND       power_in  bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------- TLV3012B
+# Why custom: KiCad has no TLV3012 (comparator with an integrated 1.242 V reference, push-pull output).
+[[symbol]]
+name = "TLV3012_DBV"
+reference = "U"
+value = "TLV3012BIDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv3012.pdf"
+description = "Nanopower comparator, push-pull output, integrated 1.242 V reference, internal hysteresis (B version), 1.65-5.5 V, -40..125 C, SOT-23-6"
+mpn = "TLV3012BIDBVR"
+manufacturer = "Texas Instruments"
+pinout_source = "TLV3011/TLV3012/TLV3011B/TLV3012B datasheet SBOS300C (Feb 2004, revised Apr 2023), Figure 5-1 'DCK, DBV Package 6-Pin SC-70, SOT-23 Top View' and Table 5-1, read 27 Nov 2026 from ti.com"
+keywords = "comparator reference push-pull"
+pins = """
+3 IN+ input     left
+4 IN- input     left
+5 REF output    left
+1 OUT output    right
+6 V+  power_in  top
+2 V-  power_in  bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------- BSC070N10LS5
+# Why custom: KiCad has a symbol for sister parts in the same package but not this part number; an exact symbol
+# avoids a misleading lib_id. PG-TDSON-8: datasheet pins 1-3 source, 4 gate, 5-8 drain (one tab). KiCad's stock
+# footprint TDSON-8-1 numbers the drain tab and pins 5-8 as one pad "5", so pin 5 here stands for pins 5-8.
+[[symbol]]
+name = "BSC070N10LS5"
+reference = "Q"
+value = "BSC070N10LS5"
+footprint = "Package_TO_SOT_SMD:TDSON-8-1"
+datasheet = "https://www.infineon.com/dgdl/Infineon-BSC070N10LS5-DataSheet-v02_02-EN.pdf?fileId=5546d4625b3ca4ec015b6ab7c2d73ab8"
+description = "OptiMOS 5 N-channel 100 V, 7.0 mOhm at 10 V / 8.5 mOhm at 4.5 V (max, 25 C), logic level, avalanche rated (EAS 55 mJ), Tj -55..150 C, PG-TDSON-8"
+mpn = "BSC070N10LS5ATMA1"
+manufacturer = "Infineon"
+pinout_source = "BSC070N10LS5 final data sheet Rev. 2.2 (2023-03-08), page 1 package pin drawing (pin 1-3 source, pin 4 gate, pin 5-8 drain), read 27 Nov 2026 from infineon.com"
+keywords = "nmos power mosfet logic level"
+pins = """
+4 G input   left
+5 D passive top
+1 S passive bottom
+2 S passive bottom
+3 S passive bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------- T1001
+# Made-to-order flyback transformer (D-42). There is no maker datasheet: the "datasheet" is the requirement in
+# docs/HARDWARE_DESIGN.md §B4.5 (refining docs/PARTS_STUDY.md Appendix B1). The requirement does not number the
+# terminals, so this symbol defines them, and the purchase specification must adopt them:
+#   1 PRI_DOT  primary start (dot), to VTRANS          2 PRI_FIN  primary finish, to the switch drain
+#   3 SEC_DOT  secondary start (dot), to HV_RTN        4 SEC_HV   secondary finish, the high-voltage end, to the rectifier
+# Dot convention: with the switch on, both dotted ends are positive, so SEC_HV is negative and the rectifier blocks;
+# at switch-off SEC_HV swings positive and the rectifier conducts (flyback). Pins 3 and 4 differ by up to about
+# 2.9 kV; pin 4 to the primary pins up to about 2.9 kV (spacing and insulation per §B4.5 and §B12).
+[[symbol]]
+name = "T_FLYBACK_1to50"
+reference = "T"
+value = "1:50 7.5uH flyback (made to order)"
+footprint = "aed_charger:T1001_made_to_order_TBD"
+datasheet = "docs/HARDWARE_DESIGN.md §B4.5 (requirements; made-to-order part, D-42)"
+description = "Flyback transformer 1:50 +-1 %, Lpri 7.5 uH +-10 %, <=10 % L loss at 25 A 70 C, leakage <=1 % Lpri, secondary self-capacitance <=15 pF, >=2,200 V DC working, 4.4 kV DC 60 s test"
+mpn = "made to order per docs/HARDWARE_DESIGN.md §B4.5"
+manufacturer = "made to order (no maker selected)"
+pinout_source = "terminal numbering defined by this symbol (the requirement in docs/HARDWARE_DESIGN.md §B4.5 does not number terminals); must be written into the purchase specification"
+pinout_verified = "N/A - terminal numbering is DEFINED here; the purchase specification must adopt it"
+keywords = "transformer flyback high voltage"
+pins = """
+1 PRI_DOT passive left
+2 PRI_FIN passive left
+3 SEC_DOT passive right
+4 SEC_HV  passive right
+"""

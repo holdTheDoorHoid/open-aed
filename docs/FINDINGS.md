@@ -169,3 +169,11 @@ The weekly full-energy test and daily light check (D-15) are implemented as sche
 - **Cost of never charging during CPR:** after an overheated device cools, the next chance to shock is the next analysis, up to two minutes later.
 - **Not modelled:** sunlight on the case, the vehicle pouch, and each part heating separately. The thermal model is one lump with figures from the parts study.
 - **New hardware requirements this creates:** a temperature sensor only the supervisor can read; memory that survives battery removal and can be written every minute; and a pad connector that reports which pad set is fitted.
+
+## First circuit design (27 November 2026)
+
+The whole device has been drawn as a circuit: 16 sheets, 1,362 parts, 719 nets, in `hardware/aed-main/`. It passes KiCad's rule check with no errors, and all 3,669 pin connections match the reviewable pin tables. **It has not been simulated, reviewed by a qualified engineer, or built, and is marked not for construction.**
+
+- An independent review of the design before drawing found six blocking problems, all at the boundaries between blocks. The most important was in the firmware: it treated a shock as instantaneous, and on real hardware both controllers would have withdrawn their own consent during every shock. All 492 tests had missed it. The firmware and simulator now model the shock in fine time steps (542 tests).
+- Drawing the sheets against datasheets found further problems, listed in [hardware/aed-main/capture-notes/00-integration.md](../hardware/aed-main/capture-notes/00-integration.md). Ten would stop the device working or leave a hazard, including a missing battery-charger connection, an over-voltage limit that cannot be set to fit, discharge paths with too little voltage margin, and a patient relay that does not exist as a catalogue part.
+- The review is in [docs/reviews/](reviews/2026-11-27-hardware-design-review.md).

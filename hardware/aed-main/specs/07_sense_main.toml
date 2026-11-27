@@ -1,0 +1,537 @@
+# 07_sense_main - main controller's capacitor-voltage chain, output-node sense inputs, capacitor NTC, LOWV_OK.
+# NOT FOR CONSTRUCTION — unreviewed design.
+# Source: docs/HARDWARE_DESIGN.md §B9.1, §B9.2, §B14; contract.md issue 2 §5.4, §5.6, §5.7, §8 (sheet 07).
+# References 701-799. Work package WP-C. Arithmetic: hardware/aed-main/capture-notes/WP-C.md.
+# The high-voltage divider string itself (10 x 4.02 MOhm HVCR2512 + 2 x 80.6 kOhm) and its tap clamp
+# (10 kOhm + 3.6 V to GND) are on 11_hv_storage; this sheet receives only VCAP_M_TAP (1:998.5).
+
+[sheet]
+name = "07_sense_main"
+title = "Main capacitor-voltage chain: ADS1220 + REF3425, output-node sense inputs, capacitor NTC, LOWV_OK (60 V) comparator"
+source = "docs/HARDWARE_DESIGN.md §B9, §B14; contract.md §5.6"
+date = "2026-11-27"
+comments = [
+  "Every part here is TI and runs from 3V3_MAIN only; the supervisor chain (08) uses a different ADC, reference and op-amp family on 3V3_SUP (D-28).",
+  "Each signal from another board (VCAP_M_TAP, OUT_A_TAP, OUT_B_TAP) enters through 100 kOhm (rule R7): an unpowered reader is fed at most 36 uA from a 3.6 V clamped tap.",
+]
+
+[nets]
+power = ["GND", "3V3_MAIN", "VREF_M"]
+global = [
+  "VCAP_M_TAP",          # 11 -> 07, scaled capacitor voltage 1:998.5
+  "OUT_A_TAP", "OUT_B_TAP",   # 13 -> 07, bridge output nodes 1:1,000
+  "NTC_CAP_M",           # 11 (J1102) -> 07, capacitor-case NTC to GND
+  "HVM_SCLK", "HVM_MOSI", "HVM_CS_N",   # 04 -> 07
+  "HVM_MISO", "HVM_DRDY_N",             # 07 -> 04
+  "LOWV_OK",             # 07 -> 09, high = capacitor below about 55 V
+]
+
+# ------------------------------------------------------------------ accepted ERC findings (placeholders)
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR7001 "
+until_sheet = "03_power_rails"
+reason = "#PWR7001 = 3V3_MAIN (KiCad reports the power symbol, not the net). 3V3_MAIN is made by U301 on 03_power_rails (WP-A, placeholder in this worktree); no package flags another package's rail (contract §4)."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "GND"
+until_sheet = "01_power_battery"
+reason = "GND is made on 01_power_battery (WP-A, placeholder in this worktree); contract §4."
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "U701 Pin (1|2|16) "
+until_sheet = "04_main_mcu"
+reason = "SPI from the main controller U401 on 04_main_mcu (WP-B, placeholder here). HVM_CS_N has its 100 kOhm pull-up R712 on this sheet (contract §5.6)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "VCAP_M_TAP|NTC_CAP_M"
+until_sheet = "11_hv_storage"
+reason = "Driven from 11_hv_storage (WP-F string tap; NTC via J1102), placeholder in this worktree."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "OUT_A_TAP|OUT_B_TAP"
+until_sheet = "13_hv_bridge"
+reason = "Driven by the output dividers on 13_hv_bridge (WP-G), placeholder in this worktree."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "HVM_"
+until_sheet = "04_main_mcu"
+reason = "SPI partner is the main controller on 04_main_mcu (WP-B), placeholder in this worktree."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "LOWV_OK"
+until_sheet = "09_interlock"
+reason = "Read by the test-mode logic on 09_interlock (WP-D), which also fits its 100 kOhm pull-down; placeholder in this worktree."
+
+# ------------------------------------------------------------------ groups
+[[group]]
+id = "tap"
+title = "VCAP_M_TAP input: 100 kOhm + 10 nF, OPA333 zero-drift follower"
+note = """
+VCAP_M_TAP = Vcap x 40.3 k / (40.2 M + 40.3 k) = Vcap / 998.5 (string on 11). 1,950 V -> 1.953 V; 2,200 V -> 2.203 V; 60 V -> 60.1 mV.
+R701 100 kOhm meets R7 (reader may be unpowered while the capacitor is charged): tap clamp 3.6 V on 11 -> at most (3.6 - 0) / 110 k = 33 uA into U704's input clamp diodes (OPA333 abs. max. +-1 mA, SBOS351E 6.1). No extra clamp here: any diode added would leak into the 50 kOhm source.
+R701 + C701 (10 nF C0G): 1.6 ms time constant, -3 dB 159 Hz. Lag during a charge: 205 V/s x 1.6 ms = 0.3 V (within the 1 ms loop's 0.2 V overshoot budget, §B4.4).
+U704 OPA333: Vos 10 uV max, 0.05 uV/K; IB 200 pA max at 25 C, 150 pA typ over temperature (SBOS351E 6.6) -> 1 nA assumed worst case x 150 kOhm source = 0.15 mV = 0.15 V of capacitor voltage. Output swing to the negative rail is the limit near 0 V: readings below about 10 mV (10 V) are not linear [UNVERIFIED at this load].
+R702 1 MOhm to 3V3_MAIN at the follower output: a failed-open follower output reads FULL SCALE (over-voltage, LOWV_OK low = not permitted) rather than 0 V. The follower sinks 3.3 uA at the LOWV threshold.
+"""
+
+[[group]]
+id = "adc"
+title = "ADS1220 24-bit ADC, PGA bypassed, ratiometric to VREF_M (REF3425)"
+note = """
+AIN0 = buffered VCAP (R703 1 k + C703 10 nF C0G), AIN1/AIN2 = OUT_A/OUT_B taps, AIN3 = capacitor NTC. Firmware: single-ended inputs referred to AVSS (MUX 1000b-1011b) need PGA_BYPASS = 1, gain 1 (SBAS501D 8.3.2.2); input range AVSS-0.1 to AVDD+0.1 V; full scale = VREF_M = 2.5 V = 2,496 V of capacitor voltage. Reference: REFP0/REFN0 (external, VREF = 2.5 V).
+Gain error (PGA disabled) 0.015 % typ, gain drift 1 ppm/K typ (4 ppm/K max is the PGA-enabled figure, used in the budget), INL 15 ppmFSR max, offset drift 0.3 uV/K max (SBAS501D 6.5). Absolute input current with PGA bypassed is given only as typical curves (Fig 6-21..6-24): 20 nA assumed -> 20 uV across R703.
+CLK tied to DGND (internal oscillator, Table 5-1). DRDY and DOUT/DRDY both go to the main controller. HVM_CS_N pulled up by R712 100 kOhm (contract §5.6).
+Decoupling: AVDD 100 nF + 1 uF, DVDD 100 nF (Table 5-1: >= 100 nF).
+"""
+
+[[group]]
+id = "ref"
+title = "VREF_M = 2.5 V, REF3425 (TI), main chain only"
+note = """
+REF3425IDBVR: +-0.05 % initial, 6 ppm/K max, 25 ppm / 1000 h then 10 ppm, thermal hysteresis 30 ppm (SBAS804G 6.5). VIN 3V3_MAIN: dropout 100 mV max at 0 mA, load here about 0.5 mA (NTC bias 0.25 mA max, threshold divider 53 uA, ADC reference 10 nA). Output capacitor 4.7 uF (stable 0.1-10 uF), input 100 nF. EN tied to IN. Force and sense joined at the part; sense routed to REFP0 at layout.
+VREF_M is drawn as a power symbol made here (contract §4) by the reference's power_out pin; it is used on this sheet only.
+"""
+
+[[group]]
+id = "lowv"
+title = "LOWV_OK: capacitor below about 55 V (D-61, §B14), LMV761 push-pull on 3V3_MAIN"
+note = """
+U703 -IN = buffered tap through R704 10 k / C704 100 nF (1 ms). +IN = threshold from VREF_M: R705 46.4 k / R706 1.00 k (0.1 %) = 52.74 mV, hysteresis R707 1.62 M from the output.
+Output HIGH (LOWV_OK) while tap < threshold. Thresholds [CALC]: OK -> not OK at tap 54.70 mV = 54.6 V; not OK -> OK at 52.71 mV = 52.6 V (2 V hysteresis).
+Band [CALC, worst case]: LMV761 Vos +-1 mV over temperature (SNOS998I 6.6), follower 0.16 mV, resistors 0.1 % + 25 ppm/K, VREF 0.1 %, divider ratio +-1.5 % uncalibrated -> 50.4 V to 57.0 V. Requirement: OK only below 60 V -> fits with 3 V margin; S refuses a test permit above 50 V on its own chain (§13 fault 32).
+Default: unpowered or off -> output low via the 100 kOhm pull-down on 09 = NOT OK (R11). An open VCAP_M_TAP reads 0 V = "OK": see capture notes, contract issue C-3.
+SDB (shutdown, active low) tied to V+ (always on).
+"""
+
+[[group]]
+id = "outs"
+title = "Bridge output taps OUT_A_TAP, OUT_B_TAP (shorted-switch and test-relay checks)"
+note = """
+1:1,000 dividers and clamps to GND are on 13. Here: 100 kOhm (R7) + 10 nF C0G each (1 ms) into AIN1/AIN2. Error from the ADC's typical 20 nA input current x 100 k = 2 mV = 2 V of output voltage: irrelevant for 'near 0' versus 'capacitor voltage' decisions (§B14.3, F-8).
+"""
+
+[[group]]
+id = "ntc"
+title = "Capacitor-case NTC NTC_CAP_M (D-56), ratiometric to VREF_M"
+note = """
+NTC (10 k, B tolerance <= 1 %, §B9.2) is on the capacitor, wired from J1102 on 11 between NTC_CAP_M and GND [assumption: sheet 11 returns the NTC to GND]. Bias R710 10.0 k 0.1 % from VREF_M; AIN3 = 2.5 V x Rntc / (Rntc + 10 k): -20 C (about 68 k) 2.18 V, 25 C 1.25 V, 70 C (about 2 k) 0.42 V. Ratiometric: the reference value cancels.
+R711 1 k + C708 100 nF filter. With 3V3_MAIN off, VREF_M is 0 V and nothing drives the NTC line (R7 satisfied).
+"""
+
+# ================================================================== parts: tap buffer
+[[part]]
+ref = "R701"
+group = "tap"
+lib_id = "Device:R"
+value = "100k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "ERA-3AEB104V"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/cdbs/www-data/pdf/RDM0000/AOA0000C304.pdf"
+description = "R7 input resistor, VCAP_M_TAP; thin film 25 ppm/K"
+fields = { DocRef = "§B9.1 main chain input", Verify = "ERA-3AE 0.1 % / 25 ppm/K series availability" }
+between = ["VCAP_M_TAP", "VCAPM_IN"]
+
+[[part]]
+ref = "C701"
+group = "tap"
+lib_id = "Device:C"
+value = "10nF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H103JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H103JA01%23"
+description = "Tap filter (C0G: no leakage or dielectric absorption to speak of)"
+between = ["VCAPM_IN", "GND"]
+
+[[part]]
+ref = "U704"
+group = "tap"
+lib_id = "Amplifier_Operational:OPA333xxDBV"
+value = "OPA333AIDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "OPA333AIDBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/opa333.pdf"
+description = "Zero-drift follower for VCAP_M_TAP, 1.8-5.5 V, -40..125 C"
+fields = { DocRef = "§B9.1 (follower added by WP-C)", SymbolNote = "stock symbol: 1 OUT, 2 V-, 3 +IN, 4 -IN, 5 V+ = SBOS351E 'Pin Functions: OPA333' SOT column" }
+pins = """
+  3  +   VCAPM_IN
+  4  -   VCAPM_BUF
+  1  ~   VCAPM_BUF
+  5  V+  3V3_MAIN
+  2  V-  GND
+"""
+
+[[part]]
+ref = "C702"
+group = "tap"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "U704 supply decoupling"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "R702"
+group = "tap"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Fail-high pull-up on the follower output: an open output reads full scale, never 'below 60 V'"
+between = ["VCAPM_BUF", "3V3_MAIN"]
+
+# ================================================================== parts: ADC
+[[part]]
+ref = "R703"
+group = "adc"
+lib_id = "Device:R"
+value = "1k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "ERA-3AEB102V"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/cdbs/www-data/pdf/RDM0000/AOA0000C304.pdf"
+description = "ADC input filter R (AIN0)"
+new_row = true
+between = ["VCAPM_BUF", "VCAPM_ADC"]
+
+[[part]]
+ref = "C703"
+group = "adc"
+lib_id = "Device:C"
+value = "10nF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H103JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H103JA01%23"
+description = "ADC input filter C (AIN0), 10 us"
+between = ["VCAPM_ADC", "GND"]
+
+[[part]]
+ref = "U701"
+group = "adc"
+lib_id = "Analog_ADC:ADS1220xPW"
+value = "ADS1220IPWR"
+footprint = "Package_SO:TSSOP-16_4.4x5mm_P0.65mm"
+mpn = "ADS1220IPWR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/ads1220.pdf"
+description = "24-bit delta-sigma ADC, 4 inputs, external reference, SPI, -40..125 C, TSSOP-16"
+fields = { DocRef = "§B9.1 ADC (main)", SymbolNote = "stock symbol pin numbers and names match SBAS501D Table 5-1 PW column (read 27 Nov 2026)" }
+pins = """
+  1   SCLK          HVM_SCLK
+  2   ~{CS}         HVM_CS_N
+  3   CLK           GND           # internal oscillator: CLK to DGND (Table 5-1)
+  4   DGND          GND
+  5   AVSS          GND
+  6   AIN3/REFN1    NTCM_ADC
+  7   AIN2          OUTB_ADC
+  8   REFN0         GND
+  9   REFP0         VREF_M
+  10  AIN1          OUTA_ADC
+  11  AIN0/REFP1    VCAPM_ADC
+  12  AVDD          3V3_MAIN
+  13  DVDD          3V3_MAIN
+  14  ~{DRDY}       HVM_DRDY_N
+  15  DOUT/~{DRDY}  HVM_MISO
+  16  DIN           HVM_MOSI
+"""
+
+[[part]]
+ref = "C709"
+group = "adc"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "AVDD decoupling at pin 12"
+new_row = true
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "C710"
+group = "adc"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12%23"
+description = "AVDD bulk"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "C711"
+group = "adc"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "DVDD decoupling at pin 13"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "R712"
+group = "adc"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "HVM_CS_N default high (contract §5.6 default resistor, sheet 07)"
+between = ["HVM_CS_N", "3V3_MAIN"]
+
+# ================================================================== parts: reference
+[[part]]
+ref = "U702"
+group = "ref"
+lib_id = "aed_uisense:REF3425_DBV"
+value = "REF3425IDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "REF3425IDBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/pdf/SBAS804"
+description = "VREF_M 2.5 V, +-0.05 %, 6 ppm/K"
+fields = { DocRef = "§B9.1 reference (main)" }
+pins = """
+  4  IN     3V3_MAIN
+  3  EN     3V3_MAIN
+  6  OUT_F  VREF_M
+  5  OUT_S  VREF_M
+  1  GND_F  GND
+  2  GND_S  GND
+"""
+
+[[part]]
+ref = "C712"
+group = "ref"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "REF3425 input capacitor (CIN = 0.1 uF, SBAS804G 6.5 conditions)"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "C713"
+group = "ref"
+lib_id = "Device:C"
+value = "4.7uF"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "GRM21BR71C475KE51L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM21BR71C475KE51%23"
+description = "REF3425 output capacitor (stable 0.1-10 uF, SBAS804G 6.5)"
+between = ["VREF_M", "GND"]
+
+[[part]]
+ref = "C714"
+group = "ref"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "Local VREF_M capacitor at ADS1220 REFP0 (total output C 4.8 uF, inside 10 uF limit)"
+between = ["VREF_M", "GND"]
+
+# ================================================================== parts: LOWV_OK
+[[part]]
+ref = "R704"
+group = "lowv"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "LOWV sense filter R (LMV761 IB 50 pA max -> 0.5 uV)"
+between = ["VCAPM_BUF", "LOWV_SENSE"]
+
+[[part]]
+ref = "C704"
+group = "lowv"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "LOWV sense filter C, 1 ms"
+between = ["LOWV_SENSE", "GND"]
+
+[[part]]
+ref = "R705"
+group = "lowv"
+lib_id = "Device:R"
+value = "46.4k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "ERA-3AEB4642V"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/cdbs/www-data/pdf/RDM0000/AOA0000C304.pdf"
+description = "LOWV threshold divider, top (VREF_M x 1.00/47.4 = 52.74 mV)"
+new_row = true
+between = ["VREF_M", "LOWV_REF"]
+
+[[part]]
+ref = "R706"
+group = "lowv"
+lib_id = "Device:R"
+value = "1.00k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "ERA-3AEB102V"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/cdbs/www-data/pdf/RDM0000/AOA0000C304.pdf"
+description = "LOWV threshold divider, bottom"
+between = ["LOWV_REF", "GND"]
+
+[[part]]
+ref = "R707"
+group = "lowv"
+lib_id = "Device:R"
+value = "1.62M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071M62L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Hysteresis: 3.3 V x 978.9 / (978.9 + 1.62 M) = 2.0 mV = 2.0 V of capacitor voltage"
+between = ["LOWV_OK", "LOWV_REF"]
+
+[[part]]
+ref = "U703"
+group = "lowv"
+lib_id = "aed_uisense:LMV761_DBV"
+value = "LMV761MF/NOPB"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "LMV761MF/NOPB"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/lmv761.pdf"
+description = "LOWV_OK comparator, push-pull on 3V3_MAIN (contract U703)"
+fields = { DocRef = "§B9.1 LOWV_OK; §B14", Verify = "LMV761 lifecycle (TI marks 'newer version available'); 1 mV max offset applies at the temperature extremes per SNOS998I note (3)" }
+pins = """
+  1  +IN  LOWV_REF
+  3  -IN  LOWV_SENSE
+  5  SDB  3V3_MAIN      # shutdown active low: tied high = always on
+  4  OUT  LOWV_OK
+  6  V+   3V3_MAIN
+  2  V-   GND
+"""
+
+[[part]]
+ref = "C705"
+group = "lowv"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "U703 supply decoupling"
+between = ["3V3_MAIN", "GND"]
+
+# ================================================================== parts: output taps
+[[part]]
+ref = "R708"
+group = "outs"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "R7 input resistor, OUT_A_TAP"
+between = ["OUT_A_TAP", "OUTA_ADC"]
+
+[[part]]
+ref = "C706"
+group = "outs"
+lib_id = "Device:C"
+value = "10nF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H103JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H103JA01%23"
+description = "OUT_A filter, 1 ms"
+between = ["OUTA_ADC", "GND"]
+
+[[part]]
+ref = "R709"
+group = "outs"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "R7 input resistor, OUT_B_TAP"
+between = ["OUT_B_TAP", "OUTB_ADC"]
+
+[[part]]
+ref = "C707"
+group = "outs"
+lib_id = "Device:C"
+value = "10nF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H103JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H103JA01%23"
+description = "OUT_B filter, 1 ms"
+between = ["OUTB_ADC", "GND"]
+
+# ================================================================== parts: NTC
+[[part]]
+ref = "R710"
+group = "ntc"
+lib_id = "Device:R"
+value = "10.0k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "ERA-3AEB103V"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/cdbs/www-data/pdf/RDM0000/AOA0000C304.pdf"
+description = "NTC bias to VREF_M (contract §5.6 'bias to VREF_M', sheet 07)"
+between = ["VREF_M", "NTC_CAP_M"]
+
+[[part]]
+ref = "R711"
+group = "ntc"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "NTC filter R / ESD current limit into AIN3"
+between = ["NTC_CAP_M", "NTCM_ADC"]
+
+[[part]]
+ref = "C708"
+group = "ntc"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "NTC filter C (100 us)"
+between = ["NTCM_ADC", "GND"]

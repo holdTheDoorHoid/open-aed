@@ -1,0 +1,776 @@
+# 14_patient_interface — PATIENT: patient relay K1401 with its 12 V coil supply (input disconnect, TPS61089 boost,
+# hold-up reservoir, DRV110 peak-and-hold economiser, fast-release clamp), force-guided aux contact -> K_REST_N;
+# pad connector J1401; pad identity (1-Wire) and presence lines; pad-area NTC.
+# NOT FOR CONSTRUCTION — unreviewed design. Source: docs/HARDWARE_DESIGN.md §B7; contract.md issue 2 (§5.7, §5.8, §8).
+# Capture notes, arithmetic and failure table: hardware/aed-main/capture-notes/WP-H.md. References 1401-1499.
+
+[sheet]
+name = "14_patient_interface"
+title = "PATIENT: patient relay K1401 + 12 V coil supply, hold-up, economiser and aux contact; pad connector; pad ID and presence; pad NTC"
+source = "docs/HARDWARE_DESIGN.md §B7; hardware/aed-main/contract.md §5.7, §5.8, §8; capture notes WP-H"
+date = "2026-11-27"
+comments = ["At rest the pads connect to the front ends (PT_FE_A/B); only an energised K1401 connects them to the bridge (HV_OUT_A/B).",
+            "K1401 is a MADE-TO-ORDER relay (no catalogue part has >= 5 kV, a shock-carry rating AND a force-guided aux contact): see notes."]
+
+[nets]
+power = ["GND", "VBAT_SYS"]
+global = [
+  "K_EN",           # 12 -> 14: coil supply on (BRIDGE_3V3 logic); 100 k pull-down HERE (contract §5.7)
+  "K_REST_N",       # 14 -> 04, 12: aux contact to GND, low = at rest; pull-up on 04
+  "HV_OUT_A", "HV_OUT_B",   # 13 -> 14: bridge outputs (relay NO contacts)
+  "PT_FE_A", "PT_FE_B",     # 14 -> 15, 16: relay rest (NC) contacts to the front ends
+  "PAD_PRESENT_N",  # 14 -> 04: presence loop, low = fitted; pull-up on 04
+  "PAD_ID_1W",      # 04 <-> 14: 1-Wire pad identity; 2.2 k pull-up on 04
+  "NTC_PADS",       # 14 -> 04: pad-area NTC; bias on 04
+]
+# Local supply nodes fed through a P-FET / Schottky / resistor, which KiCad cannot see as drivers: permanent flags.
+flag_nodes = ["K_VIN", "K_DVIN"]
+
+# ------------------------------------------------------------------ ERC acceptances (other packages' sheets)
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "/14_patient_interface/"
+until_sheet = "01_power_battery"
+reason = "GND and VBAT_SYS are made on 01_power_battery (WP-A), a placeholder in this worktree; no package flags another package's rail (contract §4)."
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "K_EN|Q1402|U1401 Pin 7|U1402 Pin 13"
+until_sheet = "12_bridge_logic"
+reason = "K_EN is driven by the sequencer on 12_bridge_logic (WP-D, placeholder here); the 100 k pull-down R1404 on this sheet defines it as 'coil off' meanwhile."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "K_EN|K_REST_N|HV_OUT_A|HV_OUT_B|PAD_PRESENT_N|PAD_ID_1W|NTC_PADS"
+reason = "Other end on 04_main_mcu, 12_bridge_logic or 13_hv_bridge (WP-B, WP-D, WP-G; placeholders in this worktree). Disappears at the merge."
+
+
+# ====================================================================== groups
+[[group]]
+id = "relay"
+title = "K1401 patient relay (made to order, DPDT >= 5 kV, cold-switched) and J1401 pad connector"
+note = """
+At rest (coil off): PT_PAD_A -> NC_A -> PT_FE_A and PT_PAD_B -> NC_B -> PT_FE_B: the pads see only the two front ends (15, 16). Energised: pads -> NO -> HV_OUT_A/B (bridge, 13). The relay is closed and opened with no current (the sequencer on 12 orders it); it must CARRY 65 A peak for <= 15.5 ms, >= 100 A for 20 ms, 465 A for <= 5 us in a fault [UNVERIFIED for every candidate: no maker publishes a pulse/carry rating].
+Candidate search (notes §4): G17 (the design's reference) is a 7.5 kV SF6 relay with 1.0 ohm max contact resistance, 10 A carry, 12 ohm/12 W 100 ms coil and is no longer in Sensata's catalogue. Best real basis: Sensata/Gigavac G12-12Vdc (DPDT vacuum, 8 kV operating / 10 kV test, 20 mOhm, 10 A carry, 15/9 ms, 12 V 60 ohm coil, -55..+125 C). NO catalogue HV relay has an auxiliary contact: the aux contact is a made-to-order requirement (§B7.2), linked to BOTH poles so a single welded pole is seen (fault 29).
+Terminal numbers 1-10 are project numbers (none published). Coil supply below is sized for the worst coil considered (12 ohm, 12 W, G17 class); with a 60 ohm G12-class coil it simply runs at 100 % duty (2.4 W).
+J1401 (made to order): PAD_A/PAD_B energy contacts (HV_PULSE class, PT_PAD_*), three separated LV contacts: ID (1-Wire DS2431-class EEPROM in the pad plug, D-57), ID_RET (= GND), PRESENT (looped to ID_RET inside the plug). No test points on PT_* (R9).
+"""
+
+[[group]]
+id = "lvpad"
+title = "Pad ID (1-Wire) and presence lines: series R + TVS at the connector; aux contact -> K_REST_N"
+note = """
+PAD_ID_1W: TVS TPD1E10B06 (bidirectional, VRWM 5.5 V, 12 pF, 6 A 8/20 us) at the contact, then 100 ohm series to the net (2.2 k pull-up on 04). 100 ohm x 4 mA slave sink = 0.4 V: inside a 3.3 V master's VIL. ADI's own series-R recommendation (DS9503 class) could not be read [UNVERIFIED].
+PAD_PRESENT_N: loop to GND in the plug; TVS at the contact, 1 k series (pull-up 100 k on 04: low = 33 mV). Unplugged / open / unsoldered = high = 'not fitted' (safe reading).
+K_REST_N: aux contact AUX_NC closes K_AUX to GND only at rest. 1 k series + TVS so a fault inside the HV relay body cannot put more than a clamp-limited current onto the LV board. Open contact, unfitted relay or broken wire = high = 'NOT at rest' (main faults, F-6). See notes 'Contract issues' about what an open contact means to the sequencer (R11).
+"""
+
+[[group]]
+id = "boostin"
+title = "Coil supply input disconnect: Q1401 P-FET, slow turn-on, driven by K_EN (zero standby draw)"
+note = """
+A boost converter passes VIN to VOUT when disabled (TPS61089 datasheet §8.3.2), so without this switch the reservoir and DRV110 would sit at VBAT_SYS in standby (aluminium-cap leakage up to 0.5 mA rated, DRV110 0.25 mA) — against the zero-standby budget of design §11. Q1401 DMP3013SFV (-30 V, VGS +/-25 V, 17 mOhm max at -4.5 V).
+K_EN high -> Q1402 (2N7002, 3.3 V gate) pulls K_PG down through R1402 47 k. Miller capacitor C1401 68 nF sets the drain slew: ~ (7.4-2.5) V / 47 k ~ 0.1 mA minus 25 uA through R1401 -> ~1.1 V/ms -> reservoir precharge current 6.6 mF x 1.1 V/ms ~ 7 A for ~ 6-7 ms [EST; Q1401 SOA at ~3.7 V x 7 A x 7 ms UNVERIFIED].
+K_EN low -> R1401 100 k pulls the gate to the source; Q1401 off in a few ms. R1404 100 k is the contract's K_EN default (coil off).
+"""
+
+[[group]]
+id = "boost"
+title = "12 V boost U1401 TPS61089 (VIN 2.7-12 V, VOUT 4.5-12.6 V, 7 A switch), EN = K_EN"
+note = """
+FB: VREF 1.212 V; R1407 887 k / R1408 100 k -> 11.96 V (OVP 12.7-13.6 V). FSW: R1405 301 k FSW-to-SW -> ~500 kHz (datasheet point). ILIM: R1406 127 k -> 8.1 A typ (7.3-8.9 A): fast reservoir charge.
+Load: coil peak 0.86 A x 11.6 V ~ 10 W + DRV110/sense ~0.3 W -> ~2.1 A in at 5.5 V, 1.6 A at 7.4 V [CALC]; plus reservoir charging at the current limit for ~10 ms after K_EN (input up to ~8 A, inside the pack protector's 30 A, OUTSIDE the design's 2.0 A budget: notes).
+L1401 2.2 uH (datasheet nominal; Coilcraft XAL7030-222, Isat >= 9 A [BK, verify]). COUT 3 x 22 uF ceramic on K_VBOOST (datasheet 10-1000 uF effective); the 6.6 mF reservoir sits behind D1401 so the boost loop sees it only while charging it [loop behaviour while charging UNVERIFIED: SIM].
+EN: K_EN through R1413 100 k (R7: reader may be unpowered while its input ramps); internal 800 k pull-down -> 2.9 V high, 1.2 V threshold.
+"""
+
+[[group]]
+id = "holdup"
+title = "Hold-up reservoir K_VCOIL: D1401 + 2 x 3300 uF 16 V (6.6 mF) — relay stays closed >= 30 ms if the boost or VBAT_SYS fails"
+note = """
+Sized [CALC, notes §3.5] for the worst case: boost lost at the earliest sequence start (~20 ms after K_EN) while the DRV110 is still in its 33 ms peak phase (coil resistive, tau = R_coil x C), then hold at 0.5 A regulated. Hot coil 15 ohm (hold needs >= 7.8 V): ~48 ms; boost lost during hold: ~60 ms; both > 30 ms. 4.4 mF would leave ~30 ms with no margin; the design's 1.7 mF assumed a constant 3 W draw and no peak phase.
+Precharge happens through Q1401 slew (see input group); standby voltage 0 V. Discharge after a shock through the DRV110 supply (~0.25 mA) and leakage.
+Nichicon UHE1C332MHD: 16 V, 3300 uF, 12.5 x 35.5 mm, -40..+105 C; 13.6 V worst-case OVP = 85 % of rating.
+"""
+
+[[group]]
+id = "coil"
+title = "Coil economiser U1402 DRV110A (peak 0.86 A for 33 ms, hold 0.5 A, 20 kHz) + Q1403 + fast-release clamp"
+note = """
+RSENSE R1419 0.25 ohm. IPEAK = 0.9 V x 66.67 k / RPEAK / RSENSE: R1415 280 k -> 0.857 A (>= G17 pick-up 8 V / 12 ohm = 0.67 A). IHOLD = 0.15 V x 66.67 k / RHOLD / RSENSE: R1416 80.6 k -> 0.496 A (> G17 worst drop-out 5 V / 12 ohm = 0.42 A; 'hold at ~50 %', design §B7.2). Hold sense voltage 124 mV (> 30 mV minimum). KEEP C1414 0.33 uF -> 33 ms peak (tKEEP = C x 1e5 s/F): covers pull-in while K_VCOIL is still rising from the battery level. OSC to GND -> 20 kHz default (datasheet Eq. 4 text).
+VIN: R1414 1 k from K_VCOIL + C1413 4.7 uF (datasheet Table 3: 1 k at 12 V with EN toggled; internal clamp 15 V; VIN >= 6 V). OUT drives Q1403 gate at VIN (<= 13 V): Q1403 DMN3027LFG has VGS +/-25 V (a +/-12 V part would be overstressed). R1420 100 k holds the gate low when U1402 is unpowered.
+EN: K_EN via R1417 10 k with R1418 47 k to GND (the DRV110 EN pin floats HIGH internally: this keeps it low when K_EN is low or open). K_EN low -> gate off at once.
+Fast release: coil current at turn-off goes K_COIL_L -> D1402 SS34 -> D1403 SMBJ10A (VBR 11.1-12.3 V) -> K_VCOIL: ~ -12.8 V across the coil instead of -0.5 V (release time is in the timing budget, R-12). The same path freewheels the 20 kHz hold PWM (fast decay: more ripple and loss in hold, acceptable for <= 90 ms). Drain peak = 13.2 V + 12.3 V + ~1 V + 0.5 V ~ 27 V < 30 V VDS (90 %) [CALC].
+The 90 ms on-time cap and the <= 60 ms start window are on 12_bridge_logic (contract §8); this sheet only obeys K_EN. STATUS (open drain) is not read: no contract net.
+"""
+
+[[group]]
+id = "ntc"
+title = "Pad-area temperature NTC_PADS (D-52 pad heat) and test points"
+note = """
+TH1401 Murata NCP18XH103F03RB: 10 k +/-1 %, B25/50 3380 K +/-1 %, -40..+125 C, 0603, placed at the pad connector / pad pocket. Bias resistor and filter on 04 (contract §5.8). Test points only on LV nets (R9): coil reservoir and K_REST_N.
+"""
+
+# ====================================================================== relay and connector
+[[part]]
+ref = "J1401"
+group = "relay"
+lib_id = "aed_patient:PAD_CONNECTOR"
+value = "Pad connector (made to order)"
+footprint = "aed_patient:PadConnector_MadeToOrder"
+footprint_todo = true
+mpn = "MADE-TO-ORDER"
+manufacturer = "TBD"
+datasheet = "docs/HARDWARE_DESIGN.md §B7.3"
+fields = { DocRef = "J1401", Verify = "contact ratings >= 5 kV between energy contacts and to LV contacts; 4.0 mm PATIENT / 12.5 mm HV spacing placeholders" }
+pins = """
+1  PAD_A    PT_PAD_A
+2  PAD_B    PT_PAD_B
+3  ID       PAD_ID_C
+4  ID_RET   GND
+5  PRESENT  PAD_PRES_C
+"""
+
+[[part]]
+ref = "K1401"
+group = "relay"
+lib_id = "aed_patient:PATIENT_RELAY_DPDT_AUX"
+value = "DPDT HV relay + aux (made to order, G12 basis)"
+footprint = "aed_patient:PatientRelay_MadeToOrder"
+footprint_todo = true
+mpn = "MADE-TO-ORDER (basis Gigavac/Sensata G12-12Vdc + force-guided aux contact)"
+manufacturer = "TBD"
+datasheet = "https://www.sensata.com/sites/default/files/a/sensata-g12-series-dpdt-high-voltage-relay-datasheet.pdf"
+fields = { DocRef = "K1401", Verify = "carry 65 A pk/15.5 ms, 100 A/20 ms, 465 A/5 us; >= 5 kV contact-contact, pole-pole, contact-coil; aux contact force-guided to both poles; coil pick-up/drop-out; operate <= 15 ms" }
+pins = """
+1  COM_A    PT_PAD_A
+2  NC_A     PT_FE_A
+3  NO_A     HV_OUT_A
+4  COM_B    PT_PAD_B
+5  NC_B     PT_FE_B
+6  NO_B     HV_OUT_B
+7  COIL1    K_VCOIL
+8  COIL2    K_COIL_L
+9  AUX_COM  GND
+10 AUX_NC   K_AUX
+"""
+
+# ====================================================================== LV pad lines and aux contact
+[[part]]
+ref = "D1410"
+group = "lvpad"
+lib_id = "Device:D_TVS"
+value = "TPD1E10B06"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E10B06DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e10b06.pdf"
+pins = """
+1 A1 PAD_PRES_C
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1410"
+group = "lvpad"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PAD_PRES_C", "PAD_PRESENT_N"]
+
+[[part]]
+ref = "D1411"
+group = "lvpad"
+lib_id = "Device:D_TVS"
+value = "TPD1E10B06"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E10B06DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e10b06.pdf"
+pins = """
+1 A1 PAD_ID_C
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1411"
+group = "lvpad"
+lib_id = "Device:R"
+value = "100"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PAD_ID_C", "PAD_ID_1W"]
+
+[[part]]
+ref = "D1412"
+group = "lvpad"
+lib_id = "Device:D_TVS"
+value = "TPD1E10B06"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E10B06DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e10b06.pdf"
+pins = """
+1 A1 K_AUX
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1412"
+group = "lvpad"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_AUX", "K_REST_N"]
+
+# ====================================================================== input disconnect
+[[part]]
+ref = "Q1401"
+group = "boostin"
+lib_id = "Transistor_FET:DMP3013SFV"
+value = "DMP3013SFV"
+footprint = "Package_SON:Diodes_PowerDI3333-8"
+mpn = "DMP3013SFV-7"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/DMP3013SFV.pdf"
+fields = { Verify = "SOA for ~7 A at ~3.7 V for ~7 ms during the reservoir precharge" }
+pins = """
+1 S VBAT_SYS
+2 S VBAT_SYS
+3 S VBAT_SYS
+4 G K_PG
+5 D K_VIN
+"""
+
+[[part]]
+ref = "R1401"
+group = "boostin"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["VBAT_SYS", "K_PG"]
+
+[[part]]
+ref = "C1401"
+group = "boostin"
+lib_id = "Device:C"
+value = "68n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H683KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H683KA93D"
+between = ["K_PG", "K_VIN"]
+
+[[part]]
+ref = "R1402"
+group = "boostin"
+lib_id = "Device:R"
+value = "47k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0747KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_PG", "K_PGD"]
+
+[[part]]
+ref = "Q1402"
+group = "boostin"
+lib_id = "Transistor_FET:2N7002"
+value = "2N7002"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "2N7002LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/pdf/datasheet/2n7002l-d.pdf"
+fields = { Verify = "VGS(th) max vs 3.3 V drive (needs only ~0.1 mA); pinout G1 S2 D3 per stock symbol" }
+pins = """
+1 G K_ENG
+2 S GND
+3 D K_PGD
+"""
+
+[[part]]
+ref = "R1403"
+group = "boostin"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_EN", "K_ENG"]
+
+[[part]]
+ref = "R1404"
+group = "boostin"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+fields = { DocRef = "K_EN default resistor (contract §5.7)" }
+between = ["K_EN", "GND"]
+
+[[part]]
+ref = "C1402"
+group = "boostin"
+lib_id = "Device:C"
+value = "10u 25V X7R"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "GRM31CR71E106KA12L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM31CR71E106KA12L"
+between = ["K_VIN", "GND"]
+
+[[part]]
+ref = "C1403"
+group = "boostin"
+lib_id = "Device:C"
+value = "10u 25V X7R"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "GRM31CR71E106KA12L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM31CR71E106KA12L"
+between = ["K_VIN", "GND"]
+
+[[part]]
+ref = "C1404"
+group = "boostin"
+lib_id = "Device:C"
+value = "100n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+between = ["K_VIN", "GND"]
+
+# ====================================================================== boost
+[[part]]
+ref = "U1401"
+group = "boost"
+lib_id = "Regulator_Switching:TPS61089"
+value = "TPS61089RNRR"
+footprint = "Package_DFN_QFN:Texas_VQFN-RNR0011A-11"
+mpn = "TPS61089RNRR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps61089.pdf"
+fields = { Verify = "stability/behaviour while charging the 6.6 mF reservoir through D1401 (datasheet COUT range 10-1000 uF)" }
+pins = """
+1  FSW   K_FSW
+2  VCC   K_VCC
+3  FB    K_FB
+4  COMP  K_COMP
+5  GND   GND
+6  VOUT  K_VBOOST
+7  EN    K_BEN
+8  ILIM  K_ILIM
+9  VIN   K_VIN
+10 BOOT  K_BOOT
+11 SW    K_SW
+"""
+
+[[part]]
+ref = "R1413"
+group = "boost"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_EN", "K_BEN"]
+
+[[part]]
+ref = "L1401"
+group = "boost"
+lib_id = "Device:L"
+value = "2.2u"
+footprint = "Inductor_SMD:L_Coilcraft_XAL7030-222"
+mpn = "XAL7030-222MEC"
+manufacturer = "Coilcraft"
+datasheet = "https://www.coilcraft.com/getmedia/1941eff1-c84d-4a7c-b3d5-2b4f8ad9b1a0/xal7030.pdf"
+fields = { Verify = "Isat >= 9 A (ILIM max 8.9 A) and DCR" }
+between = ["K_VIN", "K_SW"]
+
+[[part]]
+ref = "R1405"
+group = "boost"
+lib_id = "Device:R"
+value = "301k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07301KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_FSW", "K_SW"]
+
+[[part]]
+ref = "R1406"
+group = "boost"
+lib_id = "Device:R"
+value = "127k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07127KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_ILIM", "GND"]
+
+[[part]]
+ref = "R1407"
+group = "boost"
+lib_id = "Device:R"
+value = "887k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07887KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_VBOOST", "K_FB"]
+
+[[part]]
+ref = "R1408"
+group = "boost"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_FB", "GND"]
+
+[[part]]
+ref = "R1409"
+group = "boost"
+lib_id = "Device:R"
+value = "17.4k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0717K4L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_COMP", "K_COMPR"]
+
+[[part]]
+ref = "C1405"
+group = "boost"
+lib_id = "Device:C"
+value = "4.7n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H472KA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H472KA01D"
+between = ["K_COMPR", "GND"]
+
+[[part]]
+ref = "C1406"
+group = "boost"
+lib_id = "Device:C"
+value = "2.2u 16V X5R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R61C225KE15D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R61C225KE15D"
+between = ["K_VCC", "GND"]
+
+[[part]]
+ref = "C1407"
+group = "boost"
+lib_id = "Device:C"
+value = "100n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+between = ["K_BOOT", "K_SW"]
+
+[[part]]
+ref = "C1408"
+group = "boost"
+lib_id = "Device:C"
+value = "22u 25V X7R"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "GRM32ER71E226KE15L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM32ER71E226KE15L"
+between = ["K_VBOOST", "GND"]
+
+[[part]]
+ref = "C1409"
+group = "boost"
+lib_id = "Device:C"
+value = "22u 25V X7R"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "GRM32ER71E226KE15L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM32ER71E226KE15L"
+between = ["K_VBOOST", "GND"]
+
+[[part]]
+ref = "C1412"
+group = "boost"
+lib_id = "Device:C"
+value = "22u 25V X7R"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "GRM32ER71E226KE15L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM32ER71E226KE15L"
+between = ["K_VBOOST", "GND"]
+
+# ====================================================================== hold-up
+[[part]]
+ref = "D1401"
+group = "holdup"
+lib_id = "Device:D_Schottky"
+value = "SS34"
+footprint = "Diode_SMD:D_SMC"
+mpn = "SS34-E3/57T"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/88751/ss32.pdf"
+pins = """
+1 K K_VCOIL
+2 A K_VBOOST
+"""
+
+[[part]]
+ref = "C1410"
+group = "holdup"
+lib_id = "Device:C_Polarized"
+value = "3300u 16V"
+footprint = "Capacitor_THT:CP_Radial_D12.5mm_P5.00mm"
+mpn = "UHE1C332MHD"
+manufacturer = "Nichicon"
+datasheet = "https://www.nichicon.co.jp/english/series_items/catalog_pdf/e-uhe.pdf"
+fields = { Verify = "height 35.5 mm, mass; lead pitch 5.0 mm for 12.5 mm diameter" }
+between = ["K_VCOIL", "GND"]
+
+[[part]]
+ref = "C1411"
+group = "holdup"
+lib_id = "Device:C_Polarized"
+value = "3300u 16V"
+footprint = "Capacitor_THT:CP_Radial_D12.5mm_P5.00mm"
+mpn = "UHE1C332MHD"
+manufacturer = "Nichicon"
+datasheet = "https://www.nichicon.co.jp/english/series_items/catalog_pdf/e-uhe.pdf"
+fields = { Verify = "height 35.5 mm, mass; lead pitch 5.0 mm for 12.5 mm diameter" }
+between = ["K_VCOIL", "GND"]
+
+[[part]]
+ref = "TP1401"
+group = "ntc"
+lib_id = "Connector:TestPoint"
+value = "K_VCOIL"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "test pad"
+manufacturer = "n/a (PCB pad)"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+pins = """
+1 1 K_VCOIL
+"""
+
+[[part]]
+ref = "TP1402"
+group = "ntc"
+lib_id = "Connector:TestPoint"
+value = "K_REST_N"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "test pad"
+manufacturer = "n/a (PCB pad)"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+pins = """
+1 1 K_REST_N
+"""
+
+# ====================================================================== coil economiser
+[[part]]
+ref = "U1402"
+group = "coil"
+lib_id = "aed_patient:DRV110A"
+value = "DRV110APWR"
+footprint = "Package_SO:TSSOP-14_4.4x5mm_P0.65mm"
+mpn = "DRV110APWR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/drv110.pdf"
+pins = """
+1  NC      NC
+2  KEEP    K_KEEP
+3  PEAK    K_PEAK
+4  HOLD    K_HOLD
+5  OSC     GND
+6  NC      NC
+7  VIN     K_DVIN
+8  GND     GND
+9  SENSE   K_SNS
+10 NC      NC
+11 OUT     K_GATE
+12 STATUS  NC
+13 EN      K_DEN
+14 NC      NC
+"""
+
+[[part]]
+ref = "R1414"
+group = "coil"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_VCOIL", "K_DVIN"]
+
+[[part]]
+ref = "C1413"
+group = "coil"
+lib_id = "Device:C"
+value = "4.7u 25V X5R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "GRM21BR61E475KA12L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM21BR61E475KA12L"
+between = ["K_DVIN", "GND"]
+
+[[part]]
+ref = "R1415"
+group = "coil"
+lib_id = "Device:R"
+value = "280k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07280KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_PEAK", "GND"]
+
+[[part]]
+ref = "R1416"
+group = "coil"
+lib_id = "Device:R"
+value = "80.6k 1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0780K6L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_HOLD", "GND"]
+
+[[part]]
+ref = "C1414"
+group = "coil"
+lib_id = "Device:C"
+value = "330n 16V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C334KA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C334KA01D"
+between = ["K_KEEP", "GND"]
+
+[[part]]
+ref = "R1417"
+group = "coil"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_EN", "K_DEN"]
+
+[[part]]
+ref = "R1418"
+group = "coil"
+lib_id = "Device:R"
+value = "47k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0747KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_DEN", "GND"]
+
+[[part]]
+ref = "Q1403"
+group = "coil"
+lib_id = "aed_patient:DMN3027LFG"
+value = "DMN3027LFG"
+footprint = "Package_SON:Diodes_PowerDI3333-8"
+mpn = "DMN3027LFG-7"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/DMN3027LFG.pdf"
+fields = { Verify = "datasheet still marked Advance Information (2015): current production status; VDS 30 V vs ~27 V clamp peak" }
+pins = """
+4 G K_GATE
+5 D K_COIL_L
+1 S K_SNS
+2 S K_SNS
+3 S K_SNS
+"""
+
+[[part]]
+ref = "R1420"
+group = "coil"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["K_GATE", "GND"]
+
+[[part]]
+ref = "R1419"
+group = "coil"
+lib_id = "Device:R"
+value = "0.25 1% 0.5W"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "WSL1206R2500FEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/30100/wsl.pdf"
+between = ["K_SNS", "GND"]
+
+[[part]]
+ref = "D1402"
+group = "coil"
+lib_id = "Device:D_Schottky"
+value = "SS34"
+footprint = "Diode_SMD:D_SMC"
+mpn = "SS34-E3/57T"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/88751/ss32.pdf"
+pins = """
+1 K K_FW
+2 A K_COIL_L
+"""
+
+[[part]]
+ref = "D1403"
+group = "coil"
+lib_id = "Device:D_Zener"
+value = "SMBJ10A"
+footprint = "Diode_SMD:D_SMB"
+mpn = "SMBJ10A-E3/52"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/88392/smbj.pdf"
+fields = { DocRef = "fast-release clamp (unidirectional TVS drawn as zener)" }
+pins = """
+1 K K_FW
+2 A K_VCOIL
+"""
+
+# ====================================================================== NTC
+[[part]]
+ref = "TH1401"
+group = "ntc"
+lib_id = "Device:Thermistor_NTC"
+value = "10k B3380"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "NCP18XH103F03RB"
+manufacturer = "Murata"
+datasheet = "https://pim.murata.com/asset/pim4/ntcForTemperatureSensor/SPEC_NCP18_PDF_NTCFORTEMPERATURESENSOR"
+fields = { DocRef = "pad-area NTC (D-52)" }
+between = ["NTC_PADS", "GND"]

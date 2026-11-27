@@ -1,0 +1,201 @@
+# Custom symbols for work package WP-H (sheets 14_patient_interface, 15_frontend_main, 16_frontend_sup).
+# NOT FOR CONSTRUCTION — unreviewed design.
+# Source of truth for hardware/lib/aed_patient.kicad_sym: tools/build.sh regenerates that file from here.
+# Pin table columns:  number  name  electrical-type  side-of-body
+# Pin names are the datasheet's, without overbars (active-low pins keep the datasheet name; the net carries _N).
+
+[library]
+name = "aed_patient"
+
+# ---------------------------------------------------------------------------------------------------- ADS1292R
+# Why custom: KiCad's stock Analog_ADC library has ADS1298/ADS1299 but no ADS1292R.
+[[symbol]]
+name = "ADS1292R"
+reference = "U"
+value = "ADS1292R"
+footprint = "Package_QFP:TQFP-32_5x5mm_P0.5mm"
+datasheet = "https://www.ti.com/lit/ds/symlink/ads1292r.pdf"
+description = "TI ADS1292R 2-channel 24-bit analog front end with respiration impedance modulation/demodulation, TQFP-32 (PBS), -40..+85 C"
+mpn = "ADS1292RIPBSR"
+manufacturer = "Texas Instruments"
+pinout_source = "SBAS502C (Dec 2011, rev. Apr 2020) section 5 Pin Functions table, pp.4-5 (PBS and RSM share pin numbers 1-32), read 2026-11-27"
+keywords = "ECG respiration impedance AFE"
+pins = """
+12 AVDD                power_in      top
+23 DVDD                power_in      top
+4  IN1P                input         left
+3  IN1N                input         left
+6  IN2P                input         left
+5  IN2N                input         left
+31 RESP_MODP/IN3P      bidirectional left
+32 RESP_MODN/IN3N      bidirectional left
+2  PGA1P               passive       left
+1  PGA1N               passive       left
+8  PGA2P               passive       left
+7  PGA2N               passive       left
+30 RLDOUT              output        left
+28 RLDINV              input         left
+29 RLDIN/RLDREF        input         left
+9  VREFP               passive       left
+10 VREFN               passive       left
+11 VCAP1               passive       left
+27 VCAP2               passive       left
+18 CS                  input         right
+20 SCLK                input         right
+19 DIN                 input         right
+21 DOUT                tri_state     right
+22 DRDY                output        right
+16 START               input         right
+15 PWDN/RESET          input         right
+14 CLKSEL              input         right
+17 CLK                 bidirectional right
+26 GPIO1/RCLK1         bidirectional right
+25 GPIO2/RCLK2         bidirectional right
+13 AVSS                power_in      bottom
+24 DGND                power_in      bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------- MAX30009
+# Why custom: not in KiCad's stock libraries. Pin "numbers" are the WLP ball IDs.
+[[symbol]]
+name = "MAX30009"
+reference = "U"
+value = "MAX30009"
+footprint = "aed_patient:Maxim_WLP-25_2.03x2.03mm_P0.4mm"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/max30009.pdf"
+description = "ADI MAX30009 bioimpedance AFE, 25-bump WLP 2.03 x 2.03 mm 0.4 mm pitch, AVDD/DVDD 1.7-2.0 V, -40..+85 C"
+mpn = "MAX30009ENA+T"
+manufacturer = "Analog Devices"
+pinout_source = "MAX30009 datasheet 19-101213 Rev 1 (2/22), Pin Configuration and Pin Description pp.20-21 (read from a third-party mirror copy; analog.com refused automated access; Rev 2 (8/23) NOT read). Note: Figure 17 p.48 labels DRVSJ/DRVXR balls the other way round from the pin table (all three unconnected in this design)"
+keywords = "bioimpedance BioZ AFE"
+pins = """
+C1 AVDD        power_in      top
+D1 DVDD        power_in      top
+A1 EL1         passive       left
+A2 EL2A        passive       left
+A3 EL2B        passive       left
+B1 EL4         passive       left
+B2 EL3A        passive       left
+B3 EL3B        passive       left
+A4 CAL1        passive       left
+A5 CAL2        passive       left
+B5 CAL3        passive       left
+B4 CAL4        passive       left
+C2 VREF        passive       left
+C4 DRVSJ       passive       left
+C5 DRVXR       passive       left
+D5 DRVXC       passive       left
+D2 CSB/I2C_SEL input         right
+E4 SCLK/SCL    input         right
+E3 SDI/SDA     bidirectional right
+E2 SDO/ADDR    tri_state     right
+E5 INT         open_collector right
+D4 TRIG        bidirectional right
+D3 FCLK        input         right
+C3 AGND        power_in      bottom
+E1 DGND        power_in      bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------- DRV110A
+# Why custom: not in KiCad's stock libraries. 14-pin TSSOP (PW) variant: HOLD and STATUS bonded out.
+[[symbol]]
+name = "DRV110A"
+reference = "U"
+value = "DRV110APWR"
+footprint = "Package_SO:TSSOP-14_4.4x5mm_P0.65mm"
+datasheet = "https://www.ti.com/lit/ds/symlink/drv110.pdf"
+description = "TI DRV110 power-saving solenoid (relay coil) controller, peak-and-hold, external MOSFET, 14-pin TSSOP, -40..+125 C"
+mpn = "DRV110APWR"
+manufacturer = "Texas Instruments"
+pinout_source = "SLVSBA8G (Mar 2018) Pin Configuration and Functions, 14-pin PW column, read 2026-11-27"
+keywords = "solenoid relay peak hold economiser"
+pins = """
+7  VIN     power_in      top
+13 EN      input         left
+2  KEEP    passive       left
+3  PEAK    passive       left
+4  HOLD    passive       left
+5  OSC     passive       left
+11 OUT     output        right
+9  SENSE   input         right
+12 STATUS  open_collector right
+1  NC      no_connect    right
+6  NC      no_connect    right
+10 NC      no_connect    right
+14 NC      no_connect    right
+8  GND     power_in      bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------- DMN3027LFG
+# Why custom: KiCad has stock symbols for other Diodes PowerDI3333-8 FETs (DMN3008SFG ...) but not this part.
+# Same pin convention as those stock symbols and the stock footprint Package_SON:Diodes_PowerDI3333-8: pads 1-3 S,
+# pad 4 G, pad 5 = the drain pads 5-8 plus the exposed pad (merged in the footprint).
+[[symbol]]
+name = "DMN3027LFG"
+reference = "Q"
+value = "DMN3027LFG"
+footprint = "Package_SON:Diodes_PowerDI3333-8"
+datasheet = "https://www.diodes.com/assets/Datasheets/DMN3027LFG.pdf"
+description = "Diodes Inc. N-channel MOSFET 30 V, VGS +/-25 V, 26.5 mOhm max at 4.5 V, PowerDI3333-8, AEC-Q101, -55..+150 C"
+mpn = "DMN3027LFG-7"
+manufacturer = "Diodes Incorporated"
+pinout_source = "DS38020 Rev 3-2 (Oct 2015, 'Advance Information') pin diagram: pins 1-3 S, 4 G, 5-8 and pad D; read 2026-11-27"
+package_pins = "5"
+keywords = "NMOS"
+pins = """
+4 G passive left
+5 D passive top
+1 S passive bottom
+2 S passive bottom
+3 S passive bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------- patient relay
+# Why custom: made-to-order part. No catalogue relay was found with >= 5 kV standoff, a published shock-pulse carry
+# rating AND a force-guided auxiliary contact (capture notes WP-H). HV section modelled on the Gigavac/Sensata G12
+# (DPDT vacuum, 8 kV operating); the LV auxiliary contact (closed only at rest, mechanically linked to BOTH poles) is
+# the made-to-order addition required by docs/HARDWARE_DESIGN.md §B7.2. Terminal numbers are PROJECT numbers:
+# no maker publishes terminal numbering for these relays.
+[[symbol]]
+name = "PATIENT_RELAY_DPDT_AUX"
+reference = "K"
+value = "DPDT HV relay + aux"
+footprint = "aed_patient:PatientRelay_MadeToOrder"
+datasheet = "https://www.sensata.com/sites/default/files/a/sensata-g12-series-dpdt-high-voltage-relay-datasheet.pdf"
+description = "Patient relay K1401: DPDT >= 5 kV, cold-switched, carries the shock; force-guided LV auxiliary NC contact (closed only at rest). Made to order; G12-class basis. NOT a catalogue part"
+mpn = "MADE-TO-ORDER (basis Gigavac/Sensata G12-12Vdc + force-guided aux contact)"
+manufacturer = "TBD (Sensata/Gigavac or other HV relay maker)"
+pinout_source = "Project terminal numbering (no maker numbering published). Contact forms from Sensata G12 datasheet Rev 3 (5/3/18) and Gigavac G17 sheet (04/02/14): per pole COM, NC, NO; coil unpolarised"
+keywords = "relay HV defibrillator patient"
+pins = """
+1  COM_A    passive left
+2  NC_A     passive right
+3  NO_A     passive right
+4  COM_B    passive left
+5  NC_B     passive right
+6  NO_B     passive right
+7  COIL1    passive left
+8  COIL2    passive left
+9  AUX_COM  passive left
+10 AUX_NC   passive right
+"""
+
+# ---------------------------------------------------------------------------------------------------- pad connector
+[[symbol]]
+name = "PAD_CONNECTOR"
+reference = "J"
+value = "Pad connector"
+footprint = "aed_patient:PadConnector_MadeToOrder"
+datasheet = "docs/HARDWARE_DESIGN.md §B7.3"
+description = "J1401 made-to-order pad-set connector: two energy contacts (pads A, B) and three separated low-voltage contacts (1-Wire ID, ID return, presence loop)"
+mpn = "MADE-TO-ORDER"
+manufacturer = "TBD"
+pinout_source = "Project numbering, docs/HARDWARE_DESIGN.md §B7.3 contact list"
+keywords = "connector pads defibrillator"
+pins = """
+1 PAD_A    passive right
+2 PAD_B    passive right
+3 ID       passive right
+4 ID_RET   passive right
+5 PRESENT  passive right
+"""

@@ -1,0 +1,509 @@
+# 16_frontend_sup — PATIENT: the supervisor's own pad-impedance front end, MAX30009 (H-bridge drive), with
+# defibrillation protection on every tap; 1V8_SUP LDO; 1.8 V -> 3.3 V translator for the SPI data-out line.
+# NOT FOR CONSTRUCTION — unreviewed design. Source: docs/HARDWARE_DESIGN.md §B3.1, §B3.2, §B3.4 (cross-loading), §B3.6;
+# contract.md issue 2 (§4, §5.8, §8, §10). Capture notes: hardware/aed-main/capture-notes/WP-H.md. References 1601-1699.
+
+[sheet]
+name = "16_frontend_sup"
+title = "PATIENT: supervisor pad-impedance front end MAX30009 (H-bridge drive) with defibrillation protection; 1V8_SUP LDO"
+source = "docs/HARDWARE_DESIGN.md §B3.6; hardware/aed-main/contract.md §4, §5.8, §8, §10; capture notes WP-H"
+date = "2026-11-27"
+comments = ["Carrier: the contract says 128 kHz; 128 kHz aliases into the ADS1292R ECG channel (its modulator runs at 128 kHz). Proposed 96 kHz: see notes, contract issue 1.",
+            "Drive: H-bridge voltage mode through 20 k DPCR + 10 k per pad (ADI's own defibrillation-protected application uses H-bridge + series R); ~30 uA."]
+
+[nets]
+power = ["GND", "3V3_SUP", "1V8_SUP"]
+global = [
+  "PT_FE_A", "PT_FE_B",                # from 14
+  "SBZ_SCLK", "SBZ_MOSI", "SBZ_CS_N",  # 05 -> 16
+  "SBZ_MISO", "SBZ_INT_N",             # 16 -> 05
+]
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "/16_frontend_sup/"
+until_sheet = "03_power_rails"
+reason = "3V3_SUP is made on 03_power_rails and GND on 01_power_battery (WP-A), placeholders in this worktree; no package flags another package's rail (contract §4). 1V8_SUP is made here by U1602 (power output)."
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "SBZ_SCLK|SBZ_MOSI|SBZ_CS_N|U1601 Pin (D2|E4)"
+until_sheet = "05_supervisor_mcu"
+reason = "SPI is driven by the supervisor on 05_supervisor_mcu (WP-B, placeholder here); this sheet's 100 k pull-up on SBZ_CS_N (contract §5.8) keeps the chip deselected meanwhile."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "SBZ_"
+reason = "Other end on 05_supervisor_mcu (WP-B, placeholder in this worktree). Disappears at the merge."
+
+
+[[erc_accepted]]
+type = "pin_to_pin"
+match = "U1601 Pin D4"
+reason = "TRIG is an unused bidirectional pin tied to GND as the MAX30009 datasheet directs. KiCad warns because GND carries the power flag from 01_power_battery; only visible once all sheets are merged."
+
+# ====================================================================== groups
+[[group]]
+id = "drive"
+title = "Drive taps (EL1 -> pad A, EL4 -> pad B): 2 x 4.7 nF 3 kV C0G + DPCR2512 20 k + TVS to GND + 10 k"
+note = """
+H-bridge drive (BIOZ_DRV_MODE = 2): EL1 and EL4 switch between AVDD and AGND; current = AVDD / (2 x Rseries) = 1.8 / (2 x 30 k) = 30 uA (square), set by the resistors, not by the chip [CALC]. The chip does not limit current in this mode: the 2.35 nF per pad blocks DC (single-fault: one capacitor shorted still blocks). 20 k is DPCR's lowest standard value (5 kV pulse-tested); 10 k inner limits the pin current to <= 0.7 mA (MAX30009 abs max +/-50 mA, pins clamp to AGND per its Figure 12).
+External 5 kV pulse: <= 5 kV / 20 k = 0.25 A edge current, tau = 20 k x 2.35 nF = 47 us, ~29 mJ into the resistor [CALC]. DRVSJ, DRVXC, DRVXR unconnected (ADI defibrillation application circuit, H-bridge mode).
+Idle: MUX_EN = 0 (reset default) disconnects all EL pins (datasheet register text) — required by contract §10 ('idle drive outputs high-impedance'); the unpowered pin state is NOT stated by the datasheet [UNVERIFIED].
+"""
+
+[[group]]
+id = "sense"
+title = "Sense taps (EL2B = BIP from pad A, EL3B = BIN from pad B): DPCR2512 51 k + TVS to GND + 20 k"
+note = """
+EL2B/EL3B use the chip's internal high-pass (no external capacitor), so the patient's DC potential (set by the main front end's RLD bias, ~1.65 V) is blocked inside the chip; DC current through these pins <= ~15 nA [CALC from the 48 Mohm input impedance]. 20 k inner resistors as in ADI's defibrillation application (RSEC 20 k). Pin current under the 5 kV test <= (7 V)/20 k = 0.35 mA.
+EL2A/EL3A (external-coupling variants) unconnected. No test points (R9).
+"""
+
+[[group]]
+id = "afe"
+title = "U1601 MAX30009 (WLP-25), 4-wire calibration resistor, VREF"
+note = """
+Supplies AVDD = DVDD = 1V8_SUP (1.7-2.0 V), each 0.1 uF + 10 uF (pin table). VREF 1 uF. Operating range -40 to +85 C (datasheet, four places) - the design's [UNVERIFIED] item is now answered; the device itself is the narrowest-range part on these sheets.
+Calibration: R1609 100 ohm 0.05 % across the CAL port (CAL1+CAL2 to one end, CAL3+CAL4 to the other, Kelvin at the resistor) for the datasheet's per-frequency gain/phase calibration; absolute accuracy of the pad reading also depends on the 5 % DPCR drive resistors (current is set by them in H-bridge mode) -> factory calibration at the pad connector with the other chip in its specified state (F-9) [whether the CAL port calibration applies in H-bridge mode is UNVERIFIED].
+Carrier: 96 kHz proposed (PLL 24.576 MHz = 750 x 32.768 kHz, KDIV 1, DAC_OSR 256) instead of 128 kHz (contract issue 1). FCLK unconnected (datasheet: allowed), TRIG to GND (datasheet: when unused).
+Interface: CSB/I2C_SEL = SBZ_CS_N with the contract's 100 k pull-up (SPI mode; firmware sets DISABLE_I2C). SCLK, SDI tolerate 5.5 V, so 3.3 V inputs are fine. SDO is a 1.8 V output (abs max 2.2 V): U1603 SN74LVC1T45 (A on 1V8_SUP, B on 3V3_SUP, DIR = A->B, Ioff both ports) drives SBZ_MISO at 3.3 V levels; R1612 holds A low while SDO is tri-stated. INT open drain, pulled up on 05.
+"""
+
+[[group]]
+id = "ldo"
+title = "1V8_SUP: TPS7A2018 from 3V3_SUP (made here, contract §4) + 1 k bleed as the rail's sink for injected current"
+note = """
+TPS7A2018PDBVR: 1.6-6.0 V in, 300 mA, 7 uVrms, -40..+125 C TJ; EN tied to IN (rail follows 3V3_SUP). COUT total ~22 uF (0.47-200 uF allowed).
+No TVS exists that clamps below the MAX30009's 2.2 V abs max (lowest VBR found 4.0 V), so the contract's rail shunt clamp is replaced by a guaranteed sink: R1610 1 k = 1.8 mA, larger than the worst current the inner resistors can inject into the rail (<= ~1.1 mA) [CALC; notes]. Cost 3.2 mW while the supervisor rail is on.
+"""
+
+# ====================================================================== drive taps
+[[part]]
+ref = "C1601"
+group = "drive"
+lib_id = "Device:C"
+value = "4.7n 3kV C0G"
+footprint = "Capacitor_SMD:C_3640_9110Metric"
+mpn = "3640J3K00472KAT"
+manufacturer = "Knowles Syfer"
+datasheet = "https://www.knowlescapacitors.com/getattachment/301898a4-1b95-4cfa-b0d6-1dffd3ef5816/AEC-Q200"
+fields = { DocRef = "drive tap A, cap 1 of 2", Verify = "MPN built from the catalogue ordering code; surge rating not published; surface-arc coating" }
+between = ["PT_FE_A", "PT_SDA1"]
+
+[[part]]
+ref = "C1602"
+group = "drive"
+lib_id = "Device:C"
+value = "4.7n 3kV C0G"
+footprint = "Capacitor_SMD:C_3640_9110Metric"
+mpn = "3640J3K00472KAT"
+manufacturer = "Knowles Syfer"
+datasheet = "https://www.knowlescapacitors.com/getattachment/301898a4-1b95-4cfa-b0d6-1dffd3ef5816/AEC-Q200"
+fields = { DocRef = "drive tap A, cap 2 of 2", Verify = "MPN built from the catalogue ordering code; surge rating not published; surface-arc coating" }
+between = ["PT_SDA1", "PT_SDA2"]
+
+[[part]]
+ref = "R1601"
+group = "drive"
+lib_id = "Device:R"
+value = "20k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-20KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "drive tap A resistor" }
+between = ["PT_SDA2", "PT_SDA_CL"]
+
+[[part]]
+ref = "D1601"
+group = "drive"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_SDA_CL
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1603"
+group = "drive"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_SDA_CL", "BZ_DRVA"]
+
+[[part]]
+ref = "C1603"
+group = "drive"
+lib_id = "Device:C"
+value = "4.7n 3kV C0G"
+footprint = "Capacitor_SMD:C_3640_9110Metric"
+mpn = "3640J3K00472KAT"
+manufacturer = "Knowles Syfer"
+datasheet = "https://www.knowlescapacitors.com/getattachment/301898a4-1b95-4cfa-b0d6-1dffd3ef5816/AEC-Q200"
+fields = { DocRef = "drive tap B, cap 1 of 2", Verify = "MPN built from the catalogue ordering code; surge rating not published; surface-arc coating" }
+between = ["PT_FE_B", "PT_SDB1"]
+
+[[part]]
+ref = "C1604"
+group = "drive"
+lib_id = "Device:C"
+value = "4.7n 3kV C0G"
+footprint = "Capacitor_SMD:C_3640_9110Metric"
+mpn = "3640J3K00472KAT"
+manufacturer = "Knowles Syfer"
+datasheet = "https://www.knowlescapacitors.com/getattachment/301898a4-1b95-4cfa-b0d6-1dffd3ef5816/AEC-Q200"
+fields = { DocRef = "drive tap B, cap 2 of 2", Verify = "MPN built from the catalogue ordering code; surge rating not published; surface-arc coating" }
+between = ["PT_SDB1", "PT_SDB2"]
+
+[[part]]
+ref = "R1602"
+group = "drive"
+lib_id = "Device:R"
+value = "20k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-20KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "drive tap B resistor" }
+between = ["PT_SDB2", "PT_SDB_CL"]
+
+[[part]]
+ref = "D1602"
+group = "drive"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_SDB_CL
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1604"
+group = "drive"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_SDB_CL", "BZ_DRVB"]
+
+# ====================================================================== sense taps
+[[part]]
+ref = "R1605"
+group = "sense"
+lib_id = "Device:R"
+value = "51k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-51KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "sense tap A" }
+between = ["PT_FE_A", "PT_SSA_CL"]
+
+[[part]]
+ref = "D1603"
+group = "sense"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_SSA_CL
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1607"
+group = "sense"
+lib_id = "Device:R"
+value = "20k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0720KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_SSA_CL", "BZ_SNSA"]
+
+[[part]]
+ref = "R1606"
+group = "sense"
+lib_id = "Device:R"
+value = "51k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-51KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "sense tap B" }
+between = ["PT_FE_B", "PT_SSB_CL"]
+
+[[part]]
+ref = "D1604"
+group = "sense"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_SSB_CL
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1608"
+group = "sense"
+lib_id = "Device:R"
+value = "20k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0720KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_SSB_CL", "BZ_SNSB"]
+
+# ====================================================================== MAX30009
+[[part]]
+ref = "U1601"
+group = "afe"
+lib_id = "aed_patient:MAX30009"
+value = "MAX30009ENA+T"
+footprint = "aed_patient:Maxim_WLP-25_2.03x2.03mm_P0.4mm"
+footprint_todo = true
+mpn = "MAX30009ENA+T"
+manufacturer = "Analog Devices"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/max30009.pdf"
+fields = { DocRef = "U1601", Verify = "pin table against datasheet Rev 2 (8/23), only Rev 1 was read; DRVSJ/DRVXR ball conflict Figure 17 vs pin table" }
+pins = """
+A1 EL1          BZ_DRVA
+A2 EL2A         NC
+A3 EL2B         BZ_SNSA
+A4 CAL1         BZ_CALP
+A5 CAL2         BZ_CALP
+B1 EL4          BZ_DRVB
+B2 EL3A         NC
+B3 EL3B         BZ_SNSB
+B4 CAL4         BZ_CALN
+B5 CAL3         BZ_CALN
+C1 AVDD         1V8_SUP
+C2 VREF         BZ_VREF
+C3 AGND         GND
+C4 DRVSJ        NC
+C5 DRVXR        NC
+D1 DVDD         1V8_SUP
+D2 CSB/I2C_SEL  SBZ_CS_N
+D3 FCLK         NC
+D4 TRIG         GND
+D5 DRVXC        NC
+E1 DGND         GND
+E2 SDO/ADDR     BZ_SDO
+E3 SDI/SDA      SBZ_MOSI
+E4 SCLK/SCL     SBZ_SCLK
+E5 INT          SBZ_INT_N
+"""
+
+[[part]]
+ref = "R1609"
+group = "afe"
+lib_id = "Device:R"
+value = "100 0.05%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RG1608P-101-W-T1"
+manufacturer = "Susumu"
+datasheet = "https://www.susumu.co.jp/common/pdf/n_catalog_partition05_en.pdf"
+fields = { DocRef = "RCAL (4-wire calibration port)", Verify = "value choice for the 25-250 ohm range and H-bridge mode; MPN tolerance code W = 0.05 %" }
+between = ["BZ_CALP", "BZ_CALN"]
+
+[[part]]
+ref = "C1605"
+group = "afe"
+lib_id = "Device:C"
+value = "1u 16V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12D"
+between = ["BZ_VREF", "GND"]
+
+[[part]]
+ref = "C1606"
+group = "afe"
+lib_id = "Device:C"
+value = "100n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+fields = { DocRef = "AVDD decoupling" }
+between = ["1V8_SUP", "GND"]
+
+[[part]]
+ref = "C1607"
+group = "afe"
+lib_id = "Device:C"
+value = "10u 16V X5R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R61C106MA73D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R61C106MA73D"
+fields = { DocRef = "AVDD decoupling (datasheet: 10 uF X5R 0603)" }
+between = ["1V8_SUP", "GND"]
+
+[[part]]
+ref = "C1608"
+group = "afe"
+lib_id = "Device:C"
+value = "100n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+fields = { DocRef = "DVDD decoupling" }
+between = ["1V8_SUP", "GND"]
+
+[[part]]
+ref = "C1609"
+group = "afe"
+lib_id = "Device:C"
+value = "10u 16V X5R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R61C106MA73D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R61C106MA73D"
+fields = { DocRef = "DVDD decoupling (datasheet: 10 uF X5R 0603)" }
+between = ["1V8_SUP", "GND"]
+
+[[part]]
+ref = "R1611"
+group = "afe"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+fields = { DocRef = "SBZ_CS_N default (contract §5.8)" }
+between = ["SBZ_CS_N", "3V3_SUP"]
+
+[[part]]
+ref = "R1612"
+group = "afe"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["BZ_SDO", "GND"]
+
+[[part]]
+ref = "U1603"
+group = "afe"
+lib_id = "Logic_LevelTranslator:SN74LVC1T45DBV"
+value = "SN74LVC1T45DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC1T45DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1t45.pdf"
+pins = """
+1 VCCA  1V8_SUP
+2 GND   GND
+3 A     BZ_SDO
+4 B     SBZ_MISO
+5 DIR   1V8_SUP
+6 VCCB  3V3_SUP
+"""
+
+[[part]]
+ref = "C1612"
+group = "afe"
+lib_id = "Device:C"
+value = "100n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+fields = { DocRef = "U1603 VCCB decoupling" }
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C1613"
+group = "afe"
+lib_id = "Device:C"
+value = "100n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+fields = { DocRef = "U1603 VCCA decoupling" }
+between = ["1V8_SUP", "GND"]
+
+# ====================================================================== LDO
+[[part]]
+ref = "U1602"
+group = "ldo"
+lib_id = "Regulator_Linear:TPS7A20xxxDBV"
+value = "TPS7A2018PDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TPS7A2018PDBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps7a20.pdf"
+pins = """
+1 IN   3V3_SUP
+2 GND  GND
+3 EN   3V3_SUP
+4 NC   NC
+5 OUT  1V8_SUP
+"""
+
+[[part]]
+ref = "C1610"
+group = "ldo"
+lib_id = "Device:C"
+value = "1u 16V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12D"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C1611"
+group = "ldo"
+lib_id = "Device:C"
+value = "1u 16V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12D"
+between = ["1V8_SUP", "GND"]
+
+[[part]]
+ref = "R1610"
+group = "ldo"
+lib_id = "Device:R"
+value = "1.0k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+fields = { DocRef = "1V8_SUP guaranteed sink (replaces a rail TVS: none exists below 2.2 V)" }
+between = ["1V8_SUP", "GND"]

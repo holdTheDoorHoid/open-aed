@@ -1,0 +1,148 @@
+# Custom symbols for work package WP-A power (sheets 01_power_battery, 02_power_dock, 03_power_rails).
+# Source of truth for hardware/lib/aed_power.kicad_sym: tools/build.sh regenerates that file from here.
+# NOT FOR CONSTRUCTION — unreviewed design.
+#
+# Pin table columns:  number  name  electrical-type  side-of-body
+# Every pin number and name below was copied from the manufacturer's pin table named in `pinout_source`.
+# `pinout_verified` is left at its default ("NO - drafted from datasheet ..., needs human check") until a person
+# has checked each row against the PDF.
+
+[library]
+name = "aed_power"
+
+# ---------------------------------------------------------------------------------------------------------------
+# Why custom: no KiCad stock symbol for the MAX17320. TQFN variant (MAX17320G20+T: I2C, no SHA-256, 24 TQFN).
+# Pin 25 (exposed pad) is NOT in the datasheet pin table (the table lists pins 1-24 only); the package outline
+# 21-0139 (T2444+4C) has an exposed pad. It is drawn here so the footprint pad is accounted for, and tied to the
+# device ground on the sheet [UNVERIFIED: the datasheet text read does not say what to do with the pad].
+[[symbol]]
+name = "MAX17320G20"
+reference = "U"
+value = "MAX17320G20+T"
+footprint = "Package_DFN_QFN:QFN-24-1EP_4x4mm_P0.5mm_EP2.7x2.7mm"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/MAX17320.pdf"
+description = "ADI MAX17320 2S-4S pack-side fuel gauge + protector (high-side N-FET drivers), ModelGauge m5, I2C, 24-TQFN 4x4, -40..+85 C"
+mpn = "MAX17320G20+T"
+manufacturer = "Analog Devices (Maxim Integrated)"
+pinout_source = "MAX17320 online datasheet (assets2.analog.com/cdp/onlinedatasheet/max17320-en/pinout_pin_specifications.html), 'Pin Description' table, TQFN column, read 27 Nov 2026; ordering information page (G20 = I2C, 24 TQFN); EP pin 25 inferred from outline 21-0139"
+keywords = "fuel gauge protector battery 2S MAX17320"
+pins = """
+1  IN      power_in      left
+24 BATTS   input         left
+23 CELL3   input         left
+22 CELL2   input         left
+21 CELL1   input         left
+15 CSP     input         left
+14 CSN     input         left
+10 TH1     passive       left
+16 TH2     passive       left
+18 TH3     passive       left
+19 TH4     passive       left
+5  ZVC     passive       left
+2  CP      passive       right
+3  CHG     output        right
+4  DIS     output        right
+6  PCKP    input         right
+7  ALRT    open_collector right
+8  SCL/OD  input         right
+9  SDA/DQ  bidirectional right
+11 PFAIL   output        right
+12 AOLDO   power_out     right
+13 REG3    power_out     right
+17 REG2    power_out     right
+20 GND     power_in      bottom
+25 EP      passive       bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------------------
+# Why custom: no KiCad stock symbol for the TPS25947 family. Variant TPS259474ARPWR: adjustable OVLO on pin 2,
+# power-good PG / PGTH on pins 3 / 4, auto-retry fault response (SLVSFC9C Device Comparison Table).
+[[symbol]]
+name = "TPS259474ARPW"
+reference = "U"
+value = "TPS259474ARPWR"
+footprint = "aed_power:Texas_RPW0010A_QFN-10_2x2mm"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps25947.pdf"
+description = "TI TPS25947 2.7-23 V 5.5 A eFuse with true reverse-current blocking; '4A' variant: adjustable OVLO, PG/PGTH, auto-retry; RPW 10-pin QFN; TJ -40..+125 C"
+mpn = "TPS259474ARPWR"
+manufacturer = "Texas Instruments"
+pinout_source = "SLVSFC9C (Oct 2020, rev. May 2026) Table 5-1 Pin Functions and Figure 5-1 (RPW package), names for the TPS259474x variant"
+keywords = "eFuse hot swap reverse blocking OVLO"
+pins = """
+5  IN       power_in   left
+1  EN/UVLO  input      left
+2  OVLO     input      left
+4  PGTH     input      left
+6  OUT      power_out  right
+3  PG       open_collector right
+9  ILM      passive    right
+7  DVDT     passive    right
+10 ITIMER   passive    right
+8  GND      power_in   bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------------------
+# Why custom: no KiCad stock symbol for the TPS629210 (SOT-583, 8 pins, no exposed pad).
+[[symbol]]
+name = "TPS629210"
+reference = "U"
+value = "TPS629210DRLR"
+footprint = "Package_TO_SOT_SMD:SOT-583-8"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps629210.pdf"
+description = "TI TPS629210 3-17 V in, 1 A synchronous buck, 4 uA IQ, VSET / Smart-CONFIG, SOT-583; TJ -40..+125 C"
+mpn = "TPS629210DRLR"
+manufacturer = "Texas Instruments"
+pinout_source = "SLVSGE0B (Aug 2021, rev. Jan 2022) Figure 6-1 TPS629210 Pinout and Table 6-1 Pin Functions"
+keywords = "buck step-down regulator VSET"
+pins = """
+6  VIN          power_in  left
+7  EN           input     left
+8  MODE/S-CONF  input     left
+1  FB/VSET      input     left
+4  SW           output    right
+3  VOS          input     right
+2  PG           open_collector right
+5  GND          power_in  bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------------------
+# Why custom: the stock Regulator_Linear library has no TPS709 symbol with the DBV pinout of the plain TPS709
+# (the TPS709A/B DBV variants have a different pinout - SBVS186H Figure 5-1 vs 5-2).
+[[symbol]]
+name = "TPS70933DBV"
+reference = "U"
+value = "TPS70933DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps709.pdf"
+description = "TI TPS70933 150 mA 30 V 1 uA-IQ LDO, fixed 3.3 V, enable, SOT-23-5 (plain TPS709 DBV pinout); TJ -40..+125 C"
+mpn = "TPS70933DBVR"
+manufacturer = "Texas Instruments"
+pinout_source = "SBVS186H (Mar 2012, rev. Jul 2021) Figure 5-1 'TPS709: DBV Package, 5-Pin SOT-23' and Pin Functions table"
+keywords = "LDO low quiescent always-on"
+pins = """
+1  IN   power_in   left
+3  EN   input      left
+5  OUT  power_out  right
+4  NC   no_connect right
+2  GND  power_in   bottom
+"""
+
+# ---------------------------------------------------------------------------------------------------------------
+# Why custom: the TO-263 (D2PAK) power resistor has two leads plus an electrically isolated mounting tab; the
+# stock footprint TO-263-2 numbers the leads 1 and 3 and the tab 2, which Device:R (pins 1, 2) cannot express.
+[[symbol]]
+name = "PWR263S-35"
+reference = "R"
+value = "PWR263S-35"
+footprint = "Package_TO_SOT_SMD:TO-263-2"
+datasheet = "https://www.bourns.com/docs/Product-Datasheets/PWR263S-35.pdf"
+description = "Bourns PWR263S-35 thick-film power resistor, D2PAK, 35 W at 25 C case, isolated tab (2 kV AC dielectric), -55..+155 C"
+mpn = "PWR263S-35-xxxxF"
+manufacturer = "Bourns"
+pinout_source = "Bourns PWR263S-35 datasheet REV. 12/20, 'Product Dimensions' (two leads, tab) and resistor schematic mark; lead/tab numbering follows the KiCad TO-263-2 footprint (leads = pads 1 and 3, tab = pad 2)"
+keywords = "power resistor D2PAK pulse load"
+pins = """
+1  T1   passive  left
+3  T2   passive  right
+2  TAB  passive  bottom
+"""

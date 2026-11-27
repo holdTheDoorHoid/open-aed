@@ -1,0 +1,2669 @@
+# 11_hv_storage — storage capacitor terminals, permanent bleeder, both capacitor-voltage sense strings,
+# discharge-by-default stacks A and B (4 depletion MOSFETs each) with dump resistors, hold pumps, release
+# switches, optocoupler "held" sensing, over-voltage force optocouplers, HV_RTN-GND ties.
+#
+# NOT FOR CONSTRUCTION — unreviewed design. HIGH VOLTAGE (up to 2,200 V). This file is a circuit description
+# for review (SAFETY.md §2a, CLAUDE.md rule 2); it is not an instruction to build, power or test anything.
+#
+# Work package WP-F (contract.md issue 2). Design source: docs/HARDWARE_DESIGN.md v0.2 §B5, §B9.1, §13, §15, §F-7.
+# Capture notes, arithmetic, failure table and every departure: hardware/aed-main/capture-notes/WP-F.md.
+# References 1101-1199 (contract §2). The test relay K1301 and the 200 ohm test load R1303 are on 13_hv_bridge
+# (contract §2), not on this sheet.
+#
+# Net-name conventions on this sheet (contract R2/R3, net classes in hierarchy.toml):
+#   HV_*      nets that can sit at hundreds of volts: stack nodes, string taps, upper gates (class HV)
+#   HV_RTN    capacitor negative / stack sources (class RTN_PULSE), joined to GND only at NT1101 || NT1102
+#   STKA_*, STKB_*, PMPA_*, PMPB_*, RLSA_*, RLSB_*, HLDA_*, HLDB_*, VCAPM_DIV, VCAPS_DIV, OVP_*:
+#             low-voltage nodes referenced to HV_RTN (within about 20 V of it; bounded by the gate TVS) — Default
+#             class. They are galvanically on the capacitor through the stacks, but are NOT high-voltage nodes.
+
+[sheet]
+name = "11_hv_storage"
+title = "HIGH VOLTAGE: storage terminals, bleeder, sense strings, discharge stacks A/B, hold pumps, held sense, OVP force"
+source = "docs/HARDWARE_DESIGN.md §B5, §B9.1; contract.md issue 2 §5.4-5.6, §8 sheet 11; capture notes WP-F.md"
+date = "2026-11-27"
+comments = ["HIGH VOLTAGE up to 2,200 V on HV_CAP_P and every HV_* net. A charged capacitor must always have a way to empty: two independent depletion stacks (A held off only by the main, B only by the supervisor) plus a permanent bleeder.", "Held = an optocoupler LED lit by the negative gate bias (R-6). Open, unpowered or missing = not held. Over-voltage force = second opto per stack shorting the bias (R-10).", "Capture WP-F 2026-11-27. Departures from the design document are listed in hardware/aed-main/capture-notes/WP-F.md (4-stage pump, JFET-pilot release, TLP187 Darlington optos, 20 x 1.99 Mohm supervisor string)."]
+
+[nets]
+power = ["GND", "HV_RTN", "3V3_SUP"]
+power_flags = ["HV_RTN"]   # HV_RTN is made on this sheet (contract §4: NT1101 || NT1102)
+global = [
+  "HV_CAP_P",                               # capacitor +, from 10_hv_charger; loads 11, 13
+  "HOLD_A_DRV", "HOLD_B_DRV",               # hold clocks from 09 (A: 3V3_MAIN buffer, B: 3V3_SUP buffer)
+  "HOLD_A_HELD_N", "HOLD_B_HELD_N",         # opto transistor to GND -> 09 (10 k pull-ups to 5V0_SYS on 09)
+  "OVP_TRIP",                               # from 08 (push-pull on 3V3_SUP); 100 k default here
+  "VCAP_M_TAP", "VCAP_S_TAP",               # scaled taps to 07 / 08, clamped to GND here
+  "NTC_CAP_M", "NTC_CAP_S",                 # capacitor-case NTCs via J1102 to 07 / 05
+]
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR11001( |$)"
+until_sheet = "01_power_battery"
+reason = "#PWR11001 is this sheet's GND power symbol (KiCad names the symbol, not the net, in this violation; the number follows generation order and must be updated if parts are added before it). GND is made on 01_power_battery (contract §4), a placeholder in this worktree; no package flags another package's rail."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR11062( |$)"
+until_sheet = "03_power_rails"
+reason = "#PWR11062 is this sheet's 3V3_SUP power symbol. 3V3_SUP is made on 03_power_rails (contract §4), a placeholder in this worktree; no package flags another package's rail."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "'NTC_CAP_M'"
+until_sheet = "07_sense_main"
+reason = "NTC_CAP_M has one pin on this sheet (J1102 pin 1); it is biased and read on 07_sense_main, a placeholder in this worktree. Accepted until the other end is captured."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "'NTC_CAP_S'"
+until_sheet = "05_supervisor_mcu"
+reason = "NTC_CAP_S has one pin on this sheet (J1102 pin 3); it is biased and read on 05_supervisor_mcu, a placeholder in this worktree. Accepted until the other end is captured."
+
+[[group]]
+id = "terminals"
+title = "Capacitor terminals J1101, case-NTC connector J1102, HV_RTN-GND star ties NT1101 || NT1102"
+note = "C1101 (the made-to-order 100 uF / >= 2,200 V film capacitor, PARTS_STUDY Appendix A) is OFF-BOARD on J1101 and is not drawn as a part. HV_RTN is the capacitor negative and the source of both stacks; it meets GND only at the two net ties, built as two separate wide bonds so one open bond does not separate them (R-9, fault 11). Every circuit on this sheet that must keep working if they did separate (hold pumps, held sensing, OVP force) is coupled to the GND side by capacitors or light only. J1102 carries the two independent case NTCs (one per controller, D-56); each NTC has its own GND return pin."
+
+[[group]]
+id = "bleeder"
+title = "Permanent bleeder: 8 x 2.49 Mohm (19.9 Mohm), always connected, its own string"
+note = "Last-resort discharge (§B5.6). 273 V and 30 mW per element at 2,182 V. With everything always connected (bleeder, both sense strings, both sharing strings) the capacitor falls from 2,008 V to 50 V in about 41 min; bleeder alone about 2.0 h (arithmetic in WP-F.md)."
+
+[[group]]
+id = "sense_main"
+title = "Main capacitor-voltage string -> VCAP_M_TAP (1:998, Stackpole HVCR, to 07)"
+note = "10 x 4.02 Mohm HVCR2512 + bottom leg 2 x 80.6 kohm in parallel (40.3 kohm) to HV_RTN: ratio (40.2 M + 40.3 k)/40.3 k = 998.5. Tap clamp per R-21: 10 kohm series + TPD1E01B04 (3.6 V stand-off, <= 10 nA at 2.5 V) to GND, not to a reader's rail. One bottom-leg resistor open doubles the reading (R-27). 4.02 Mohm is NOT in the HVCR standard value list (10 M-100 M, rev 9/22/2025): availability to confirm with Stackpole (WP-F.md, contract issue C-2)."
+
+[[group]]
+id = "sense_sup"
+title = "Supervisor capacitor-voltage string -> VCAP_S_TAP (1:1,001, Vishay TNPV thin film, to 08)"
+note = "20 x 1.99 Mohm TNPV1206 (0.1 %, 25 ppm/K, < 1 ppm/V) + bottom leg 2 x 79.6 kohm TNPW1206 in parallel: ratio (39.8 M + 39.8 k)/39.8 k = 1,001. DEPARTURE: the contract names 12 x 3.32 Mohm TNPV1206, but TNPV1206 stops at 2.0 Mohm (datasheet 28881, 29-Apr-2026); same total resistance, 109 V per element. Shares no part, maker or footprint row with the main string or the bleeder (D-28). Tap clamp as the main string."
+
+[[group]]
+id = "stackA"
+title = "STACK A (held off only by the MAIN): dump resistors R1101-R1103 + Q1101 (bottom) ... Q1104 (top), sharing string, gate clamps"
+note = "Normally ON: with no gate bias every IXTT10N100D2 conducts (VGS = 0, RDS(on) 1.5 ohm) and the capacitor empties through 3 x 1.5 kohm. Static sharing: 4 x 10 Mohm string across the stack; the gate of each upper device goes through 100 kohm to the tap below its source, so each upper device is a source follower of its tap and every device blocks V/4 (545 V at 2,182 V) whatever its leakage. Dynamic sharing: 3.3 nF / 2 kV C0G across each string resistor (>= 10 x Coss 300 pF). Every gate has a 15 V bidirectional TVS to its own source; upper gates also have 10 Mohm gate-source so an open 100 kohm leaves a defined VGS = 0 (device conducts). FINDING F-1 (WP-F.md): with tap-referenced followers a SHORTED device puts the device below it (or above, for the top one) at V/2 = 1,091 V at 2,182 V, above the 1,000 V rating; the design's 727 V figure assumes redistribution that this topology does not do."
+
+[[group]]
+id = "holdA"
+title = "Stack A hold: HOLD_A_DRV -> 4-stage pump -> bottom gate STKA_G; release switch Q1109; held opto U1101 -> HOLD_A_HELD_N"
+note = "Everything here is referenced to HV_RTN at the stack and coupled to the GND side only through the pump capacitors and the optocoupler (R-9). Pump: 4-stage single-clock Dickson-type (pump capacitors driven in parallel from the clock, hold capacitors to HV_RTN), BAT54S Schottky pairs, 2.2 uF / 25 V; output -7.4 V (cold, 3.1 V clock, 1 kHz) to -9.3 V [SIM, behavioural]. DEPARTURE: design says 3 stages; a 3-stage single-clock pump is below -7.0 V even unloaded at the cold corner (WP-F.md). Reservoir 3.3 uF. Gate-source 680 k + 330 k (1.01 Mohm) with test point at the 1/3 tap. Release: P-channel JFET pilot Q1112 (normally ON, source HV_RTN) is pinched off only while a 3-stage positive BAV199 pump (referenced to HV_RTN, so the moving gate node cannot pump it) biases its gate; when the clock stops the bias bleeds away (tau 4 ms; every inner pump node is bled too), the pilot conducts and turns on Q1109 (BSS138, source STKA_G) from the reservoir's own charge. DEPARTURE D-3: a gate-referenced depletion release (BSS126/BSS139) was simulated and either would not stay off at 1 kHz or was pumped back off by the rising gate node (WP-F.md). Held sense: HV_RTN - 3.9 k - 4.7 V zener - TLP187 LED (22 k across it) - STKA_G: LED lit only when the gate is below about -5.5..-7.0 V; Darlington pulls HOLD_A_HELD_N low (10 k pull-up on 09). Open, unlit or unpowered = high = not held."
+
+[[group]]
+id = "stackB"
+title = "STACK B (held off only by the SUPERVISOR): dump resistors R1104-R1106 + Q1105 (bottom) ... Q1108 (top), sharing string, gate clamps"
+note = "Identical to stack A, own parts, own string, own nodes. No part or net is shared between the stacks except HV_CAP_P and HV_RTN."
+
+[[group]]
+id = "holdB"
+title = "Stack B hold: HOLD_B_DRV -> 4-stage pump -> STKB_G; release switch Q1110; held opto U1102 -> HOLD_B_HELD_N"
+note = "Identical to stack A's hold circuit. HOLD_B_DRV comes from the 3V3_SUP buffer on 09 (supervisor's clock HOLD_S_CLK)."
+
+[[group]]
+id = "ovp"
+title = "Over-voltage force (R-10): OVP_TRIP -> Q1111 -> one TLP187 LED per stack; transistors short each bottom gate to HV_RTN"
+note = "OVP_TRIP high (08 comparator, 2,160 V) turns Q1111 on; 3V3_SUP drives about 8 mA through each LED (separate 240 ohm resistors, so one open LED does not disable the other). Each Darlington (collector HV_RTN, emitter STKx_G, VCEO 300 V) sinks >= 35 mA, which overpowers its running pump (short-circuit current about 10-15 mA [SIM]) and pulls the gate to about -0.4..-1 V: both stacks conduct even while both controllers keep clocking. Default: OVP_TRIP pulled down 100 k here (contract §5.4) -> no LED current -> no force. 3V3_SUP is used on this sheet for these LEDs only (contract §4)."
+
+[[part]]
+ref = "J1101"
+group = "terminals"
+lib_id = "Connector_Generic:Conn_01x02"
+value = "CAP_TERM"
+footprint = "aed_storage:CapTerminal_2pin_HV_TBD"
+footprint_todo = true
+mpn = "TBD - set by the made-to-order capacitor's terminations (PARTS_STUDY Appendix A5)"
+manufacturer = "TBD"
+datasheet = "docs/PARTS_STUDY.md Appendix A"
+description = "Storage capacitor C1101 terminals (off-board capacitor, 100 uF >= 2,200 V). Pin 1 = capacitor +, pin 2 = capacitor -. HIGH VOLTAGE."
+fields = { DocRef = "C1101 terminals (§B5.1)", Verify = "terminal part and footprint not chosen: needs the capacitor maker's termination; pad spacing >= 12.5 mm placeholder (§B12)" }
+pins = """
+  1  Pin_1  HV_CAP_P
+  2  Pin_2  HV_RTN
+"""
+
+[[part]]
+ref = "J1102"
+group = "terminals"
+lib_id = "Connector_Generic:Conn_01x04"
+value = "NTC_CAP"
+footprint = "Connector_JST:JST_PH_B4B-PH-K_1x04_P2.00mm_Vertical"
+mpn = "B4B-PH-K-S(LF)(SN)"
+manufacturer = "JST"
+datasheet = "https://www.jst-mfg.com/product/pdf/eng/ePH.pdf"
+description = "Capacitor-case NTC connector (two 10 k NTCs on the capacitor case, one per controller, D-56). Low voltage."
+fields = { DocRef = "J1102 case NTCs (§B5.1, §B9.2)" }
+pins = """
+  1  Pin_1  NTC_CAP_M
+  2  Pin_2  GND
+  3  Pin_3  NTC_CAP_S
+  4  Pin_4  GND
+"""
+
+[[part]]
+ref = "NT1101"
+group = "terminals"
+lib_id = "Device:NetTie_2"
+value = "HV_RTN-GND"
+footprint = "NetTie:NetTie-2_SMD_Pad2.0mm"
+mpn = "n/a (copper)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §B5.1"
+description = "Star tie HV_RTN to GND. Two ties in parallel, built as separate wide bonds (R-9); class RTN_PULSE on the HV_RTN side."
+fields = { DocRef = "NT1101 || NT1102 (contract §2, §4)", Verify = "layout: two physically separate bonds, each rated for the 65 A shock return and ~450 A fault pulse" }
+pins = """
+  1  1  HV_RTN
+  2  2  GND
+"""
+
+[[part]]
+ref = "NT1102"
+group = "terminals"
+lib_id = "Device:NetTie_2"
+value = "HV_RTN-GND"
+footprint = "NetTie:NetTie-2_SMD_Pad2.0mm"
+mpn = "n/a (copper)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §B5.1"
+description = "Star tie HV_RTN to GND. Two ties in parallel, built as separate wide bonds (R-9); class RTN_PULSE on the HV_RTN side."
+fields = { DocRef = "NT1101 || NT1102 (contract §2, §4)", Verify = "layout: two physically separate bonds, each rated for the 65 A shock return and ~450 A fault pulse" }
+pins = """
+  1  1  HV_RTN
+  2  2  GND
+"""
+
+[[part]]
+ref = "R1144"
+group = "bleeder"
+lib_id = "Device:R"
+value = "2.49M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT2M49"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Bleeder element 1/8: 273 V, 30 mW at 2,182 V (rated 3,000 V working, 1 W)"
+new_row = true
+fields = { DocRef = "bleeder 8 x 2.49M (§B5.6), element 1" }
+between = ["HV_CAP_P", "HV_BL1"]
+
+[[part]]
+ref = "R1145"
+group = "bleeder"
+lib_id = "Device:R"
+value = "2.49M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT2M49"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Bleeder element 2/8: 273 V, 30 mW at 2,182 V (rated 3,000 V working, 1 W)"
+fields = { DocRef = "bleeder 8 x 2.49M (§B5.6), element 2" }
+between = ["HV_BL1", "HV_BL2"]
+
+[[part]]
+ref = "R1146"
+group = "bleeder"
+lib_id = "Device:R"
+value = "2.49M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT2M49"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Bleeder element 3/8: 273 V, 30 mW at 2,182 V (rated 3,000 V working, 1 W)"
+fields = { DocRef = "bleeder 8 x 2.49M (§B5.6), element 3" }
+between = ["HV_BL2", "HV_BL3"]
+
+[[part]]
+ref = "R1147"
+group = "bleeder"
+lib_id = "Device:R"
+value = "2.49M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT2M49"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Bleeder element 4/8: 273 V, 30 mW at 2,182 V (rated 3,000 V working, 1 W)"
+fields = { DocRef = "bleeder 8 x 2.49M (§B5.6), element 4" }
+between = ["HV_BL3", "HV_BL4"]
+
+[[part]]
+ref = "R1148"
+group = "bleeder"
+lib_id = "Device:R"
+value = "2.49M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT2M49"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Bleeder element 5/8: 273 V, 30 mW at 2,182 V (rated 3,000 V working, 1 W)"
+fields = { DocRef = "bleeder 8 x 2.49M (§B5.6), element 5" }
+between = ["HV_BL4", "HV_BL5"]
+
+[[part]]
+ref = "R1149"
+group = "bleeder"
+lib_id = "Device:R"
+value = "2.49M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT2M49"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Bleeder element 6/8: 273 V, 30 mW at 2,182 V (rated 3,000 V working, 1 W)"
+fields = { DocRef = "bleeder 8 x 2.49M (§B5.6), element 6" }
+between = ["HV_BL5", "HV_BL6"]
+
+[[part]]
+ref = "R1150"
+group = "bleeder"
+lib_id = "Device:R"
+value = "2.49M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT2M49"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Bleeder element 7/8: 273 V, 30 mW at 2,182 V (rated 3,000 V working, 1 W)"
+fields = { DocRef = "bleeder 8 x 2.49M (§B5.6), element 7" }
+between = ["HV_BL6", "HV_BL7"]
+
+[[part]]
+ref = "R1151"
+group = "bleeder"
+lib_id = "Device:R"
+value = "2.49M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT2M49"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Bleeder element 8/8: 273 V, 30 mW at 2,182 V (rated 3,000 V working, 1 W)"
+fields = { DocRef = "bleeder 8 x 2.49M (§B5.6), element 8" }
+between = ["HV_BL7", "HV_RTN"]
+
+[[part]]
+ref = "R1152"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 1/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+new_row = true
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 1", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_CAP_P", "HV_SM1"]
+
+[[part]]
+ref = "R1153"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 2/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 2", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_SM1", "HV_SM2"]
+
+[[part]]
+ref = "R1154"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 3/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 3", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_SM2", "HV_SM3"]
+
+[[part]]
+ref = "R1155"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 4/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 4", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_SM3", "HV_SM4"]
+
+[[part]]
+ref = "R1156"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 5/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 5", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_SM4", "HV_SM5"]
+
+[[part]]
+ref = "R1157"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 6/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 6", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_SM5", "HV_SM6"]
+
+[[part]]
+ref = "R1158"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 7/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 7", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_SM6", "HV_SM7"]
+
+[[part]]
+ref = "R1159"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 8/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 8", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_SM7", "HV_SM8"]
+
+[[part]]
+ref = "R1160"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 9/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 9", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_SM8", "HV_SM9"]
+
+[[part]]
+ref = "R1161"
+group = "sense_main"
+lib_id = "Device:R"
+value = "4.02M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD4M02"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Main sense string element 10/10: 218 V, 12 mW at 2,182 V; VCR -2 ppm/V; HVCR rated 3,000 V"
+fields = { DocRef = "main string 10 x 4.02M HVCR2512 (§B9.1), element 10", Verify = "4.02 Mohm not in the HVCR standard list (10 M-100 M) - confirm orderable with Stackpole" }
+between = ["HV_SM9", "VCAPM_DIV"]
+
+[[part]]
+ref = "R1162"
+group = "sense_main"
+lib_id = "Device:R"
+value = "80.6k 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "ERA-8AEB8062V"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/cdbs/www-data/pdf/RDM0000/AOA0000C307.pdf"
+description = "Main bottom leg 1/2 (two in parallel = 40.3 k): thin film 0.1 %, 25 ppm/K"
+new_row = true
+fields = { DocRef = "main bottom leg 2 x 80.6k (§B9.1)" }
+between = ["VCAPM_DIV", "HV_RTN"]
+
+[[part]]
+ref = "R1163"
+group = "sense_main"
+lib_id = "Device:R"
+value = "80.6k 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "ERA-8AEB8062V"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/cdbs/www-data/pdf/RDM0000/AOA0000C307.pdf"
+description = "Main bottom leg 2/2 (two in parallel = 40.3 k): thin film 0.1 %, 25 ppm/K"
+fields = { DocRef = "main bottom leg 2 x 80.6k (§B9.1)" }
+between = ["VCAPM_DIV", "HV_RTN"]
+
+[[part]]
+ref = "R1164"
+group = "sense_main"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Tap series resistor (R-21 clamp network); with the TPD1E01B04 leakage <= 10 nA the error is <= 0.1 mV"
+between = ["VCAPM_DIV", "VCAP_M_TAP"]
+
+[[part]]
+ref = "D1123"
+group = "sense_main"
+lib_id = "Device:D_TVS"
+value = "TPD1E01B04"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E01B04DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e01b04.pdf"
+description = "VCAP_M_TAP clamp to GND (R-21): bidirectional, VRWM 3.6 V, leakage <= 10 nA at 2.5 V, breakdown 6.4 V typ"
+fields = { DocRef = "tap clamp (§B9.1, R-21)", Verify = "TI X1SON (DPY) land pattern vs the stock 0402 diode footprint" }
+pins = """
+  1  A1  VCAP_M_TAP
+  2  A2  GND
+"""
+
+[[part]]
+ref = "TP1101"
+group = "sense_main"
+lib_id = "Connector:TestPoint"
+value = "VCAP_M_TAP"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "n/a (pad)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+description = "Test point, main scaled capacitor voltage (low voltage, §15)"
+pins = """
+  1  1  VCAP_M_TAP
+"""
+
+[[part]]
+ref = "R1165"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 1/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+new_row = true
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 1" }
+between = ["HV_CAP_P", "HV_SS1"]
+
+[[part]]
+ref = "R1166"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 2/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 2" }
+between = ["HV_SS1", "HV_SS2"]
+
+[[part]]
+ref = "R1167"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 3/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 3" }
+between = ["HV_SS2", "HV_SS3"]
+
+[[part]]
+ref = "R1168"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 4/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 4" }
+between = ["HV_SS3", "HV_SS4"]
+
+[[part]]
+ref = "R1169"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 5/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 5" }
+between = ["HV_SS4", "HV_SS5"]
+
+[[part]]
+ref = "R1170"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 6/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 6" }
+between = ["HV_SS5", "HV_SS6"]
+
+[[part]]
+ref = "R1171"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 7/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 7" }
+between = ["HV_SS6", "HV_SS7"]
+
+[[part]]
+ref = "R1172"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 8/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 8" }
+between = ["HV_SS7", "HV_SS8"]
+
+[[part]]
+ref = "R1173"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 9/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 9" }
+between = ["HV_SS8", "HV_SS9"]
+
+[[part]]
+ref = "R1174"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 10/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 10" }
+between = ["HV_SS9", "HV_SS10"]
+
+[[part]]
+ref = "R1175"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 11/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+new_row = true
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 11" }
+between = ["HV_SS10", "HV_SS11"]
+
+[[part]]
+ref = "R1176"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 12/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 12" }
+between = ["HV_SS11", "HV_SS12"]
+
+[[part]]
+ref = "R1177"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 13/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 13" }
+between = ["HV_SS12", "HV_SS13"]
+
+[[part]]
+ref = "R1178"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 14/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 14" }
+between = ["HV_SS13", "HV_SS14"]
+
+[[part]]
+ref = "R1179"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 15/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 15" }
+between = ["HV_SS14", "HV_SS15"]
+
+[[part]]
+ref = "R1180"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 16/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 16" }
+between = ["HV_SS15", "HV_SS16"]
+
+[[part]]
+ref = "R1181"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 17/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 17" }
+between = ["HV_SS16", "HV_SS17"]
+
+[[part]]
+ref = "R1182"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 18/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 18" }
+between = ["HV_SS17", "HV_SS18"]
+
+[[part]]
+ref = "R1183"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 19/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 19" }
+between = ["HV_SS18", "HV_SS19"]
+
+[[part]]
+ref = "R1184"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "1.99M 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPV12061M99BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
+description = "Supervisor sense string element 20/20: 109 V, 6 mW at 2,182 V (TNPV1206 700 V max, < 1 ppm/V)"
+fields = { DocRef = "supervisor string (§B9.1; contract: 12 x 3.32M, changed - see WP-F.md), element 20" }
+between = ["HV_SS19", "VCAPS_DIV"]
+
+[[part]]
+ref = "R1185"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "79.6k 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPW120679K6BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "Supervisor bottom leg 1/2 (two in parallel = 39.8 k): thin film 0.1 %, 25 ppm/K"
+new_row = true
+fields = { DocRef = "supervisor bottom leg 2 x 79.6k (§B9.1)" }
+between = ["VCAPS_DIV", "HV_RTN"]
+
+[[part]]
+ref = "R1186"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "79.6k 0.1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "TNPW120679K6BEEA"
+manufacturer = "Vishay Draloric"
+datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
+description = "Supervisor bottom leg 2/2 (two in parallel = 39.8 k): thin film 0.1 %, 25 ppm/K"
+fields = { DocRef = "supervisor bottom leg 2 x 79.6k (§B9.1)" }
+between = ["VCAPS_DIV", "HV_RTN"]
+
+[[part]]
+ref = "R1187"
+group = "sense_sup"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Tap series resistor (R-21 clamp network)"
+between = ["VCAPS_DIV", "VCAP_S_TAP"]
+
+[[part]]
+ref = "D1124"
+group = "sense_sup"
+lib_id = "Device:D_TVS"
+value = "TPD1E01B04"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E01B04DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e01b04.pdf"
+description = "VCAP_S_TAP clamp to GND (R-21): bidirectional, VRWM 3.6 V, leakage <= 10 nA at 2.5 V"
+fields = { DocRef = "tap clamp (§B9.1, R-21)", Verify = "TI X1SON (DPY) land pattern vs the stock 0402 diode footprint" }
+pins = """
+  1  A1  VCAP_S_TAP
+  2  A2  GND
+"""
+
+[[part]]
+ref = "TP1102"
+group = "sense_sup"
+lib_id = "Connector:TestPoint"
+value = "VCAP_S_TAP"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "n/a (pad)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+description = "Test point, supervisor scaled capacitor voltage (low voltage, §15)"
+pins = """
+  1  1  VCAP_S_TAP
+"""
+
+[[part]]
+ref = "R1101"
+group = "stackA"
+lib_id = "Device:R"
+value = "1.5k 10% EY"
+footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
+mpn = "EY152KE"
+manufacturer = "Ohmite"
+datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
+description = "Stack A dump resistor 1/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+new_row = true
+fields = { DocRef = "R_dump A1 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+between = ["HV_CAP_P", "HV_A_D1"]
+
+[[part]]
+ref = "R1102"
+group = "stackA"
+lib_id = "Device:R"
+value = "1.5k 10% EY"
+footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
+mpn = "EY152KE"
+manufacturer = "Ohmite"
+datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
+description = "Stack A dump resistor 2/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+fields = { DocRef = "R_dump A2 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+between = ["HV_A_D1", "HV_A_D2"]
+
+[[part]]
+ref = "R1103"
+group = "stackA"
+lib_id = "Device:R"
+value = "1.5k 10% EY"
+footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
+mpn = "EY152KE"
+manufacturer = "Ohmite"
+datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
+description = "Stack A dump resistor 3/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+fields = { DocRef = "R_dump A3 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+between = ["HV_A_D2", "HV_A_TOP"]
+
+[[part]]
+ref = "Q1101"
+group = "stackA"
+lib_id = "aed_storage:IXTT10N100D2"
+value = "IXTT10N100D2"
+footprint = "Package_TO_SOT_SMD:TO-268-2"
+mpn = "IXTT10N100D2"
+manufacturer = "Littelfuse (IXYS)"
+datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
+description = "Stack A device 1/4 (bottom, gate held by the pump). Depletion, 1,000 V, normally on."
+new_row = true
+fields = { DocRef = "stack A Q1 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+pins = """
+  1  G  STKA_G
+  2  D  HV_A_M1
+  3  S  HV_RTN
+"""
+
+[[part]]
+ref = "Q1102"
+group = "stackA"
+lib_id = "aed_storage:IXTT10N100D2"
+value = "IXTT10N100D2"
+footprint = "Package_TO_SOT_SMD:TO-268-2"
+mpn = "IXTT10N100D2"
+manufacturer = "Littelfuse (IXYS)"
+datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
+description = "Stack A device 2/4 (upper, source follower of tap T1). Depletion, 1,000 V, normally on."
+fields = { DocRef = "stack A Q2 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+pins = """
+  1  G  HV_A_G2
+  2  D  HV_A_M2
+  3  S  HV_A_M1
+"""
+
+[[part]]
+ref = "Q1103"
+group = "stackA"
+lib_id = "aed_storage:IXTT10N100D2"
+value = "IXTT10N100D2"
+footprint = "Package_TO_SOT_SMD:TO-268-2"
+mpn = "IXTT10N100D2"
+manufacturer = "Littelfuse (IXYS)"
+datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
+description = "Stack A device 3/4 (upper, source follower of tap T2). Depletion, 1,000 V, normally on."
+fields = { DocRef = "stack A Q3 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+pins = """
+  1  G  HV_A_G3
+  2  D  HV_A_M3
+  3  S  HV_A_M2
+"""
+
+[[part]]
+ref = "Q1104"
+group = "stackA"
+lib_id = "aed_storage:IXTT10N100D2"
+value = "IXTT10N100D2"
+footprint = "Package_TO_SOT_SMD:TO-268-2"
+mpn = "IXTT10N100D2"
+manufacturer = "Littelfuse (IXYS)"
+datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
+description = "Stack A device 4/4 (upper, source follower of tap T3). Depletion, 1,000 V, normally on."
+fields = { DocRef = "stack A Q4 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+pins = """
+  1  G  HV_A_G4
+  2  D  HV_A_TOP
+  3  S  HV_A_M3
+"""
+
+[[part]]
+ref = "R1107"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A sharing string 1/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+new_row = true
+fields = { DocRef = "stack A sharing string 4 x 10M (§B5.4)" }
+between = ["HV_RTN", "HV_A_T1"]
+
+[[part]]
+ref = "R1108"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A sharing string 2/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+fields = { DocRef = "stack A sharing string 4 x 10M (§B5.4)" }
+between = ["HV_A_T1", "HV_A_T2"]
+
+[[part]]
+ref = "R1109"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A sharing string 3/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+fields = { DocRef = "stack A sharing string 4 x 10M (§B5.4)" }
+between = ["HV_A_T2", "HV_A_T3"]
+
+[[part]]
+ref = "R1110"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A sharing string 4/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+fields = { DocRef = "stack A sharing string 4 x 10M (§B5.4)" }
+between = ["HV_A_T3", "HV_A_TOP"]
+
+[[part]]
+ref = "C1101"
+group = "stackA"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220C332JGGACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack A dynamic-sharing capacitor across string resistor 1: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
+fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+between = ["HV_RTN", "HV_A_T1"]
+
+[[part]]
+ref = "C1102"
+group = "stackA"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220C332JGGACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack A dynamic-sharing capacitor across string resistor 2: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
+fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+between = ["HV_A_T1", "HV_A_T2"]
+
+[[part]]
+ref = "C1103"
+group = "stackA"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220C332JGGACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack A dynamic-sharing capacitor across string resistor 3: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
+fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+between = ["HV_A_T2", "HV_A_T3"]
+
+[[part]]
+ref = "C1104"
+group = "stackA"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220C332JGGACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack A dynamic-sharing capacitor across string resistor 4: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
+fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+between = ["HV_A_T3", "HV_A_TOP"]
+
+[[part]]
+ref = "R1115"
+group = "stackA"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT100K"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Stack A upper-gate resistor, device 2: tap T1 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
+new_row = true
+fields = { DocRef = "stack A upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
+between = ["HV_A_T1", "HV_A_G2"]
+
+[[part]]
+ref = "R1116"
+group = "stackA"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT100K"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Stack A upper-gate resistor, device 3: tap T2 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
+fields = { DocRef = "stack A upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
+between = ["HV_A_T2", "HV_A_G3"]
+
+[[part]]
+ref = "R1117"
+group = "stackA"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT100K"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Stack A upper-gate resistor, device 4: tap T3 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
+fields = { DocRef = "stack A upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
+between = ["HV_A_T3", "HV_A_G4"]
+
+[[part]]
+ref = "R1121"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack A device 2 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
+fields = { DocRef = "stack A upper gate-source (capture addition, WP-F.md)" }
+between = ["HV_A_G2", "HV_A_M1"]
+
+[[part]]
+ref = "R1122"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack A device 3 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
+fields = { DocRef = "stack A upper gate-source (capture addition, WP-F.md)" }
+between = ["HV_A_G3", "HV_A_M2"]
+
+[[part]]
+ref = "R1123"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack A device 4 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
+fields = { DocRef = "stack A upper gate-source (capture addition, WP-F.md)" }
+between = ["HV_A_G4", "HV_A_M3"]
+
+[[part]]
+ref = "D1101"
+group = "stackA"
+lib_id = "Device:D_TVS"
+value = "SMF15CA"
+footprint = "Diode_SMD:D_SOD-123F"
+mpn = "SMF15CA"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smf-datasheet?assetguid=7eb8a5b6-bdd0-4561-8f19-0c3cc6f9b2af"
+description = "Stack A device 1 gate-source clamp, bidirectional 15 V (VBR 16.7-18.5 V, VC 24.4 V at 8.2 A) vs VGSX +-20 V / VGSM +-30 V"
+new_row = true
+fields = { DocRef = "stack A gate TVS (§B5.4)" }
+pins = """
+  1  A1  STKA_G
+  2  A2  HV_RTN
+"""
+
+[[part]]
+ref = "D1102"
+group = "stackA"
+lib_id = "Device:D_TVS"
+value = "SMF15CA"
+footprint = "Diode_SMD:D_SOD-123F"
+mpn = "SMF15CA"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smf-datasheet?assetguid=7eb8a5b6-bdd0-4561-8f19-0c3cc6f9b2af"
+description = "Stack A device 2 gate-source clamp, bidirectional 15 V (VBR 16.7-18.5 V, VC 24.4 V at 8.2 A) vs VGSX +-20 V / VGSM +-30 V"
+fields = { DocRef = "stack A gate TVS (§B5.4)" }
+pins = """
+  1  A1  HV_A_G2
+  2  A2  HV_A_M1
+"""
+
+[[part]]
+ref = "D1103"
+group = "stackA"
+lib_id = "Device:D_TVS"
+value = "SMF15CA"
+footprint = "Diode_SMD:D_SOD-123F"
+mpn = "SMF15CA"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smf-datasheet?assetguid=7eb8a5b6-bdd0-4561-8f19-0c3cc6f9b2af"
+description = "Stack A device 3 gate-source clamp, bidirectional 15 V (VBR 16.7-18.5 V, VC 24.4 V at 8.2 A) vs VGSX +-20 V / VGSM +-30 V"
+fields = { DocRef = "stack A gate TVS (§B5.4)" }
+pins = """
+  1  A1  HV_A_G3
+  2  A2  HV_A_M2
+"""
+
+[[part]]
+ref = "D1104"
+group = "stackA"
+lib_id = "Device:D_TVS"
+value = "SMF15CA"
+footprint = "Diode_SMD:D_SOD-123F"
+mpn = "SMF15CA"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smf-datasheet?assetguid=7eb8a5b6-bdd0-4561-8f19-0c3cc6f9b2af"
+description = "Stack A device 4 gate-source clamp, bidirectional 15 V (VBR 16.7-18.5 V, VC 24.4 V at 8.2 A) vs VGSX +-20 V / VGSM +-30 V"
+fields = { DocRef = "stack A gate TVS (§B5.4)" }
+pins = """
+  1  A1  HV_A_G4
+  2  A2  HV_A_M3
+"""
+
+[[part]]
+ref = "R1131"
+group = "holdA"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "HOLD_A_DRV default resistor (contract §5.4: 100 k to GND at the pump input). Static or missing clock = no bias = stack A conducts."
+new_row = true
+fields = { DocRef = "HOLD_A_DRV default 100k (contract §5.4)" }
+between = ["HOLD_A_DRV", "GND"]
+
+[[part]]
+ref = "R1133"
+group = "holdA"
+lib_id = "Device:R"
+value = "10"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Pump A clock series resistor: limits the buffer's peak current into the pump capacitors (about 10-20 mA peaks [SIM])"
+between = ["HOLD_A_DRV", "PMPA_CLK"]
+
+[[part]]
+ref = "C1111"
+group = "holdA"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump A stage 1 pump capacitor (also the AC coupling across any GND/HV_RTN difference); <= 13 V DC across it"
+new_row = true
+fields = { DocRef = "pump A stage 1 (§B5.4, 4 stages: WP-F.md)" }
+between = ["PMPA_CLK", "PMPA_P1"]
+
+[[part]]
+ref = "C1112"
+group = "holdA"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump A stage 2 pump capacitor (also the AC coupling across any GND/HV_RTN difference); <= 13 V DC across it"
+fields = { DocRef = "pump A stage 2 (§B5.4, 4 stages: WP-F.md)" }
+between = ["PMPA_CLK", "PMPA_P2"]
+
+[[part]]
+ref = "C1113"
+group = "holdA"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump A stage 3 pump capacitor (also the AC coupling across any GND/HV_RTN difference); <= 13 V DC across it"
+fields = { DocRef = "pump A stage 3 (§B5.4, 4 stages: WP-F.md)" }
+between = ["PMPA_CLK", "PMPA_P3"]
+
+[[part]]
+ref = "C1114"
+group = "holdA"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump A stage 4 pump capacitor (also the AC coupling across any GND/HV_RTN difference); <= 13 V DC across it"
+fields = { DocRef = "pump A stage 4 (§B5.4, 4 stages: WP-F.md)" }
+between = ["PMPA_CLK", "PMPA_P4"]
+
+[[part]]
+ref = "C1115"
+group = "holdA"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump A stage 1 hold capacitor to HV_RTN"
+fields = { DocRef = "pump A hold 1" }
+between = ["PMPA_H1", "HV_RTN"]
+
+[[part]]
+ref = "C1116"
+group = "holdA"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump A stage 2 hold capacitor to HV_RTN"
+fields = { DocRef = "pump A hold 2" }
+between = ["PMPA_H2", "HV_RTN"]
+
+[[part]]
+ref = "C1117"
+group = "holdA"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump A stage 3 hold capacitor to HV_RTN"
+fields = { DocRef = "pump A hold 3" }
+between = ["PMPA_H3", "HV_RTN"]
+
+[[part]]
+ref = "D1109"
+group = "holdA"
+lib_id = "Diode:BAT54S"
+value = "BAT54S"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54S-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
+description = "Pump A stage 1 diode pair: clamp P1 -> HV_RTN, transfer PMPA_H1 -> P1. VF <= 0.32 V at 1 mA, 30 V"
+new_row = true
+fields = { DocRef = "pump A stage 1", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
+pins = """
+  1  A  PMPA_H1
+  3  COM  PMPA_P1
+  2  K  HV_RTN
+"""
+
+[[part]]
+ref = "D1110"
+group = "holdA"
+lib_id = "Diode:BAT54S"
+value = "BAT54S"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54S-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
+description = "Pump A stage 2 diode pair: clamp P2 -> PMPA_H1, transfer PMPA_H2 -> P2. VF <= 0.32 V at 1 mA, 30 V"
+fields = { DocRef = "pump A stage 2", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
+pins = """
+  1  A  PMPA_H2
+  3  COM  PMPA_P2
+  2  K  PMPA_H1
+"""
+
+[[part]]
+ref = "D1111"
+group = "holdA"
+lib_id = "Diode:BAT54S"
+value = "BAT54S"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54S-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
+description = "Pump A stage 3 diode pair: clamp P3 -> PMPA_H2, transfer PMPA_H3 -> P3. VF <= 0.32 V at 1 mA, 30 V"
+fields = { DocRef = "pump A stage 3", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
+pins = """
+  1  A  PMPA_H3
+  3  COM  PMPA_P3
+  2  K  PMPA_H2
+"""
+
+[[part]]
+ref = "D1112"
+group = "holdA"
+lib_id = "Diode:BAT54S"
+value = "BAT54S"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54S-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
+description = "Pump A stage 4 diode pair: clamp P4 -> PMPA_H3, transfer STKA_G -> P4. VF <= 0.32 V at 1 mA, 30 V"
+fields = { DocRef = "pump A stage 4", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
+pins = """
+  1  A  STKA_G
+  3  COM  PMPA_P4
+  2  K  PMPA_H3
+"""
+
+[[part]]
+ref = "C1109"
+group = "holdA"
+lib_id = "Device:C"
+value = "3.3uF 25V X7R"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "C1206C335K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Stack A gate reservoir 3.3 uF (contract §8). Ripple 0.1-0.3 V [SIM]"
+new_row = true
+fields = { DocRef = "reservoir A 3.3 uF (§B5.4)" }
+between = ["STKA_G", "HV_RTN"]
+
+[[part]]
+ref = "R1127"
+group = "holdA"
+lib_id = "Device:R"
+value = "680k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07680KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack A gate-source resistor, upper part (680 k + 330 k = 1.01 M, the design's 1 M gate-source resistor split to give the §15 1:3 test tap)"
+fields = { DocRef = "gate-source 1M (§B5.4) + test divider (§15)" }
+between = ["STKA_G", "STKA_GTP"]
+
+[[part]]
+ref = "R1128"
+group = "holdA"
+lib_id = "Device:R"
+value = "330k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07330KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack A gate-source resistor, lower part; tap reads about -2.4..-3.0 V when held"
+between = ["STKA_GTP", "HV_RTN"]
+
+[[part]]
+ref = "TP1105"
+group = "holdA"
+lib_id = "Connector:TestPoint"
+value = "STKA_GTP"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "n/a (pad)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+description = "Test point, stack A bottom-gate bias through the 1:3 divider (low voltage, referenced to HV_RTN)"
+pins = """
+  1  1  STKA_GTP
+"""
+
+[[part]]
+ref = "Q1109"
+group = "holdA"
+lib_id = "Transistor_FET:BSS138"
+value = "BSS138"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS138"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss138-d.pdf"
+description = "Stack A release switch: drain HV_RTN, source STKA_G, gate RLSA_NG. Turned on (VGS = |gate bias|, 3.5-6 ohm) by the JFET pilot whenever the clock stops; powered by the very charge it removes."
+new_row = true
+fields = { DocRef = "release switch A (§B5.4; depletion BSS126 -> JFET pilot + BSS138, WP-F.md departure D-3)" }
+pins = """
+  1  G  RLSA_NG
+  2  S  STKA_G
+  3  D  HV_RTN
+"""
+
+[[part]]
+ref = "Q1112"
+group = "holdA"
+lib_id = "Device:Q_PJFET_DSG"
+value = "MMBFJ177"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "MMBFJ177LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmbfj177lt1-d.pdf"
+description = "Stack A release PILOT: P-channel depletion JFET, NORMALLY ON with no bias (IDSS 1.5-20 mA). Source HV_RTN, drain RLSA_NG; pinched off only while its clock-derived gate bias (> VGS(off) 0.8-2.5 V) is present"
+fields = { DocRef = "release pilot A (capture addition, WP-F.md departure D-3)", Verify = "VDG -25 V max: worst -17.3 V here (gate +5.5 V, drain -11.8 V)" }
+pins = """
+  1  D  RLSA_NG
+  2  S  HV_RTN
+  3  G  RLSA_JB
+"""
+
+[[part]]
+ref = "R1188"
+group = "holdA"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Release A N-MOSFET gate-source resistor: holds the switch OFF while the pilot is pinched off"
+between = ["RLSA_NG", "STKA_G"]
+
+[[part]]
+ref = "R1135"
+group = "holdA"
+lib_id = "Device:R"
+value = "1.8M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071M8L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Release A pilot-bias bleed: tau = 1.8 M x 2.2 nF = 4 ms; with no clock the bias decays and the pilot conducts"
+between = ["RLSA_JB", "HV_RTN"]
+
+[[part]]
+ref = "C1125"
+group = "holdA"
+lib_id = "Device:C"
+value = "10nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C103J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release A pilot-bias pump stage 1 capacitor (positive pump, <= 12 V DC)"
+new_row = true
+fields = { DocRef = "release bias A" }
+between = ["PMPA_CLK", "RLSA_P1"]
+
+[[part]]
+ref = "C1126"
+group = "holdA"
+lib_id = "Device:C"
+value = "10nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C103J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release A pilot-bias pump stage 2 capacitor (positive pump, <= 12 V DC)"
+fields = { DocRef = "release bias A" }
+between = ["PMPA_CLK", "RLSA_P2"]
+
+[[part]]
+ref = "C1127"
+group = "holdA"
+lib_id = "Device:C"
+value = "10nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C103J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release A pilot-bias pump stage 3 capacitor (positive pump, <= 12 V DC)"
+fields = { DocRef = "release bias A" }
+between = ["PMPA_CLK", "RLSA_P3"]
+
+[[part]]
+ref = "C1128"
+group = "holdA"
+lib_id = "Device:C"
+value = "4.7nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C472J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release A pilot-bias pump hold capacitor 1"
+between = ["RLSA_H1", "HV_RTN"]
+
+[[part]]
+ref = "R1190"
+group = "holdA"
+lib_id = "Device:R"
+value = "2.2M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-072M2L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Release A hold-node bleed 1: empties the pump's inner stages when the clock stops, so they cannot keep the pilot pinched off"
+between = ["RLSA_H1", "HV_RTN"]
+
+[[part]]
+ref = "C1129"
+group = "holdA"
+lib_id = "Device:C"
+value = "4.7nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C472J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release A pilot-bias pump hold capacitor 2"
+between = ["RLSA_H2", "HV_RTN"]
+
+[[part]]
+ref = "R1191"
+group = "holdA"
+lib_id = "Device:R"
+value = "2.2M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-072M2L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Release A hold-node bleed 2: empties the pump's inner stages when the clock stops, so they cannot keep the pilot pinched off"
+between = ["RLSA_H2", "HV_RTN"]
+
+[[part]]
+ref = "C1130"
+group = "holdA"
+lib_id = "Device:C"
+value = "2.2nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C222J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release A pilot gate-bias capacitor (tau with the 1.8 M bleed = 4 ms)"
+between = ["RLSA_JB", "HV_RTN"]
+
+[[part]]
+ref = "D1117"
+group = "holdA"
+lib_id = "Diode:BAT54S"
+value = "BAV199"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV199-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/BAV199.pdf"
+description = "Release A pilot-bias pump stage 1: low-leakage series pair (IR <= 5 nA at 75 V, 25 C); stock BAT54S symbol, same series-pair pinout"
+new_row = true
+fields = { DocRef = "release bias A stage 1", Verify = "BAV199 drawing (DS30232) shows the BAT54S series-pair arrangement; SOT-23 pin numbers not printed - standard numbering assumed" }
+pins = """
+  1  A  HV_RTN
+  3  COM  RLSA_P1
+  2  K  RLSA_H1
+"""
+
+[[part]]
+ref = "D1118"
+group = "holdA"
+lib_id = "Diode:BAT54S"
+value = "BAV199"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV199-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/BAV199.pdf"
+description = "Release A pilot-bias pump stage 2: low-leakage series pair (IR <= 5 nA at 75 V, 25 C); stock BAT54S symbol, same series-pair pinout"
+fields = { DocRef = "release bias A stage 2", Verify = "BAV199 drawing (DS30232) shows the BAT54S series-pair arrangement; SOT-23 pin numbers not printed - standard numbering assumed" }
+pins = """
+  1  A  RLSA_H1
+  3  COM  RLSA_P2
+  2  K  RLSA_H2
+"""
+
+[[part]]
+ref = "D1119"
+group = "holdA"
+lib_id = "Diode:BAT54S"
+value = "BAV199"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV199-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/BAV199.pdf"
+description = "Release A pilot-bias pump stage 3: low-leakage series pair (IR <= 5 nA at 75 V, 25 C); stock BAT54S symbol, same series-pair pinout"
+fields = { DocRef = "release bias A stage 3", Verify = "BAV199 drawing (DS30232) shows the BAT54S series-pair arrangement; SOT-23 pin numbers not printed - standard numbering assumed" }
+pins = """
+  1  A  RLSA_H2
+  3  COM  RLSA_P3
+  2  K  RLSA_JB
+"""
+
+[[part]]
+ref = "R1137"
+group = "holdA"
+lib_id = "Device:R"
+value = "3.9k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-073K9L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Held-sense string A series resistor"
+new_row = true
+fields = { DocRef = "held sense A: 1.5 k -> 3.9 k (WP-F.md)" }
+between = ["HV_RTN", "HLDA_ZK"]
+
+[[part]]
+ref = "D1125"
+group = "holdA"
+lib_id = "Device:D_Zener"
+value = "MMSZ4688 4.7V"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "MMSZ4688T1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmsz4678t1-d.pdf"
+description = "Held-sense threshold zener A: 4.47-4.94 V at 50 uA (low-current type), IR <= 10 uA at 3 V"
+fields = { DocRef = "held sense A 4.7 V zener (§B5.4)" }
+pins = """
+  1  K  HLDA_ZK
+  2  A  HLDA_LA
+"""
+
+[[part]]
+ref = "R1138"
+group = "holdA"
+lib_id = "Device:R"
+value = "22k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0722KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Held-sense LED shunt A: keeps zener leakage and sub-threshold current out of the LED (the Darlington's CTR has no maximum)"
+fields = { DocRef = "held sense A LED shunt (capture addition)" }
+between = ["HLDA_LA", "STKA_G"]
+
+[[part]]
+ref = "U1101"
+group = "holdA"
+lib_id = "aed_storage:TLP187"
+value = "TLP187"
+footprint = "Package_SO:Toshiba_SOIC-4-6_4.4x3.6mm_P1.27mm"
+mpn = "TLP187(TPL,E"
+manufacturer = "Toshiba"
+datasheet = "https://toshiba.semicon-storage.com/info/TLP187_datasheet_en_20260727.pdf?did=13690&prodName=TLP187"
+description = "Stack A HELD sensor: LED lit only by a gate bias below about -5.5 V; Darlington pulls HOLD_A_HELD_N low (= held). Dark, open or unpowered = high = not held."
+fields = { DocRef = "held opto A (§B5.4; VOS618A class -> TLP187 Darlington, WP-F.md)" }
+pins = """
+  1  A  HLDA_LA
+  3  K  STKA_G
+  6  C  HOLD_A_HELD_N
+  4  E  GND
+"""
+
+[[part]]
+ref = "TP1103"
+group = "holdA"
+lib_id = "Connector:TestPoint"
+value = "HOLD_A_HELD_N"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "n/a (pad)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+description = "Test point HOLD_A_HELD_N (low voltage, §15)"
+pins = """
+  1  1  HOLD_A_HELD_N
+"""
+
+[[part]]
+ref = "U1103"
+group = "ovp"
+lib_id = "aed_storage:TLP187"
+value = "TLP187"
+footprint = "Package_SO:Toshiba_SOIC-4-6_4.4x3.6mm_P1.27mm"
+mpn = "TLP187(TPL,E"
+manufacturer = "Toshiba"
+datasheet = "https://toshiba.semicon-storage.com/info/TLP187_datasheet_en_20260727.pdf?did=13690&prodName=TLP187"
+description = "Stack A over-voltage FORCE: LED from OVP_TRIP via Q1111; Darlington collector HV_RTN, emitter STKA_G shorts the gate bias (R-10)"
+fields = { DocRef = "OVP force opto A (§B5.4, R-10)" }
+pins = """
+  1  A  OVP_LEDA
+  3  K  OVP_SW
+  6  C  HV_RTN
+  4  E  STKA_G
+"""
+
+[[part]]
+ref = "R1104"
+group = "stackB"
+lib_id = "Device:R"
+value = "1.5k 10% EY"
+footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
+mpn = "EY152KE"
+manufacturer = "Ohmite"
+datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
+description = "Stack B dump resistor 1/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+new_row = true
+fields = { DocRef = "R_dump B1 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+between = ["HV_CAP_P", "HV_B_D1"]
+
+[[part]]
+ref = "R1105"
+group = "stackB"
+lib_id = "Device:R"
+value = "1.5k 10% EY"
+footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
+mpn = "EY152KE"
+manufacturer = "Ohmite"
+datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
+description = "Stack B dump resistor 2/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+fields = { DocRef = "R_dump B2 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+between = ["HV_B_D1", "HV_B_D2"]
+
+[[part]]
+ref = "R1106"
+group = "stackB"
+lib_id = "Device:R"
+value = "1.5k 10% EY"
+footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
+mpn = "EY152KE"
+manufacturer = "Ohmite"
+datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
+description = "Stack B dump resistor 3/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+fields = { DocRef = "R_dump B3 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+between = ["HV_B_D2", "HV_B_TOP"]
+
+[[part]]
+ref = "Q1105"
+group = "stackB"
+lib_id = "aed_storage:IXTT10N100D2"
+value = "IXTT10N100D2"
+footprint = "Package_TO_SOT_SMD:TO-268-2"
+mpn = "IXTT10N100D2"
+manufacturer = "Littelfuse (IXYS)"
+datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
+description = "Stack B device 1/4 (bottom, gate held by the pump). Depletion, 1,000 V, normally on."
+new_row = true
+fields = { DocRef = "stack B Q1 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+pins = """
+  1  G  STKB_G
+  2  D  HV_B_M1
+  3  S  HV_RTN
+"""
+
+[[part]]
+ref = "Q1106"
+group = "stackB"
+lib_id = "aed_storage:IXTT10N100D2"
+value = "IXTT10N100D2"
+footprint = "Package_TO_SOT_SMD:TO-268-2"
+mpn = "IXTT10N100D2"
+manufacturer = "Littelfuse (IXYS)"
+datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
+description = "Stack B device 2/4 (upper, source follower of tap T1). Depletion, 1,000 V, normally on."
+fields = { DocRef = "stack B Q2 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+pins = """
+  1  G  HV_B_G2
+  2  D  HV_B_M2
+  3  S  HV_B_M1
+"""
+
+[[part]]
+ref = "Q1107"
+group = "stackB"
+lib_id = "aed_storage:IXTT10N100D2"
+value = "IXTT10N100D2"
+footprint = "Package_TO_SOT_SMD:TO-268-2"
+mpn = "IXTT10N100D2"
+manufacturer = "Littelfuse (IXYS)"
+datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
+description = "Stack B device 3/4 (upper, source follower of tap T2). Depletion, 1,000 V, normally on."
+fields = { DocRef = "stack B Q3 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+pins = """
+  1  G  HV_B_G3
+  2  D  HV_B_M3
+  3  S  HV_B_M2
+"""
+
+[[part]]
+ref = "Q1108"
+group = "stackB"
+lib_id = "aed_storage:IXTT10N100D2"
+value = "IXTT10N100D2"
+footprint = "Package_TO_SOT_SMD:TO-268-2"
+mpn = "IXTT10N100D2"
+manufacturer = "Littelfuse (IXYS)"
+datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
+description = "Stack B device 4/4 (upper, source follower of tap T3). Depletion, 1,000 V, normally on."
+fields = { DocRef = "stack B Q4 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+pins = """
+  1  G  HV_B_G4
+  2  D  HV_B_TOP
+  3  S  HV_B_M3
+"""
+
+[[part]]
+ref = "R1111"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B sharing string 1/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+new_row = true
+fields = { DocRef = "stack B sharing string 4 x 10M (§B5.4)" }
+between = ["HV_RTN", "HV_B_T1"]
+
+[[part]]
+ref = "R1112"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B sharing string 2/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+fields = { DocRef = "stack B sharing string 4 x 10M (§B5.4)" }
+between = ["HV_B_T1", "HV_B_T2"]
+
+[[part]]
+ref = "R1113"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B sharing string 3/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+fields = { DocRef = "stack B sharing string 4 x 10M (§B5.4)" }
+between = ["HV_B_T2", "HV_B_T3"]
+
+[[part]]
+ref = "R1114"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B sharing string 4/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+fields = { DocRef = "stack B sharing string 4 x 10M (§B5.4)" }
+between = ["HV_B_T3", "HV_B_TOP"]
+
+[[part]]
+ref = "C1105"
+group = "stackB"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220C332JGGACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack B dynamic-sharing capacitor across string resistor 1: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
+fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+between = ["HV_RTN", "HV_B_T1"]
+
+[[part]]
+ref = "C1106"
+group = "stackB"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220C332JGGACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack B dynamic-sharing capacitor across string resistor 2: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
+fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+between = ["HV_B_T1", "HV_B_T2"]
+
+[[part]]
+ref = "C1107"
+group = "stackB"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220C332JGGACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack B dynamic-sharing capacitor across string resistor 3: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
+fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+between = ["HV_B_T2", "HV_B_T3"]
+
+[[part]]
+ref = "C1108"
+group = "stackB"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220C332JGGACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack B dynamic-sharing capacitor across string resistor 4: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
+fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+between = ["HV_B_T3", "HV_B_TOP"]
+
+[[part]]
+ref = "R1118"
+group = "stackB"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT100K"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Stack B upper-gate resistor, device 2: tap T1 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
+new_row = true
+fields = { DocRef = "stack B upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
+between = ["HV_B_T1", "HV_B_G2"]
+
+[[part]]
+ref = "R1119"
+group = "stackB"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT100K"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Stack B upper-gate resistor, device 3: tap T2 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
+fields = { DocRef = "stack B upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
+between = ["HV_B_T2", "HV_B_G3"]
+
+[[part]]
+ref = "R1120"
+group = "stackB"
+lib_id = "Device:R"
+value = "100k 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "RVC2512FT100K"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
+description = "Stack B upper-gate resistor, device 4: tap T3 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
+fields = { DocRef = "stack B upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
+between = ["HV_B_T3", "HV_B_G4"]
+
+[[part]]
+ref = "R1124"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack B device 2 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
+fields = { DocRef = "stack B upper gate-source (capture addition, WP-F.md)" }
+between = ["HV_B_G2", "HV_B_M1"]
+
+[[part]]
+ref = "R1125"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack B device 3 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
+fields = { DocRef = "stack B upper gate-source (capture addition, WP-F.md)" }
+between = ["HV_B_G3", "HV_B_M2"]
+
+[[part]]
+ref = "R1126"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack B device 4 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
+fields = { DocRef = "stack B upper gate-source (capture addition, WP-F.md)" }
+between = ["HV_B_G4", "HV_B_M3"]
+
+[[part]]
+ref = "D1105"
+group = "stackB"
+lib_id = "Device:D_TVS"
+value = "SMF15CA"
+footprint = "Diode_SMD:D_SOD-123F"
+mpn = "SMF15CA"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smf-datasheet?assetguid=7eb8a5b6-bdd0-4561-8f19-0c3cc6f9b2af"
+description = "Stack B device 1 gate-source clamp, bidirectional 15 V (VBR 16.7-18.5 V, VC 24.4 V at 8.2 A) vs VGSX +-20 V / VGSM +-30 V"
+new_row = true
+fields = { DocRef = "stack B gate TVS (§B5.4)" }
+pins = """
+  1  A1  STKB_G
+  2  A2  HV_RTN
+"""
+
+[[part]]
+ref = "D1106"
+group = "stackB"
+lib_id = "Device:D_TVS"
+value = "SMF15CA"
+footprint = "Diode_SMD:D_SOD-123F"
+mpn = "SMF15CA"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smf-datasheet?assetguid=7eb8a5b6-bdd0-4561-8f19-0c3cc6f9b2af"
+description = "Stack B device 2 gate-source clamp, bidirectional 15 V (VBR 16.7-18.5 V, VC 24.4 V at 8.2 A) vs VGSX +-20 V / VGSM +-30 V"
+fields = { DocRef = "stack B gate TVS (§B5.4)" }
+pins = """
+  1  A1  HV_B_G2
+  2  A2  HV_B_M1
+"""
+
+[[part]]
+ref = "D1107"
+group = "stackB"
+lib_id = "Device:D_TVS"
+value = "SMF15CA"
+footprint = "Diode_SMD:D_SOD-123F"
+mpn = "SMF15CA"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smf-datasheet?assetguid=7eb8a5b6-bdd0-4561-8f19-0c3cc6f9b2af"
+description = "Stack B device 3 gate-source clamp, bidirectional 15 V (VBR 16.7-18.5 V, VC 24.4 V at 8.2 A) vs VGSX +-20 V / VGSM +-30 V"
+fields = { DocRef = "stack B gate TVS (§B5.4)" }
+pins = """
+  1  A1  HV_B_G3
+  2  A2  HV_B_M2
+"""
+
+[[part]]
+ref = "D1108"
+group = "stackB"
+lib_id = "Device:D_TVS"
+value = "SMF15CA"
+footprint = "Diode_SMD:D_SOD-123F"
+mpn = "SMF15CA"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/assetdocs/tvs-diodes-smf-datasheet?assetguid=7eb8a5b6-bdd0-4561-8f19-0c3cc6f9b2af"
+description = "Stack B device 4 gate-source clamp, bidirectional 15 V (VBR 16.7-18.5 V, VC 24.4 V at 8.2 A) vs VGSX +-20 V / VGSM +-30 V"
+fields = { DocRef = "stack B gate TVS (§B5.4)" }
+pins = """
+  1  A1  HV_B_G4
+  2  A2  HV_B_M3
+"""
+
+[[part]]
+ref = "R1132"
+group = "holdB"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "HOLD_B_DRV default resistor (contract §5.4: 100 k to GND at the pump input). Static or missing clock = no bias = stack B conducts."
+new_row = true
+fields = { DocRef = "HOLD_B_DRV default 100k (contract §5.4)" }
+between = ["HOLD_B_DRV", "GND"]
+
+[[part]]
+ref = "R1134"
+group = "holdB"
+lib_id = "Device:R"
+value = "10"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Pump B clock series resistor: limits the buffer's peak current into the pump capacitors (about 10-20 mA peaks [SIM])"
+between = ["HOLD_B_DRV", "PMPB_CLK"]
+
+[[part]]
+ref = "C1118"
+group = "holdB"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump B stage 1 pump capacitor (also the AC coupling across any GND/HV_RTN difference); <= 13 V DC across it"
+new_row = true
+fields = { DocRef = "pump B stage 1 (§B5.4, 4 stages: WP-F.md)" }
+between = ["PMPB_CLK", "PMPB_P1"]
+
+[[part]]
+ref = "C1119"
+group = "holdB"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump B stage 2 pump capacitor (also the AC coupling across any GND/HV_RTN difference); <= 13 V DC across it"
+fields = { DocRef = "pump B stage 2 (§B5.4, 4 stages: WP-F.md)" }
+between = ["PMPB_CLK", "PMPB_P2"]
+
+[[part]]
+ref = "C1120"
+group = "holdB"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump B stage 3 pump capacitor (also the AC coupling across any GND/HV_RTN difference); <= 13 V DC across it"
+fields = { DocRef = "pump B stage 3 (§B5.4, 4 stages: WP-F.md)" }
+between = ["PMPB_CLK", "PMPB_P3"]
+
+[[part]]
+ref = "C1121"
+group = "holdB"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump B stage 4 pump capacitor (also the AC coupling across any GND/HV_RTN difference); <= 13 V DC across it"
+fields = { DocRef = "pump B stage 4 (§B5.4, 4 stages: WP-F.md)" }
+between = ["PMPB_CLK", "PMPB_P4"]
+
+[[part]]
+ref = "C1122"
+group = "holdB"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump B stage 1 hold capacitor to HV_RTN"
+fields = { DocRef = "pump B hold 1" }
+between = ["PMPB_H1", "HV_RTN"]
+
+[[part]]
+ref = "C1123"
+group = "holdB"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump B stage 2 hold capacitor to HV_RTN"
+fields = { DocRef = "pump B hold 2" }
+between = ["PMPB_H2", "HV_RTN"]
+
+[[part]]
+ref = "C1124"
+group = "holdB"
+lib_id = "Device:C"
+value = "2.2uF 25V X7R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "C0805C225K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Pump B stage 3 hold capacitor to HV_RTN"
+fields = { DocRef = "pump B hold 3" }
+between = ["PMPB_H3", "HV_RTN"]
+
+[[part]]
+ref = "D1113"
+group = "holdB"
+lib_id = "Diode:BAT54S"
+value = "BAT54S"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54S-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
+description = "Pump B stage 1 diode pair: clamp P1 -> HV_RTN, transfer PMPB_H1 -> P1. VF <= 0.32 V at 1 mA, 30 V"
+new_row = true
+fields = { DocRef = "pump B stage 1", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
+pins = """
+  1  A  PMPB_H1
+  3  COM  PMPB_P1
+  2  K  HV_RTN
+"""
+
+[[part]]
+ref = "D1114"
+group = "holdB"
+lib_id = "Diode:BAT54S"
+value = "BAT54S"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54S-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
+description = "Pump B stage 2 diode pair: clamp P2 -> PMPB_H1, transfer PMPB_H2 -> P2. VF <= 0.32 V at 1 mA, 30 V"
+fields = { DocRef = "pump B stage 2", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
+pins = """
+  1  A  PMPB_H2
+  3  COM  PMPB_P2
+  2  K  PMPB_H1
+"""
+
+[[part]]
+ref = "D1115"
+group = "holdB"
+lib_id = "Diode:BAT54S"
+value = "BAT54S"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54S-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
+description = "Pump B stage 3 diode pair: clamp P3 -> PMPB_H2, transfer PMPB_H3 -> P3. VF <= 0.32 V at 1 mA, 30 V"
+fields = { DocRef = "pump B stage 3", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
+pins = """
+  1  A  PMPB_H3
+  3  COM  PMPB_P3
+  2  K  PMPB_H2
+"""
+
+[[part]]
+ref = "D1116"
+group = "holdB"
+lib_id = "Diode:BAT54S"
+value = "BAT54S"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54S-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
+description = "Pump B stage 4 diode pair: clamp P4 -> PMPB_H3, transfer STKB_G -> P4. VF <= 0.32 V at 1 mA, 30 V"
+fields = { DocRef = "pump B stage 4", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
+pins = """
+  1  A  STKB_G
+  3  COM  PMPB_P4
+  2  K  PMPB_H3
+"""
+
+[[part]]
+ref = "C1110"
+group = "holdB"
+lib_id = "Device:C"
+value = "3.3uF 25V X7R"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "C1206C335K3RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Stack B gate reservoir 3.3 uF (contract §8). Ripple 0.1-0.3 V [SIM]"
+new_row = true
+fields = { DocRef = "reservoir B 3.3 uF (§B5.4)" }
+between = ["STKB_G", "HV_RTN"]
+
+[[part]]
+ref = "R1129"
+group = "holdB"
+lib_id = "Device:R"
+value = "680k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07680KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack B gate-source resistor, upper part (680 k + 330 k = 1.01 M, the design's 1 M gate-source resistor split to give the §15 1:3 test tap)"
+fields = { DocRef = "gate-source 1M (§B5.4) + test divider (§15)" }
+between = ["STKB_G", "STKB_GTP"]
+
+[[part]]
+ref = "R1130"
+group = "holdB"
+lib_id = "Device:R"
+value = "330k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07330KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Stack B gate-source resistor, lower part; tap reads about -2.4..-3.0 V when held"
+between = ["STKB_GTP", "HV_RTN"]
+
+[[part]]
+ref = "TP1106"
+group = "holdB"
+lib_id = "Connector:TestPoint"
+value = "STKB_GTP"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "n/a (pad)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+description = "Test point, stack B bottom-gate bias through the 1:3 divider (low voltage, referenced to HV_RTN)"
+pins = """
+  1  1  STKB_GTP
+"""
+
+[[part]]
+ref = "Q1110"
+group = "holdB"
+lib_id = "Transistor_FET:BSS138"
+value = "BSS138"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS138"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss138-d.pdf"
+description = "Stack B release switch: drain HV_RTN, source STKB_G, gate RLSB_NG. Turned on (VGS = |gate bias|, 3.5-6 ohm) by the JFET pilot whenever the clock stops; powered by the very charge it removes."
+new_row = true
+fields = { DocRef = "release switch B (§B5.4; depletion BSS126 -> JFET pilot + BSS138, WP-F.md departure D-3)" }
+pins = """
+  1  G  RLSB_NG
+  2  S  STKB_G
+  3  D  HV_RTN
+"""
+
+[[part]]
+ref = "Q1113"
+group = "holdB"
+lib_id = "Device:Q_PJFET_DSG"
+value = "MMBFJ177"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "MMBFJ177LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmbfj177lt1-d.pdf"
+description = "Stack B release PILOT: P-channel depletion JFET, NORMALLY ON with no bias (IDSS 1.5-20 mA). Source HV_RTN, drain RLSB_NG; pinched off only while its clock-derived gate bias (> VGS(off) 0.8-2.5 V) is present"
+fields = { DocRef = "release pilot B (capture addition, WP-F.md departure D-3)", Verify = "VDG -25 V max: worst -17.3 V here (gate +5.5 V, drain -11.8 V)" }
+pins = """
+  1  D  RLSB_NG
+  2  S  HV_RTN
+  3  G  RLSB_JB
+"""
+
+[[part]]
+ref = "R1189"
+group = "holdB"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Release B N-MOSFET gate-source resistor: holds the switch OFF while the pilot is pinched off"
+between = ["RLSB_NG", "STKB_G"]
+
+[[part]]
+ref = "R1136"
+group = "holdB"
+lib_id = "Device:R"
+value = "1.8M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071M8L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Release B pilot-bias bleed: tau = 1.8 M x 2.2 nF = 4 ms; with no clock the bias decays and the pilot conducts"
+between = ["RLSB_JB", "HV_RTN"]
+
+[[part]]
+ref = "C1131"
+group = "holdB"
+lib_id = "Device:C"
+value = "10nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C103J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release B pilot-bias pump stage 1 capacitor (positive pump, <= 12 V DC)"
+new_row = true
+fields = { DocRef = "release bias B" }
+between = ["PMPB_CLK", "RLSB_P1"]
+
+[[part]]
+ref = "C1132"
+group = "holdB"
+lib_id = "Device:C"
+value = "10nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C103J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release B pilot-bias pump stage 2 capacitor (positive pump, <= 12 V DC)"
+fields = { DocRef = "release bias B" }
+between = ["PMPB_CLK", "RLSB_P2"]
+
+[[part]]
+ref = "C1133"
+group = "holdB"
+lib_id = "Device:C"
+value = "10nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C103J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release B pilot-bias pump stage 3 capacitor (positive pump, <= 12 V DC)"
+fields = { DocRef = "release bias B" }
+between = ["PMPB_CLK", "RLSB_P3"]
+
+[[part]]
+ref = "C1134"
+group = "holdB"
+lib_id = "Device:C"
+value = "4.7nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C472J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release B pilot-bias pump hold capacitor 1"
+between = ["RLSB_H1", "HV_RTN"]
+
+[[part]]
+ref = "R1192"
+group = "holdB"
+lib_id = "Device:R"
+value = "2.2M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-072M2L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Release B hold-node bleed 1: empties the pump's inner stages when the clock stops, so they cannot keep the pilot pinched off"
+between = ["RLSB_H1", "HV_RTN"]
+
+[[part]]
+ref = "C1135"
+group = "holdB"
+lib_id = "Device:C"
+value = "4.7nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C472J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release B pilot-bias pump hold capacitor 2"
+between = ["RLSB_H2", "HV_RTN"]
+
+[[part]]
+ref = "R1193"
+group = "holdB"
+lib_id = "Device:R"
+value = "2.2M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-072M2L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Release B hold-node bleed 2: empties the pump's inner stages when the clock stops, so they cannot keep the pilot pinched off"
+between = ["RLSB_H2", "HV_RTN"]
+
+[[part]]
+ref = "C1136"
+group = "holdB"
+lib_id = "Device:C"
+value = "2.2nF 50V C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C222J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G.pdf"
+description = "Release B pilot gate-bias capacitor (tau with the 1.8 M bleed = 4 ms)"
+between = ["RLSB_JB", "HV_RTN"]
+
+[[part]]
+ref = "D1120"
+group = "holdB"
+lib_id = "Diode:BAT54S"
+value = "BAV199"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV199-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/BAV199.pdf"
+description = "Release B pilot-bias pump stage 1: low-leakage series pair (IR <= 5 nA at 75 V, 25 C); stock BAT54S symbol, same series-pair pinout"
+new_row = true
+fields = { DocRef = "release bias B stage 1", Verify = "BAV199 drawing (DS30232) shows the BAT54S series-pair arrangement; SOT-23 pin numbers not printed - standard numbering assumed" }
+pins = """
+  1  A  HV_RTN
+  3  COM  RLSB_P1
+  2  K  RLSB_H1
+"""
+
+[[part]]
+ref = "D1121"
+group = "holdB"
+lib_id = "Diode:BAT54S"
+value = "BAV199"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV199-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/BAV199.pdf"
+description = "Release B pilot-bias pump stage 2: low-leakage series pair (IR <= 5 nA at 75 V, 25 C); stock BAT54S symbol, same series-pair pinout"
+fields = { DocRef = "release bias B stage 2", Verify = "BAV199 drawing (DS30232) shows the BAT54S series-pair arrangement; SOT-23 pin numbers not printed - standard numbering assumed" }
+pins = """
+  1  A  RLSB_H1
+  3  COM  RLSB_P2
+  2  K  RLSB_H2
+"""
+
+[[part]]
+ref = "D1122"
+group = "holdB"
+lib_id = "Diode:BAT54S"
+value = "BAV199"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV199-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/BAV199.pdf"
+description = "Release B pilot-bias pump stage 3: low-leakage series pair (IR <= 5 nA at 75 V, 25 C); stock BAT54S symbol, same series-pair pinout"
+fields = { DocRef = "release bias B stage 3", Verify = "BAV199 drawing (DS30232) shows the BAT54S series-pair arrangement; SOT-23 pin numbers not printed - standard numbering assumed" }
+pins = """
+  1  A  RLSB_H2
+  3  COM  RLSB_P3
+  2  K  RLSB_JB
+"""
+
+[[part]]
+ref = "R1139"
+group = "holdB"
+lib_id = "Device:R"
+value = "3.9k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-073K9L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Held-sense string B series resistor"
+new_row = true
+fields = { DocRef = "held sense B: 1.5 k -> 3.9 k (WP-F.md)" }
+between = ["HV_RTN", "HLDB_ZK"]
+
+[[part]]
+ref = "D1126"
+group = "holdB"
+lib_id = "Device:D_Zener"
+value = "MMSZ4688 4.7V"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "MMSZ4688T1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmsz4678t1-d.pdf"
+description = "Held-sense threshold zener B: 4.47-4.94 V at 50 uA (low-current type), IR <= 10 uA at 3 V"
+fields = { DocRef = "held sense B 4.7 V zener (§B5.4)" }
+pins = """
+  1  K  HLDB_ZK
+  2  A  HLDB_LA
+"""
+
+[[part]]
+ref = "R1140"
+group = "holdB"
+lib_id = "Device:R"
+value = "22k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0722KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Held-sense LED shunt B: keeps zener leakage and sub-threshold current out of the LED (the Darlington's CTR has no maximum)"
+fields = { DocRef = "held sense B LED shunt (capture addition)" }
+between = ["HLDB_LA", "STKB_G"]
+
+[[part]]
+ref = "U1102"
+group = "holdB"
+lib_id = "aed_storage:TLP187"
+value = "TLP187"
+footprint = "Package_SO:Toshiba_SOIC-4-6_4.4x3.6mm_P1.27mm"
+mpn = "TLP187(TPL,E"
+manufacturer = "Toshiba"
+datasheet = "https://toshiba.semicon-storage.com/info/TLP187_datasheet_en_20260727.pdf?did=13690&prodName=TLP187"
+description = "Stack B HELD sensor: LED lit only by a gate bias below about -5.5 V; Darlington pulls HOLD_B_HELD_N low (= held). Dark, open or unpowered = high = not held."
+fields = { DocRef = "held opto B (§B5.4; VOS618A class -> TLP187 Darlington, WP-F.md)" }
+pins = """
+  1  A  HLDB_LA
+  3  K  STKB_G
+  6  C  HOLD_B_HELD_N
+  4  E  GND
+"""
+
+[[part]]
+ref = "TP1104"
+group = "holdB"
+lib_id = "Connector:TestPoint"
+value = "HOLD_B_HELD_N"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "n/a (pad)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+description = "Test point HOLD_B_HELD_N (low voltage, §15)"
+pins = """
+  1  1  HOLD_B_HELD_N
+"""
+
+[[part]]
+ref = "U1104"
+group = "ovp"
+lib_id = "aed_storage:TLP187"
+value = "TLP187"
+footprint = "Package_SO:Toshiba_SOIC-4-6_4.4x3.6mm_P1.27mm"
+mpn = "TLP187(TPL,E"
+manufacturer = "Toshiba"
+datasheet = "https://toshiba.semicon-storage.com/info/TLP187_datasheet_en_20260727.pdf?did=13690&prodName=TLP187"
+description = "Stack B over-voltage FORCE: LED from OVP_TRIP via Q1111; Darlington collector HV_RTN, emitter STKB_G shorts the gate bias (R-10)"
+fields = { DocRef = "OVP force opto B (§B5.4, R-10)" }
+pins = """
+  1  A  OVP_LEDB
+  3  K  OVP_SW
+  6  C  HV_RTN
+  4  E  STKB_G
+"""
+
+[[part]]
+ref = "R1143"
+group = "ovp"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "OVP_TRIP default resistor (contract §5.4: 11, 100 k to GND): no trip signal = no force"
+new_row = true
+fields = { DocRef = "OVP_TRIP default 100k (contract §5.4)" }
+between = ["OVP_TRIP", "GND"]
+
+[[part]]
+ref = "Q1111"
+group = "ovp"
+lib_id = "Transistor_FET:BSS138"
+value = "BSS138"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS138"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss138-d.pdf"
+description = "OVP force LED switch: gate = OVP_TRIP (0/3.3 V), sinks both LED branches (about 17 mA total)"
+fields = { DocRef = "OVP force drive (capture addition, contract issue C-5)", Verify = "RDS(on) at VGS = 3.1 V is not specified (only 4.5 V / 10 V); VGS(th) <= 1.5 V" }
+pins = """
+  1  G  OVP_TRIP
+  2  S  GND
+  3  D  OVP_SW
+"""
+
+[[part]]
+ref = "R1141"
+group = "ovp"
+lib_id = "Device:R"
+value = "240"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07240RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "OVP force LED A current: (3.3 - 1.15 - 0.1)/240 = 8.5 mA nominal, >= 7 mA cold"
+between = ["3V3_SUP", "OVP_LEDA"]
+
+[[part]]
+ref = "R1142"
+group = "ovp"
+lib_id = "Device:R"
+value = "240"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07240RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "OVP force LED B current: (3.3 - 1.15 - 0.1)/240 = 8.5 mA nominal, >= 7 mA cold"
+between = ["3V3_SUP", "OVP_LEDB"]
+

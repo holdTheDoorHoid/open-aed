@@ -1,0 +1,2500 @@
+# 09_interlock - hardware interlock (WP-D shock logic). NOT FOR CONSTRUCTION — unreviewed design.
+# Consent detectors (permit, test permit), hold-drive buffers, 'held' logic, 150 ms window with latched start and
+# 50 ms re-arm, test mode, charger gates, the series load switches SW1-SW4 and the sequence hold SW5 that make BRIDGE_5V.
+# Sources: docs/HARDWARE_DESIGN.md §B8, §B14, §13, §F-1/F-8; hardware/aed-main/contract.md issue 2; decisions D-25,
+# D-59, D-60, D-61; firmware/crates/aed-core/src/interlock.rs. Arithmetic, truth tables, failure table and every
+# assumption: hardware/aed-main/capture-notes/WP-D.md.
+# Datasheets were fetched 2026-11-27 from the manufacturer's site (TI, onsemi); URLs on each part.
+# Generated once by a throwaway script; this file is the source of truth (edit it directly).
+
+[sheet]
+name = "09_interlock"
+title = "Hardware interlock: consent detectors, hold drives, held logic, 150 ms window, test mode, charger gates, SW1-SW5"
+source = "docs/HARDWARE_DESIGN.md §B8, §B14; contract.md issue 2 §5.4-5.5"
+date = "2026-11-27"
+comments = ["Implements interlock.rs (discharge_path_active, bridge_may_fire at the START, charger_may_run) in discrete logic", "Every consent input and every internal 'allow' node has a pull toward 'not allowed'. Capture notes: capture-notes/WP-D.md"]
+
+[nets]
+power = [
+  "GND",
+  "5V0_SYS",
+  "3V3_MAIN",
+  "3V3_SUP",
+  "BRIDGE_5V",
+]
+power_flags = [
+  "BRIDGE_5V",
+]
+global = [
+  "SHOCK_REQ",
+  "PERMIT_CLK",
+  "TEST_PERMIT_CLK",
+  "HOLD_M_CLK",
+  "HOLD_S_CLK",
+  "HOLD_A_DRV",
+  "HOLD_B_DRV",
+  "HOLD_A_HELD_N",
+  "HOLD_B_HELD_N",
+  "HOLD_RB_A_N",
+  "HOLD_RB_B_N",
+  "LOWV_OK",
+  "BRIDGE_ARMED_N",
+  "WIN_OPEN",
+  "TEST_MODE",
+  "SEQ_HOLD",
+  "CHG_SESSION",
+  "CHG_RUN",
+  "VTRANS_EN",
+  "CHARGE_EN",
+]
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "5V0_SYS|3V3_MAIN|3V3_SUP|/09_interlock/"
+until_sheet = "03_power_rails"
+reason = "5V0_SYS, 3V3_MAIN and 3V3_SUP are made on 03_power_rails (WP-A, captured in parallel); no package flags another package's rail (contract §4)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "Global Label '(BRIDGE_ARMED_N|HOLD_RB_A_N|HOLD_RB_B_N)'"
+until_sheet = "04_main_mcu"
+reason = "Contract §5.4 readback outputs; their pull-ups and the reader are on 04_main_mcu (WP-B, captured in parallel)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "Global Label '(VTRANS_EN|CHARGE_EN)'"
+until_sheet = "10_hv_charger"
+reason = "Contract §5.5 charger enables; pull-downs and reader on 10_hv_charger (WP-E, captured in parallel)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "Global Label '(HOLD_A_DRV|HOLD_B_DRV)'"
+until_sheet = "11_hv_storage"
+reason = "Contract §5.4 hold drives; pull-downs and the pumps are on 11_hv_storage (WP-F, captured in parallel)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "Global Label '(WIN_OPEN|TEST_MODE)'"
+until_sheet = "12_bridge_logic"
+reason = "Contract §5.4 outputs to the sequencer; their pull-downs and Ioff buffers are on 12_bridge_logic (same package, WP-D)."
+
+[[group]]
+id = "bridge_power"
+title = "Bridge drive power BRIDGE_5V: SW1 request, SW2a permit / SW2b test permit, SW3 held, SW4 window; SW5 sequence hold in parallel"
+note = """
+Six TI TPS22918 load switches (contract §2: U901-U906). Chain: 5V0_SYS - SW1 (REQ_B) - SW_N1 - SW2a (PERMIT_OK) || SW2b (TEST_MODE_I) - SW_N2 - SW3 (HOLD_OK) - SW_N3 - SW4 (WIN_OPEN_I) - BRIDGE_5V. SW5 (SW5_ON = SEQ_HOLD AND NOT TEST_MODE) from 5V0_SYS straight to BRIDGE_5V (D-59: consent starts, hardware completes).
+Every ON pin has a 100 k pull-down: an unpowered or open driver leaves its switch off. QOD is left open on all six: an enabled internal 25-ohm discharge on SW4 would load BRIDGE_5V while SW5 holds it, and on an inner node it would pull current backwards through the other switches. Instead each inner node and the rail have their own bleed resistor.
+CT = 1 nF on every switch: whichever closes last sets a rise of about 2.5 ms (SLVSD76C Table 2), so the 220 uF hold-up on sheet 12 draws about 0.45 A, inside the 2 A rating.
+TPS22918 VOUT may exceed VIN (SW4 while SW5 holds the rail): outside the recommended conditions (VOUT <= VIN), inside the 6 V absolute maximum; any reverse current only feeds back towards 5V0_SYS and cannot create a consent (capture notes, assumption A-3).
+BRIDGE_ARMED_N: 2N7002 pulls low once BRIDGE_5V passes about 1-2.5 V (VGS(th) 1-2.5 V, onsemi NDS7002A/D); pull-up is on sheet 04.
+"""
+
+[[group]]
+id = "request"
+title = "Main controller's request: SHOCK_REQ buffered on 3V3_MAIN"
+note = """
+SHOCK_REQ: 100 k pull-down (contract §5.4). SN74LVC1G17 Schmitt buffer powered by 3V3_MAIN (consent buffer on its own rail, contract §8): with 3V3_MAIN off its output is high impedance (Ioff) and the SW1 ON pull-down holds REQ_B low.
+REQ_B drives SW1, the window-start AND and the re-arm NOR.
+"""
+
+[[group]]
+id = "hold_drive"
+title = "Hold-drive buffers: HOLD_M_CLK -> HOLD_A_DRV on 3V3_MAIN, HOLD_S_CLK -> HOLD_B_DRV on 3V3_SUP"
+note = """
+Each clock: 100 k pull-down at the input (contract), then a two-pole RC low-pass (4.7 k / 3.9 nF, 47 k / 390 pF: each pole 8.7 kHz) and a 1 M pull-down at the Schmitt input, then an SN74LVC1G17 on the controller's own rail. The low-pass is placed BEFORE the Schmitt buffer, not between the buffer and the pump: a 100 kHz square wave reaches the Schmitt input as about 31-36 mV p-p (CALC, capture notes §3.1), far below its 0.51 V minimum hysteresis, so the buffer output stays static and the pump on sheet 11 gets no drive at all; 1-5 kHz squares (30-70 % duty) pass edge for edge. The buffer then drives the pump with its full 24 mA output, so the filter costs the pump nothing (WP-F's requirement: -7.0 V at 1.1 mA from a 2 kHz 3.3 V clock).
+The 1 M pull-down makes an open filter resistor read low (static), never floating.
+HOLD_A_DRV / HOLD_B_DRV pull-downs are on sheet 11 (contract §5.4).
+"""
+
+[[group]]
+id = "det_pd"
+title = "Dynamic consent detector PERMIT_CLK -> PERMIT_OK on 3V3_SUP"
+note = """
+Band-limited pump detector (§B8.1, R-11). PERMIT_CLK: 100 k pull-down, two-pole low-pass (as the hold drives), 1 M pull-down, SN74LVC2G14 on 3V3_SUP: gate 1 squares and inverts, gate 2 re-inverts, so every clock edge (rising or falling) is a rising edge on one of the two pump phases.
+Each phase: 470 ohm, TWO 220 nF C0G in series (one shorted capacitor still blocks DC), BAV99 series pair (pin 1 anode to GND, pin 3 common = pump node, pin 2 cathode to the hold node). Hold node PD_H: 100 nF C0G with 2 x 71.5 k in parallel (35.75 k; one open resistor only doubles the time constant). Comparator TLV7031 (push-pull; held LOW by its power-on reset below 1.6 V supply, SLVSE13J §6.3): IN+ = hold node, IN- = 0.30 x 3V3_SUP from 2 x 464 k in parallel over 100 k (one open top resistor lowers the threshold to 0.18 x 3V3_SUP, never to zero).
+Behaviour [CALC, behavioural model, capture notes §3.2]: valid <= 0.1 ms after the first edges at 1 kHz; stays valid >= 3.35 ms after the last edge (firmware gap <= 1 ms: margin 3.3x); invalid <= 7.4 ms after the last edge from 5 kHz; DC gives nothing; >= 100 kHz never reaches the pump (static Schmitt). Supply is the supervisor's rail: supervisor off = no output (pull-down on PERMIT_OK).
+One single transition of PERMIT_CLK (one edge) DOES give a valid output for about 3-7 ms; documented in the capture notes (bounded by the 20 ms rail-ready delay on sheet 12 and the window).
+"""
+
+[[group]]
+id = "det_td"
+title = "Dynamic consent detector TEST_PERMIT_CLK -> TEST_OK on 3V3_SUP"
+note = """
+Band-limited pump detector (§B8.1, R-11). TEST_PERMIT_CLK: 100 k pull-down, two-pole low-pass (as the hold drives), 1 M pull-down, SN74LVC2G14 on 3V3_SUP: gate 1 squares and inverts, gate 2 re-inverts, so every clock edge (rising or falling) is a rising edge on one of the two pump phases.
+Each phase: 470 ohm, TWO 220 nF C0G in series (one shorted capacitor still blocks DC), BAV99 series pair (pin 1 anode to GND, pin 3 common = pump node, pin 2 cathode to the hold node). Hold node TD_H: 100 nF C0G with 2 x 71.5 k in parallel (35.75 k; one open resistor only doubles the time constant). Comparator TLV7031 (push-pull; held LOW by its power-on reset below 1.6 V supply, SLVSE13J §6.3): IN+ = hold node, IN- = 0.30 x 3V3_SUP from 2 x 464 k in parallel over 100 k (one open top resistor lowers the threshold to 0.18 x 3V3_SUP, never to zero).
+Behaviour [CALC, behavioural model, capture notes §3.2]: valid <= 0.1 ms after the first edges at 1 kHz; stays valid >= 3.35 ms after the last edge (firmware gap <= 1 ms: margin 3.3x); invalid <= 7.4 ms after the last edge from 5 kHz; DC gives nothing; >= 100 kHz never reaches the pump (static Schmitt). Supply is the supervisor's rail: supervisor off = no output (pull-down on TEST_OK).
+One single transition of TEST_PERMIT_CLK (one edge) DOES give a valid output for about 3-7 ms; documented in the capture notes (bounded by the 20 ms rail-ready delay on sheet 12 and the window).
+"""
+
+[[group]]
+id = "held"
+title = "'Held' logic: HOLD_OK = both optos lit (R-6); open-drain readbacks to the main controller"
+note = """
+HOLD_A_HELD_N / HOLD_B_HELD_N: 10 k pull-ups to 5V0_SYS (contract §5.4) plus a 1 M backup each, because the opto is open-collector and 'dark' is a normal state: with only one resistor, that resistor opening would leave a CMOS input floating, which could read 'held'. Low only when the stack's opto LED is lit by the real negative hold bias. HOLD_OK = NOR (SN74LVC1G02 on 5V0_SYS): high only when both are actively pulled low. Open opto, open wire, unpowered sheet 11: the pull-up reads 'not held'. Unpowered or open NOR output: the 100 k pull-down on HOLD_OK (SW3 ON) reads 'not held'.
+One HOLD_OK feeds SW3, the charger gates and the window-start AND: a stuck-high NOR is therefore seen by the daily blocking tests F-8 (c)/(d), which release one hold and expect BRIDGE_ARMED_N high.
+HOLD_RB_A_N / HOLD_RB_B_N: SN74LVC2G07 open-drain copies (low = held), pull-ups on sheet 04; 5V0_SYS off = released = 'not held'.
+"""
+
+[[group]]
+id = "test_mode"
+title = "TEST_MODE = TEST_OK AND LOWV_OK AND NOT PERMIT_OK (D-61, §B14)"
+note = """
+LOWV_OK: 100 k pull-down (contract §5.4): comparator on sheet 07 unpowered = 'capacitor not known to be low' = no test mode.
+SN74LV1T gates (TTL-level inputs at 5 V, 5.5 V tolerant, no clamp diode to VCC: SCLS739F §8.3.3) take the 3.3 V signals into the 5V0_SYS logic, so an unpowered 5V0_SYS cannot be back-fed from either controller's rail. Every internal 'allow' node has a 100 k pull-down: a dead gate reads 'not allowed'.
+TEST_MODE_I drives SW2b, the window-start OR and, through 1 k, the global TEST_MODE to sheet 12 (100 k pull-down there). TM_N (= NOT TEST_MODE) enables the charger gates and SW5.
+"""
+
+[[group]]
+id = "charger"
+title = "Charger gates (D-25, R-5): VTRANS_EN = CHG_SESSION AND HOLD_OK AND NOT TEST_MODE; CHARGE_EN = CHG_RUN AND HOLD_OK AND NOT TEST_MODE"
+note = """
+Two independent two-gate chains, one per enable; the charger on sheet 10 needs BOTH (eFuse supply and CHARGE pin), so one stuck-high gate in either chain still leaves HOLD_OK gating the charger through the other. CHG_SESSION and CHG_RUN: 100 k pull-downs (contract §5.5); the SN74LV1T08 input is the Ioff-type buffer on the reader's rail (R7) instead of a separate buffer on 3V3_MAIN (capture notes: departure DEP-2).
+Off-time after HOLD_OK or TEST_MODE changes: two gate delays (< 50 ns) plus the 1 k / 100 k output network: far inside the 1 ms the contract asks (§10 WP-D with WP-E). Pull-downs of VTRANS_EN and CHARGE_EN are on sheet 10.
+"""
+
+[[group]]
+id = "seq_hold"
+title = "SW5 enable = SEQ_HOLD AND NOT TEST_MODE (D-59 sequence hold; never in test mode)"
+note = """
+SEQ_HOLD from sheet 12 (BRIDGE_3V3 logic): 100 k pull-down here (contract §5.4). SW5_ON pull-down is with U906.
+"""
+
+[[group]]
+id = "window"
+title = "150 ms permit window (R-4, R-11): started by the consent chain, latched start, 50 ms absent-consent re-arm"
+note = """
+CHAIN = REQ_B AND HOLD_OK AND (PERMIT_OK OR TEST_MODE) - the logical 'SW1-SW3 all on' (capture notes DEP-3: logic, not the SW_N3 voltage, so a rail held by SW5 cannot fake or mask the start). Its rising edge clocks WSTART (SN74LVC2G74, D = 1): the start is latched, so a toggling consent cannot restart the window. WSTART charges 1.47 M / 100 nF C0G; TLV7031 compares with 0.640 x 5V0_SYS (56.2 k / 100 k): WIN_OPEN_I high while below = 138-163 ms [CALC]. Ratiometric: supply variation cancels.
+Re-arm: ANY_N = NOR(REQ_B, PERMIT_OK OR TEST_OK) high only with every consent absent. It charges 549 k / 100 nF; TLV7041 (open drain) pulls REARM_N low after 51-60 ms [CALC] and clears WSTART; any consent returning discharges the RC at once through the BAS116. Open-drain + 100 k pull-up: a dead re-arm comparator never re-arms (window stays closed after use).
+BAS116 diodes empty each RC quickly when its driver goes low (low leakage, 5 nA at 75 V: negligible against 1.47 M).
+Power-up: WSTART is undefined (SCES203Q states no power-up state); either state is safe: open until the first chain edge, or open 150 ms then closed until re-arm (capture notes §5).
+WIN_OPEN_I drives SW4 and, through 1 k, the global WIN_OPEN to sheet 12 (100 k pull-down and Ioff buffer there).
+"""
+
+[[part]]
+ref = "U901"
+group = "bridge_power"
+lib_id = "aed_logic:TPS22918DBV"
+value = "TPS22918DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TPS22918DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps22918.pdf"
+description = "SW1: main controller's shock request (SLVSD76C). QOD left open = no internal discharge (Table 4)"
+fields = { DocRef = "§B8.2 SW1" }
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    VIN        5V0_SYS            # VIN
+  2    GND        GND                # GND
+  3    ON         REQ_B              # ON, active high, VIH 1 V / VIL 0.5 V
+  4    CT         SW1_CT             # CT, rise-time capacitor
+  5    QOD        NC                 # QOD floating = disabled
+  6    VOUT       SW_N1              # VOUT
+"""
+
+[[part]]
+ref = "C901"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1nF 50 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1nF X7R 50 V 0603: U901 CT: SR = 0.55 x 1000 + 30 = 580 us/V, about 2.5 ms rise at 5 V (SLVSD76C Eq. 3, Table 2)"
+between = ["SW1_CT", "GND"]
+
+[[part]]
+ref = "R901"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: U901 ON default: off when the driver is unpowered or open (ON must not float, SLVSD76C 8.3.1)"
+between = ["REQ_B", "GND"]
+
+[[part]]
+ref = "U902"
+group = "bridge_power"
+lib_id = "aed_logic:TPS22918DBV"
+value = "TPS22918DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TPS22918DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps22918.pdf"
+description = "SW2a: supervisor's permit (SLVSD76C). QOD left open = no internal discharge (Table 4)"
+fields = { DocRef = "§B8.2 SW2a" }
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    VIN        SW_N1              # VIN
+  2    GND        GND                # GND
+  3    ON         PERMIT_OK          # ON, active high, VIH 1 V / VIL 0.5 V
+  4    CT         SW2A_CT            # CT, rise-time capacitor
+  5    QOD        NC                 # QOD floating = disabled
+  6    VOUT       SW_N2              # VOUT
+"""
+
+[[part]]
+ref = "C902"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1nF 50 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1nF X7R 50 V 0603: U902 CT: SR = 0.55 x 1000 + 30 = 580 us/V, about 2.5 ms rise at 5 V (SLVSD76C Eq. 3, Table 2)"
+between = ["SW2A_CT", "GND"]
+
+[[part]]
+ref = "R902"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: U902 ON default: off when the driver is unpowered or open (ON must not float, SLVSD76C 8.3.1)"
+between = ["PERMIT_OK", "GND"]
+
+[[part]]
+ref = "U903"
+group = "bridge_power"
+lib_id = "aed_logic:TPS22918DBV"
+value = "TPS22918DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TPS22918DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps22918.pdf"
+description = "SW2b: test permit, only in TEST_MODE (D-61) (SLVSD76C). QOD left open = no internal discharge (Table 4)"
+fields = { DocRef = "§B8.2 SW2b" }
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    VIN        SW_N1              # VIN
+  2    GND        GND                # GND
+  3    ON         TEST_MODE_I        # ON, active high, VIH 1 V / VIL 0.5 V
+  4    CT         SW2B_CT            # CT, rise-time capacitor
+  5    QOD        NC                 # QOD floating = disabled
+  6    VOUT       SW_N2              # VOUT
+"""
+
+[[part]]
+ref = "C903"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1nF 50 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1nF X7R 50 V 0603: U903 CT: SR = 0.55 x 1000 + 30 = 580 us/V, about 2.5 ms rise at 5 V (SLVSD76C Eq. 3, Table 2)"
+between = ["SW2B_CT", "GND"]
+
+[[part]]
+ref = "R903"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: U903 ON default: off when the driver is unpowered or open (ON must not float, SLVSD76C 8.3.1)"
+between = ["TEST_MODE_I", "GND"]
+
+[[part]]
+ref = "U904"
+group = "bridge_power"
+lib_id = "aed_logic:TPS22918DBV"
+value = "TPS22918DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TPS22918DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps22918.pdf"
+description = "SW3: both discharge paths proven held (SLVSD76C). QOD left open = no internal discharge (Table 4)"
+fields = { DocRef = "§B8.2 SW3" }
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    VIN        SW_N2              # VIN
+  2    GND        GND                # GND
+  3    ON         HOLD_OK            # ON, active high, VIH 1 V / VIL 0.5 V
+  4    CT         SW3_CT             # CT, rise-time capacitor
+  5    QOD        NC                 # QOD floating = disabled
+  6    VOUT       SW_N3              # VOUT
+"""
+
+[[part]]
+ref = "C904"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1nF 50 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1nF X7R 50 V 0603: U904 CT: SR = 0.55 x 1000 + 30 = 580 us/V, about 2.5 ms rise at 5 V (SLVSD76C Eq. 3, Table 2)"
+between = ["SW3_CT", "GND"]
+
+[[part]]
+ref = "R904"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: U904 ON default: off when the driver is unpowered or open (ON must not float, SLVSD76C 8.3.1)"
+between = ["HOLD_OK", "GND"]
+
+[[part]]
+ref = "U905"
+group = "bridge_power"
+lib_id = "aed_logic:TPS22918DBV"
+value = "TPS22918DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TPS22918DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps22918.pdf"
+description = "SW4: 150 ms permit window still open (SLVSD76C). QOD left open = no internal discharge (Table 4)"
+fields = { DocRef = "§B8.2 SW4" }
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    VIN        SW_N3              # VIN
+  2    GND        GND                # GND
+  3    ON         WIN_OPEN_I         # ON, active high, VIH 1 V / VIL 0.5 V
+  4    CT         SW4_CT             # CT, rise-time capacitor
+  5    QOD        NC                 # QOD floating = disabled
+  6    VOUT       BRIDGE_5V          # VOUT
+"""
+
+[[part]]
+ref = "C905"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1nF 50 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1nF X7R 50 V 0603: U905 CT: SR = 0.55 x 1000 + 30 = 580 us/V, about 2.5 ms rise at 5 V (SLVSD76C Eq. 3, Table 2)"
+between = ["SW4_CT", "GND"]
+
+[[part]]
+ref = "R905"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: U905 ON default: off when the driver is unpowered or open (ON must not float, SLVSD76C 8.3.1)"
+between = ["WIN_OPEN_I", "GND"]
+
+[[part]]
+ref = "U906"
+group = "bridge_power"
+lib_id = "aed_logic:TPS22918DBV"
+value = "TPS22918DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TPS22918DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps22918.pdf"
+description = "SW5: sequence hold (SEQ_HOLD and not TEST_MODE) (SLVSD76C). QOD left open = no internal discharge (Table 4)"
+fields = { DocRef = "§B8.2 SW5, D-59" }
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    VIN        5V0_SYS            # VIN
+  2    GND        GND                # GND
+  3    ON         SW5_ON             # ON, active high, VIH 1 V / VIL 0.5 V
+  4    CT         SW5_CT             # CT, rise-time capacitor
+  5    QOD        NC                 # QOD floating = disabled
+  6    VOUT       BRIDGE_5V          # VOUT
+"""
+
+[[part]]
+ref = "C906"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1nF 50 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1nF X7R 50 V 0603: U906 CT: SR = 0.55 x 1000 + 30 = 580 us/V, about 2.5 ms rise at 5 V (SLVSD76C Eq. 3, Table 2)"
+between = ["SW5_CT", "GND"]
+
+[[part]]
+ref = "R906"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: U906 ON default: off when the driver is unpowered or open (ON must not float, SLVSD76C 8.3.1)"
+between = ["SW5_ON", "GND"]
+
+[[part]]
+ref = "C907"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "10uF"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic X7R MLCC 10uF 16 V 0805"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "10uF X7R 16 V 0805: bulk at SW1 and SW5 inputs"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "C908"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1uF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1uF X7R 16 V 0603: SW1 VIN capacitor (SLVSD76C 6.3: CIN >= 1 uF)"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "C909"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1uF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1uF X7R 16 V 0603: SW5 VIN capacitor (SLVSD76C 6.3: CIN >= 1 uF)"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "C910"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1uF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1uF X7R 16 V 0603: SW1 output / SW2a,b input: VIN capacitor of the next switch"
+between = ["SW_N1", "GND"]
+
+[[part]]
+ref = "R907"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "10k 1 %, 100 ppm/K: bleed of SW_N1: defined low when the switch before it is off (QOD not used)"
+between = ["SW_N1", "GND"]
+
+[[part]]
+ref = "C911"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1uF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1uF X7R 16 V 0603: SW2 output / SW3 input: VIN capacitor of the next switch"
+between = ["SW_N2", "GND"]
+
+[[part]]
+ref = "R908"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "10k 1 %, 100 ppm/K: bleed of SW_N2: defined low when the switch before it is off (QOD not used)"
+between = ["SW_N2", "GND"]
+
+[[part]]
+ref = "C912"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1uF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1uF X7R 16 V 0603: SW3 output / SW4 input: VIN capacitor of the next switch"
+between = ["SW_N3", "GND"]
+
+[[part]]
+ref = "R909"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "10k 1 %, 100 ppm/K: bleed of SW_N3: defined low when the switch before it is off (QOD not used)"
+between = ["SW_N3", "GND"]
+
+[[part]]
+ref = "C913"
+group = "bridge_power"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 1uF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "1uF X7R 16 V 0603: SW4/SW5 output capacitor at the rail source"
+between = ["BRIDGE_5V", "GND"]
+
+[[part]]
+ref = "R910"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1k 1 %, 100 ppm/K: BRIDGE_5V bleed: 5 mA, 25 mW; rail falls when consent and SEQ_HOLD are gone"
+between = ["BRIDGE_5V", "GND"]
+
+[[part]]
+ref = "Q901"
+group = "bridge_power"
+lib_id = "Transistor_FET:2N7002"
+value = "2N7002"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "2N7002LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/nds7002a-d.pdf"
+description = "BRIDGE_ARMED_N open-drain driver: on while BRIDGE_5V is up (VGS(th) 1-2.5 V, ID 250 uA; NDS7002A/D)"
+fields = { DocRef = "§B8.2 readback" }
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    G          ARM_G              # gate
+  2    S          GND                # source
+  3    D          BRIDGE_ARMED_N     # drain
+"""
+
+[[part]]
+ref = "R911"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "10k 1 %, 100 ppm/K: armed-sense gate resistor"
+between = ["BRIDGE_5V", "ARM_G"]
+
+[[part]]
+ref = "R912"
+group = "bridge_power"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: armed-sense gate pull-down: gate = 0.91 x BRIDGE_5V; off with the rail off"
+between = ["ARM_G", "GND"]
+
+[[part]]
+ref = "R913"
+group = "request"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: SHOCK_REQ default resistor (contract §5.4: 09, 100 k to GND)"
+fields = { DocRef = "contract §5.4" }
+between = ["SHOCK_REQ", "GND"]
+
+[[part]]
+ref = "U907"
+group = "request"
+lib_id = "74xGxx:74LVC1G17"
+value = "SN74LVC1G17DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G17DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g17.pdf"
+description = "REQ_B: Schmitt buffer of SHOCK_REQ on 3V3_MAIN, Ioff (datasheet SCES351Y)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    NC         NC                 # NC
+  2    ~          SHOCK_REQ          # A
+  3    GND        GND                # GND
+  4    ~          REQ_B              # Y
+  5    VCC        3V3_MAIN           # VCC
+"""
+
+[[part]]
+ref = "C914"
+group = "request"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U907"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "R914"
+group = "hold_drive"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: HOLD_M_CLK default resistor (contract §5.4: 09, 100 k to GND)"
+fields = { DocRef = "contract §5.4" }
+between = ["HOLD_M_CLK", "GND"]
+
+[[part]]
+ref = "R915"
+group = "hold_drive"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "4.7k 1 %, 100 ppm/K: HOLD_M_CLK low-pass, pole 1"
+between = ["HOLD_M_CLK", "HA_F1"]
+
+[[part]]
+ref = "C915"
+group = "hold_drive"
+lib_id = "Device:C"
+value = "3.9nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "3.9nF C0G 50 V 0603: HOLD_M_CLK low-pass, pole 1 (tau 18.3 us)"
+between = ["HA_F1", "GND"]
+
+[[part]]
+ref = "R916"
+group = "hold_drive"
+lib_id = "Device:R"
+value = "47k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "47k 1 %, 100 ppm/K: HOLD_M_CLK low-pass, pole 2"
+between = ["HA_F1", "HA_F2"]
+
+[[part]]
+ref = "C916"
+group = "hold_drive"
+lib_id = "Device:C"
+value = "390pF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "390pF C0G 50 V 0603: HOLD_M_CLK low-pass, pole 2 (tau 18.3 us)"
+between = ["HA_F2", "GND"]
+
+[[part]]
+ref = "R917"
+group = "hold_drive"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1M 1 %, 100 ppm/K: HOLD_M_CLK Schmitt input pull-down: open filter reads static low"
+between = ["HA_F2", "GND"]
+
+[[part]]
+ref = "U908"
+group = "hold_drive"
+lib_id = "74xGxx:74LVC1G17"
+value = "SN74LVC1G17DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G17DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g17.pdf"
+description = "HOLD_A_DRV: Schmitt buffer on 3V3_MAIN (Ioff) driving the hold pump on sheet 11 (datasheet SCES351Y)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    NC         NC                 # NC
+  2    ~          HA_F2              # A
+  3    GND        GND                # GND
+  4    ~          HOLD_A_DRV         # Y
+  5    VCC        3V3_MAIN           # VCC
+"""
+
+[[part]]
+ref = "C917"
+group = "hold_drive"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U908"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "R918"
+group = "hold_drive"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: HOLD_S_CLK default resistor (contract §5.4: 09, 100 k to GND)"
+fields = { DocRef = "contract §5.4" }
+between = ["HOLD_S_CLK", "GND"]
+
+[[part]]
+ref = "R919"
+group = "hold_drive"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "4.7k 1 %, 100 ppm/K: HOLD_S_CLK low-pass, pole 1"
+between = ["HOLD_S_CLK", "HB_F1"]
+
+[[part]]
+ref = "C918"
+group = "hold_drive"
+lib_id = "Device:C"
+value = "3.9nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "3.9nF C0G 50 V 0603: HOLD_S_CLK low-pass, pole 1 (tau 18.3 us)"
+between = ["HB_F1", "GND"]
+
+[[part]]
+ref = "R920"
+group = "hold_drive"
+lib_id = "Device:R"
+value = "47k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "47k 1 %, 100 ppm/K: HOLD_S_CLK low-pass, pole 2"
+between = ["HB_F1", "HB_F2"]
+
+[[part]]
+ref = "C919"
+group = "hold_drive"
+lib_id = "Device:C"
+value = "390pF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "390pF C0G 50 V 0603: HOLD_S_CLK low-pass, pole 2 (tau 18.3 us)"
+between = ["HB_F2", "GND"]
+
+[[part]]
+ref = "R921"
+group = "hold_drive"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1M 1 %, 100 ppm/K: HOLD_S_CLK Schmitt input pull-down: open filter reads static low"
+between = ["HB_F2", "GND"]
+
+[[part]]
+ref = "U909"
+group = "hold_drive"
+lib_id = "74xGxx:74LVC1G17"
+value = "SN74LVC1G17DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G17DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g17.pdf"
+description = "HOLD_B_DRV: Schmitt buffer on 3V3_SUP (Ioff) driving the hold pump on sheet 11 (datasheet SCES351Y)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    NC         NC                 # NC
+  2    ~          HB_F2              # A
+  3    GND        GND                # GND
+  4    ~          HOLD_B_DRV         # Y
+  5    VCC        3V3_SUP            # VCC
+"""
+
+[[part]]
+ref = "C920"
+group = "hold_drive"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U909"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "R922"
+group = "det_pd"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: PERMIT_CLK default resistor (contract §5.4: 09, 100 k to GND)"
+fields = { DocRef = "contract §5.4 PERMIT_CLK" }
+between = ["PERMIT_CLK", "GND"]
+
+[[part]]
+ref = "R923"
+group = "det_pd"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "4.7k 1 %, 100 ppm/K: low-pass, pole 1"
+between = ["PERMIT_CLK", "PD_F1"]
+
+[[part]]
+ref = "C921"
+group = "det_pd"
+lib_id = "Device:C"
+value = "3.9nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "3.9nF C0G 50 V 0603: low-pass, pole 1 (tau 18.3 us)"
+between = ["PD_F1", "GND"]
+
+[[part]]
+ref = "R924"
+group = "det_pd"
+lib_id = "Device:R"
+value = "47k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "47k 1 %, 100 ppm/K: low-pass, pole 2"
+between = ["PD_F1", "PD_F2"]
+
+[[part]]
+ref = "C922"
+group = "det_pd"
+lib_id = "Device:C"
+value = "390pF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "390pF C0G 50 V 0603: low-pass, pole 2 (tau 18.3 us)"
+between = ["PD_F2", "GND"]
+
+[[part]]
+ref = "R925"
+group = "det_pd"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1M 1 %, 100 ppm/K: Schmitt input pull-down"
+between = ["PD_F2", "GND"]
+
+[[part]]
+ref = "U910"
+group = "det_pd"
+lib_id = "74xGxx:74LVC2G14"
+value = "SN74LVC2G14DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC2G14DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc2g14.pdf"
+description = "PERMIT_CLK squarer: 1Y = inverted, 2Y = re-inverted; two pump phases (datasheet SCES200P)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          PD_F2              # 1A
+  2    GND        GND                # GND
+  3    ~          PD_PH1             # 2A
+  4    ~          PD_PH2             # 2Y
+  5    VCC        3V3_SUP            # VCC
+  6    ~          PD_PH1             # 1Y
+"""
+
+[[part]]
+ref = "C923"
+group = "det_pd"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U910"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "R926"
+group = "det_pd"
+lib_id = "Device:R"
+value = "470"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "470 1 %, 100 ppm/K: pump 1 series resistor: limits the edge current to < 8 mA (LVC output)"
+between = ["PD_PH1", "PD_P1A"]
+
+[[part]]
+ref = "C924"
+group = "det_pd"
+lib_id = "Device:C"
+value = "220nF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "220nF C0G 50 V 1210: pump 1 coupling capacitor, first of two in series"
+between = ["PD_P1A", "PD_P1B"]
+
+[[part]]
+ref = "C925"
+group = "det_pd"
+lib_id = "Device:C"
+value = "220nF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "220nF C0G 50 V 1210: pump 1 coupling capacitor, second of two in series"
+between = ["PD_P1B", "PD_X1"]
+
+[[part]]
+ref = "D901"
+group = "det_pd"
+lib_id = "aed_logic:BAV99LT1G"
+value = "BAV99LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV99LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bav99lt1-d.pdf"
+description = "pump 1 diodes: GND -> pump node -> hold node (BAV99LT1/D: IR <= 1 uA at 100 V, 25 C)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          GND                # anode D1
+  3    CA         PD_X1              # D1 cathode / D2 anode
+  2    K          PD_H               # cathode D2
+"""
+
+[[part]]
+ref = "R927"
+group = "det_pd"
+lib_id = "Device:R"
+value = "470"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "470 1 %, 100 ppm/K: pump 2 series resistor: limits the edge current to < 8 mA (LVC output)"
+between = ["PD_PH2", "PD_P2A"]
+
+[[part]]
+ref = "C926"
+group = "det_pd"
+lib_id = "Device:C"
+value = "220nF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "220nF C0G 50 V 1210: pump 2 coupling capacitor, first of two in series"
+between = ["PD_P2A", "PD_P2B"]
+
+[[part]]
+ref = "C927"
+group = "det_pd"
+lib_id = "Device:C"
+value = "220nF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "220nF C0G 50 V 1210: pump 2 coupling capacitor, second of two in series"
+between = ["PD_P2B", "PD_X2"]
+
+[[part]]
+ref = "D902"
+group = "det_pd"
+lib_id = "aed_logic:BAV99LT1G"
+value = "BAV99LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV99LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bav99lt1-d.pdf"
+description = "pump 2 diodes: GND -> pump node -> hold node (BAV99LT1/D: IR <= 1 uA at 100 V, 25 C)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          GND                # anode D1
+  3    CA         PD_X2              # D1 cathode / D2 anode
+  2    K          PD_H               # cathode D2
+"""
+
+[[part]]
+ref = "C928"
+group = "det_pd"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "100nF C0G 50 V 1206: hold capacitor"
+between = ["PD_H", "GND"]
+
+[[part]]
+ref = "R928"
+group = "det_pd"
+lib_id = "Device:R"
+value = "71.5k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "71.5k 0.1 %, 25 ppm/K thin film: hold bleed, half 1 of 35.75 k"
+between = ["PD_H", "GND"]
+
+[[part]]
+ref = "R929"
+group = "det_pd"
+lib_id = "Device:R"
+value = "71.5k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "71.5k 0.1 %, 25 ppm/K thin film: hold bleed, half 2 of 35.75 k"
+between = ["PD_H", "GND"]
+
+[[part]]
+ref = "R930"
+group = "det_pd"
+lib_id = "Device:R"
+value = "464k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "464k 0.1 %, 25 ppm/K thin film: threshold top, half 1 (k = 0.301)"
+between = ["3V3_SUP", "PD_TH"]
+
+[[part]]
+ref = "R931"
+group = "det_pd"
+lib_id = "Device:R"
+value = "464k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "464k 0.1 %, 25 ppm/K thin film: threshold top, half 2 (k = 0.301)"
+between = ["3V3_SUP", "PD_TH"]
+
+[[part]]
+ref = "R932"
+group = "det_pd"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "100k 0.1 %, 25 ppm/K thin film: threshold bottom"
+between = ["PD_TH", "GND"]
+
+[[part]]
+ref = "U911"
+group = "det_pd"
+lib_id = "Comparator:TLV7031DBV"
+value = "TLV7031DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TLV7031DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv7031.pdf"
+description = "PERMIT_OK comparator, push-pull, output held low below 1.6 V supply (datasheet SLVSE13J)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          PERMIT_OK          # OUT
+  2    V-         GND                # V-
+  3    +          PD_H               # IN+
+  4    -          PD_TH              # IN-
+  5    V+         3V3_SUP            # V+
+"""
+
+[[part]]
+ref = "C929"
+group = "det_pd"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U911"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "R933"
+group = "det_td"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: TEST_PERMIT_CLK default resistor (contract §5.4: 09, 100 k to GND)"
+fields = { DocRef = "contract §5.4 TEST_PERMIT_CLK" }
+between = ["TEST_PERMIT_CLK", "GND"]
+
+[[part]]
+ref = "R934"
+group = "det_td"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "4.7k 1 %, 100 ppm/K: low-pass, pole 1"
+between = ["TEST_PERMIT_CLK", "TD_F1"]
+
+[[part]]
+ref = "C930"
+group = "det_td"
+lib_id = "Device:C"
+value = "3.9nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "3.9nF C0G 50 V 0603: low-pass, pole 1 (tau 18.3 us)"
+between = ["TD_F1", "GND"]
+
+[[part]]
+ref = "R935"
+group = "det_td"
+lib_id = "Device:R"
+value = "47k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "47k 1 %, 100 ppm/K: low-pass, pole 2"
+between = ["TD_F1", "TD_F2"]
+
+[[part]]
+ref = "C931"
+group = "det_td"
+lib_id = "Device:C"
+value = "390pF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "390pF C0G 50 V 0603: low-pass, pole 2 (tau 18.3 us)"
+between = ["TD_F2", "GND"]
+
+[[part]]
+ref = "R936"
+group = "det_td"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1M 1 %, 100 ppm/K: Schmitt input pull-down"
+between = ["TD_F2", "GND"]
+
+[[part]]
+ref = "U912"
+group = "det_td"
+lib_id = "74xGxx:74LVC2G14"
+value = "SN74LVC2G14DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC2G14DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc2g14.pdf"
+description = "TEST_PERMIT_CLK squarer: 1Y = inverted, 2Y = re-inverted; two pump phases (datasheet SCES200P)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          TD_F2              # 1A
+  2    GND        GND                # GND
+  3    ~          TD_PH1             # 2A
+  4    ~          TD_PH2             # 2Y
+  5    VCC        3V3_SUP            # VCC
+  6    ~          TD_PH1             # 1Y
+"""
+
+[[part]]
+ref = "C932"
+group = "det_td"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U912"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "R937"
+group = "det_td"
+lib_id = "Device:R"
+value = "470"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "470 1 %, 100 ppm/K: pump 1 series resistor: limits the edge current to < 8 mA (LVC output)"
+between = ["TD_PH1", "TD_P1A"]
+
+[[part]]
+ref = "C933"
+group = "det_td"
+lib_id = "Device:C"
+value = "220nF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "220nF C0G 50 V 1210: pump 1 coupling capacitor, first of two in series"
+between = ["TD_P1A", "TD_P1B"]
+
+[[part]]
+ref = "C934"
+group = "det_td"
+lib_id = "Device:C"
+value = "220nF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "220nF C0G 50 V 1210: pump 1 coupling capacitor, second of two in series"
+between = ["TD_P1B", "TD_X1"]
+
+[[part]]
+ref = "D903"
+group = "det_td"
+lib_id = "aed_logic:BAV99LT1G"
+value = "BAV99LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV99LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bav99lt1-d.pdf"
+description = "pump 1 diodes: GND -> pump node -> hold node (BAV99LT1/D: IR <= 1 uA at 100 V, 25 C)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          GND                # anode D1
+  3    CA         TD_X1              # D1 cathode / D2 anode
+  2    K          TD_H               # cathode D2
+"""
+
+[[part]]
+ref = "R938"
+group = "det_td"
+lib_id = "Device:R"
+value = "470"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "470 1 %, 100 ppm/K: pump 2 series resistor: limits the edge current to < 8 mA (LVC output)"
+between = ["TD_PH2", "TD_P2A"]
+
+[[part]]
+ref = "C935"
+group = "det_td"
+lib_id = "Device:C"
+value = "220nF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "220nF C0G 50 V 1210: pump 2 coupling capacitor, first of two in series"
+between = ["TD_P2A", "TD_P2B"]
+
+[[part]]
+ref = "C936"
+group = "det_td"
+lib_id = "Device:C"
+value = "220nF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "220nF C0G 50 V 1210: pump 2 coupling capacitor, second of two in series"
+between = ["TD_P2B", "TD_X2"]
+
+[[part]]
+ref = "D904"
+group = "det_td"
+lib_id = "aed_logic:BAV99LT1G"
+value = "BAV99LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV99LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bav99lt1-d.pdf"
+description = "pump 2 diodes: GND -> pump node -> hold node (BAV99LT1/D: IR <= 1 uA at 100 V, 25 C)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          GND                # anode D1
+  3    CA         TD_X2              # D1 cathode / D2 anode
+  2    K          TD_H               # cathode D2
+"""
+
+[[part]]
+ref = "C937"
+group = "det_td"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "100nF C0G 50 V 1206: hold capacitor"
+between = ["TD_H", "GND"]
+
+[[part]]
+ref = "R939"
+group = "det_td"
+lib_id = "Device:R"
+value = "71.5k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "71.5k 0.1 %, 25 ppm/K thin film: hold bleed, half 1 of 35.75 k"
+between = ["TD_H", "GND"]
+
+[[part]]
+ref = "R940"
+group = "det_td"
+lib_id = "Device:R"
+value = "71.5k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "71.5k 0.1 %, 25 ppm/K thin film: hold bleed, half 2 of 35.75 k"
+between = ["TD_H", "GND"]
+
+[[part]]
+ref = "R941"
+group = "det_td"
+lib_id = "Device:R"
+value = "464k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "464k 0.1 %, 25 ppm/K thin film: threshold top, half 1 (k = 0.301)"
+between = ["3V3_SUP", "TD_TH"]
+
+[[part]]
+ref = "R942"
+group = "det_td"
+lib_id = "Device:R"
+value = "464k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "464k 0.1 %, 25 ppm/K thin film: threshold top, half 2 (k = 0.301)"
+between = ["3V3_SUP", "TD_TH"]
+
+[[part]]
+ref = "R943"
+group = "det_td"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "100k 0.1 %, 25 ppm/K thin film: threshold bottom"
+between = ["TD_TH", "GND"]
+
+[[part]]
+ref = "U913"
+group = "det_td"
+lib_id = "Comparator:TLV7031DBV"
+value = "TLV7031DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TLV7031DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv7031.pdf"
+description = "TEST_OK comparator, push-pull, output held low below 1.6 V supply (datasheet SLVSE13J)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          TEST_OK            # OUT
+  2    V-         GND                # V-
+  3    +          TD_H               # IN+
+  4    -          TD_TH              # IN-
+  5    V+         3V3_SUP            # V+
+"""
+
+[[part]]
+ref = "C938"
+group = "det_td"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U913"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "R944"
+group = "det_td"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: TEST_OK default: no test permit when the detector is unpowered"
+between = ["TEST_OK", "GND"]
+
+[[part]]
+ref = "R945"
+group = "held"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "10k 1 %, 100 ppm/K: HOLD_A_HELD_N default (contract §5.4: 09, 10 k to 5V0_SYS) = not held"
+fields = { DocRef = "contract §5.4" }
+between = ["HOLD_A_HELD_N", "5V0_SYS"]
+
+[[part]]
+ref = "R946"
+group = "held"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "10k 1 %, 100 ppm/K: HOLD_B_HELD_N default (contract §5.4: 09, 10 k to 5V0_SYS) = not held"
+fields = { DocRef = "contract §5.4" }
+between = ["HOLD_B_HELD_N", "5V0_SYS"]
+
+[[part]]
+ref = "R947"
+group = "held"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1M 1 %, 100 ppm/K: backup pull-up: if the 10 k opens, a dark opto still reads 'not held' (5 uA; capture notes DEP-9)"
+between = ["HOLD_A_HELD_N", "5V0_SYS"]
+
+[[part]]
+ref = "R948"
+group = "held"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1M 1 %, 100 ppm/K: backup pull-up: if the 10 k opens, a dark opto still reads 'not held' (5 uA; capture notes DEP-9)"
+between = ["HOLD_B_HELD_N", "5V0_SYS"]
+
+[[part]]
+ref = "U914"
+group = "held"
+lib_id = "74xGxx:74LVC1G02"
+value = "SN74LVC1G02DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G02DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g02.pdf"
+description = "HOLD_OK = both held (NOR of the active-low inputs) (datasheet SCES213Y)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          HOLD_A_HELD_N      # A
+  2    ~          HOLD_B_HELD_N      # B
+  3    GND        GND                # GND
+  4    ~          HOLD_OK            # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C939"
+group = "held"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U914"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "U915"
+group = "held"
+lib_id = "74xGxx:74LVC2G07"
+value = "SN74LVC2G07DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC2G07DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc2g07.pdf"
+description = "HOLD_RB_A_N, HOLD_RB_B_N open-drain readbacks (F-7) (datasheet SCES308M)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          HOLD_A_HELD_N      # 1A
+  2    GND        GND                # GND
+  3    ~          HOLD_B_HELD_N      # 2A
+  4    ~          HOLD_RB_B_N        # 2Y
+  5    VCC        5V0_SYS            # VCC
+  6    ~          HOLD_RB_A_N        # 1Y
+"""
+
+[[part]]
+ref = "C940"
+group = "held"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U915"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R949"
+group = "test_mode"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: LOWV_OK default resistor (contract §5.4: 09, 100 k to GND)"
+fields = { DocRef = "contract §5.4" }
+between = ["LOWV_OK", "GND"]
+
+[[part]]
+ref = "U916"
+group = "test_mode"
+lib_id = "aed_logic:SN74LV1T08DBV"
+value = "SN74LV1T08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t08.pdf"
+description = "TM_A = TEST_OK AND LOWV_OK"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          TEST_OK            # A
+  2    B          LOWV_OK            # B
+  3    GND        GND                # GND
+  4    Y          TM_A               # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C941"
+group = "test_mode"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U916"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R950"
+group = "test_mode"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: TM_A default low"
+between = ["TM_A", "GND"]
+
+[[part]]
+ref = "U917"
+group = "test_mode"
+lib_id = "aed_logic:SN74LV1T04DBV"
+value = "SN74LV1T04DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T04DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t04.pdf"
+description = "PERMIT_N = NOT PERMIT_OK"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    NC         NC                 # NC
+  2    A          PERMIT_OK          # A
+  3    GND        GND                # GND
+  4    Y          PERMIT_N           # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C942"
+group = "test_mode"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U917"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R951"
+group = "test_mode"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: PERMIT_N default low (no test mode)"
+between = ["PERMIT_N", "GND"]
+
+[[part]]
+ref = "U918"
+group = "test_mode"
+lib_id = "74xGxx:74LVC1G08"
+value = "SN74LVC1G08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g08.pdf"
+description = "TEST_MODE_I = TM_A AND NOT PERMIT_OK (datasheet SCES217AA)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          TM_A               # A
+  2    ~          PERMIT_N           # B
+  3    GND        GND                # GND
+  4    ~          TEST_MODE_I        # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C943"
+group = "test_mode"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U918"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "U919"
+group = "test_mode"
+lib_id = "aed_logic:SN74LV1T04DBV"
+value = "SN74LV1T04DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T04DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t04.pdf"
+description = "TM_N = NOT TEST_MODE"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    NC         NC                 # NC
+  2    A          TEST_MODE_I        # A
+  3    GND        GND                # GND
+  4    Y          TM_N               # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C944"
+group = "test_mode"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U919"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R952"
+group = "test_mode"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: TM_N default low: a dead inverter blocks charging and SW5"
+between = ["TM_N", "GND"]
+
+[[part]]
+ref = "R953"
+group = "test_mode"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1k 1 %, 100 ppm/K: series resistor of the board-crossing TEST_MODE output (pull-down on 12)"
+between = ["TEST_MODE_I", "TEST_MODE"]
+
+[[part]]
+ref = "R954"
+group = "charger"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: CHG_SESSION default resistor (contract §5.5: 09, 100 k to GND)"
+fields = { DocRef = "contract §5.5" }
+between = ["CHG_SESSION", "GND"]
+
+[[part]]
+ref = "U920"
+group = "charger"
+lib_id = "aed_logic:SN74LV1T08DBV"
+value = "SN74LV1T08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t08.pdf"
+description = "VS_A = CHG_SESSION AND HOLD_OK"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          CHG_SESSION        # A
+  2    B          HOLD_OK            # B
+  3    GND        GND                # GND
+  4    Y          VS_A               # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C945"
+group = "charger"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U920"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R955"
+group = "charger"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: VS_A default low"
+between = ["VS_A", "GND"]
+
+[[part]]
+ref = "U921"
+group = "charger"
+lib_id = "aed_logic:SN74LV1T08DBV"
+value = "SN74LV1T08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t08.pdf"
+description = "VTRANS_I = VS_A AND NOT TEST_MODE"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          VS_A               # A
+  2    B          TM_N               # B
+  3    GND        GND                # GND
+  4    Y          VTRANS_I           # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C946"
+group = "charger"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U921"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R956"
+group = "charger"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1k 1 %, 100 ppm/K: series resistor of the board-crossing VTRANS_EN (pull-down on 10)"
+between = ["VTRANS_I", "VTRANS_EN"]
+
+[[part]]
+ref = "R957"
+group = "charger"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: CHG_RUN default resistor (contract §5.5: 09, 100 k to GND)"
+fields = { DocRef = "contract §5.5" }
+between = ["CHG_RUN", "GND"]
+
+[[part]]
+ref = "U922"
+group = "charger"
+lib_id = "aed_logic:SN74LV1T08DBV"
+value = "SN74LV1T08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t08.pdf"
+description = "CR_A = CHG_RUN AND HOLD_OK"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          CHG_RUN            # A
+  2    B          HOLD_OK            # B
+  3    GND        GND                # GND
+  4    Y          CR_A               # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C947"
+group = "charger"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U922"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R958"
+group = "charger"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: CR_A default low"
+between = ["CR_A", "GND"]
+
+[[part]]
+ref = "U923"
+group = "charger"
+lib_id = "aed_logic:SN74LV1T08DBV"
+value = "SN74LV1T08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t08.pdf"
+description = "CHARGE_I = CR_A AND NOT TEST_MODE"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          CR_A               # A
+  2    B          TM_N               # B
+  3    GND        GND                # GND
+  4    Y          CHARGE_I           # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C948"
+group = "charger"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U923"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R959"
+group = "charger"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1k 1 %, 100 ppm/K: series resistor of the board-crossing CHARGE_EN (pull-down on 10)"
+between = ["CHARGE_I", "CHARGE_EN"]
+
+[[part]]
+ref = "R960"
+group = "seq_hold"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: SEQ_HOLD default resistor (contract §5.4: 09, 100 k to GND)"
+fields = { DocRef = "contract §5.4" }
+between = ["SEQ_HOLD", "GND"]
+
+[[part]]
+ref = "U924"
+group = "seq_hold"
+lib_id = "aed_logic:SN74LV1T08DBV"
+value = "SN74LV1T08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t08.pdf"
+description = "SW5_ON = SEQ_HOLD AND NOT TEST_MODE"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          SEQ_HOLD           # A
+  2    B          TM_N               # B
+  3    GND        GND                # GND
+  4    Y          SW5_ON             # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C949"
+group = "seq_hold"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U924"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "U925"
+group = "window"
+lib_id = "aed_logic:SN74LV1T08DBV"
+value = "SN74LV1T08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t08.pdf"
+description = "CH_A = REQ_B AND HOLD_OK"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          REQ_B              # A
+  2    B          HOLD_OK            # B
+  3    GND        GND                # GND
+  4    Y          CH_A               # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C950"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U925"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "U926"
+group = "window"
+lib_id = "aed_logic:SN74LV1T32DBV"
+value = "SN74LV1T32DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T32DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t32.pdf"
+description = "CH_B = PERMIT_OK OR TEST_MODE"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          PERMIT_OK          # A
+  2    B          TEST_MODE_I        # B
+  3    GND        GND                # GND
+  4    Y          CH_B               # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C951"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U926"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "U927"
+group = "window"
+lib_id = "74xGxx:74LVC1G08"
+value = "SN74LVC1G08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g08.pdf"
+description = "CHAIN = consent chain SW1-SW3 all enabled (datasheet SCES217AA)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          CH_A               # A
+  2    ~          CH_B               # B
+  3    GND        GND                # GND
+  4    ~          CHAIN              # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C952"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U927"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R961"
+group = "window"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: CHAIN default low (no window start from a dead gate)"
+between = ["CHAIN", "GND"]
+
+[[part]]
+ref = "U928"
+group = "window"
+lib_id = "74xGxx:74LVC2G74"
+value = "SN74LVC2G74DCTR"
+footprint = "Package_SO:SSOP-8_2.95x2.8mm_P0.65mm"
+mpn = "SN74LVC2G74DCTR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc2g74.pdf"
+description = "WSTART latch: set by the first CHAIN edge, cleared only by re-arm (datasheet SCES203Q)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    C          CHAIN              # CLK
+  2    D          5V0_SYS            # D
+  3    ~{Q}       NC                 # Q_N
+  4    GND        GND                # GND
+  5    Q          WSTART             # Q
+  6    ~{CLR}     REARM_N            # CLR_N
+  7    ~{PRE}     5V0_SYS            # PRE_N
+  8    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C953"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U928"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R962"
+group = "window"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: WSTART pull-up: a dead latch reads 'started' (window closes)"
+between = ["WSTART", "5V0_SYS"]
+
+[[part]]
+ref = "R963"
+group = "window"
+lib_id = "Device:R"
+value = "1.47M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "1.47M 0.1 %, 25 ppm/K thin film: window timing resistor (tau 147 ms)"
+between = ["WSTART", "W_RC"]
+
+[[part]]
+ref = "D905"
+group = "window"
+lib_id = "aed_logic:BAS116LT1G"
+value = "BAS116LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAS116LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bas116lt1-d.pdf"
+description = "low-leakage diode: empties the window capacitor when WSTART is cleared"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          W_RC               # anode
+  2    NC         NC                 # not connected (style 8)
+  3    K          WSTART             # cathode
+"""
+
+[[part]]
+ref = "C954"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "100nF C0G 50 V 1206: window timing capacitor"
+between = ["W_RC", "GND"]
+
+[[part]]
+ref = "R964"
+group = "window"
+lib_id = "Device:R"
+value = "56.2k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "56.2k 0.1 %, 25 ppm/K thin film: window threshold top (k = 0.640)"
+between = ["5V0_SYS", "W_TH"]
+
+[[part]]
+ref = "R965"
+group = "window"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "100k 0.1 %, 25 ppm/K thin film: window threshold bottom"
+between = ["W_TH", "GND"]
+
+[[part]]
+ref = "U929"
+group = "window"
+lib_id = "Comparator:TLV7031DBV"
+value = "TLV7031DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TLV7031DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv7031.pdf"
+description = "WIN_OPEN_I: high while the window has not expired (datasheet SLVSE13J)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          WIN_OPEN_I         # OUT
+  2    V-         GND                # V-
+  3    +          W_TH               # IN+
+  4    -          W_RC               # IN-
+  5    V+         5V0_SYS            # V+
+"""
+
+[[part]]
+ref = "C955"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U929"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R966"
+group = "window"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1k 1 %, 100 ppm/K: series resistor of the board-crossing WIN_OPEN output (pull-down on 12)"
+between = ["WIN_OPEN_I", "WIN_OPEN"]
+
+[[part]]
+ref = "U930"
+group = "window"
+lib_id = "aed_logic:SN74LV1T32DBV"
+value = "SN74LV1T32DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T32DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t32.pdf"
+description = "PERM_ANY = PERMIT_OK OR TEST_OK"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          PERMIT_OK          # A
+  2    B          TEST_OK            # B
+  3    GND        GND                # GND
+  4    Y          PERM_ANY           # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C956"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U930"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R967"
+group = "window"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: PERM_ANY pull-up: a dead gate reads 'consent present' (no re-arm)"
+between = ["PERM_ANY", "5V0_SYS"]
+
+[[part]]
+ref = "U931"
+group = "window"
+lib_id = "aed_logic:SN74LV1T02DBV"
+value = "SN74LV1T02DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T02DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t02.pdf"
+description = "ANY_N = no consent at all"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          REQ_B              # A
+  2    B          PERM_ANY           # B
+  3    GND        GND                # GND
+  4    Y          ANY_N              # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C957"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U931"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R968"
+group = "window"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: ANY_N pull-down: a dead gate never re-arms"
+between = ["ANY_N", "GND"]
+
+[[part]]
+ref = "R969"
+group = "window"
+lib_id = "Device:R"
+value = "549k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "549k 0.1 %, 25 ppm/K thin film: re-arm timing resistor (tau 54.9 ms)"
+between = ["ANY_N", "RA_RC"]
+
+[[part]]
+ref = "D906"
+group = "window"
+lib_id = "aed_logic:BAS116LT1G"
+value = "BAS116LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAS116LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bas116lt1-d.pdf"
+description = "low-leakage diode: empties the re-arm capacitor at once when any consent returns"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          RA_RC              # anode
+  2    NC         NC                 # not connected (style 8)
+  3    K          ANY_N              # cathode
+"""
+
+[[part]]
+ref = "C958"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "100nF C0G 50 V 1206: re-arm timing capacitor"
+between = ["RA_RC", "GND"]
+
+[[part]]
+ref = "R970"
+group = "window"
+lib_id = "Device:R"
+value = "56.2k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "56.2k 0.1 %, 25 ppm/K thin film: re-arm threshold top (k = 0.640)"
+between = ["5V0_SYS", "RA_TH"]
+
+[[part]]
+ref = "R971"
+group = "window"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "100k 0.1 %, 25 ppm/K thin film: re-arm threshold bottom"
+between = ["RA_TH", "GND"]
+
+[[part]]
+ref = "U932"
+group = "window"
+lib_id = "Comparator:TLV7041DBV"
+value = "TLV7041DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TLV7041DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv7041.pdf"
+description = "REARM_N: open drain, low after consent absent >= 51 ms (datasheet SLVSE13J)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          REARM_N            # OUT
+  2    V-         GND                # V-
+  3    +          RA_TH              # IN+
+  4    -          RA_RC              # IN-
+  5    V+         5V0_SYS            # V+
+"""
+
+[[part]]
+ref = "C959"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U932"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R972"
+group = "window"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: REARM_N pull-up = not re-armed"
+between = ["REARM_N", "5V0_SYS"]

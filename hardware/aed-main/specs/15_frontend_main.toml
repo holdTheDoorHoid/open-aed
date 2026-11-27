@@ -1,0 +1,717 @@
+# 15_frontend_main — PATIENT: main heart-signal (ECG, channel 2) and pad-impedance (respiration channel 1, 64 kHz)
+# front end, ADS1292R, with defibrillation protection on every tap from PT_FE_A / PT_FE_B.
+# NOT FOR CONSTRUCTION — unreviewed design. Source: docs/HARDWARE_DESIGN.md §B3.1-B3.4, §B3.7; contract.md issue 2
+# (§5.7, §5.8, §8, §10). Capture notes, arithmetic and failure table: hardware/aed-main/capture-notes/WP-H.md.
+# References 1501-1599.
+
+[sheet]
+name = "15_frontend_main"
+title = "PATIENT: main ECG + pad-impedance front end ADS1292R (64 kHz respiration carrier) with defibrillation protection"
+source = "docs/HARDWARE_DESIGN.md §B3; hardware/aed-main/contract.md §5.8, §8, §10; capture notes WP-H"
+date = "2026-11-27"
+comments = ["Every tap: patient side = defibrillator-rated DPCR resistor (+ 2 x 3 kV C0G on drive taps) -> TVS to GND -> inner resistor -> chip pin.",
+            "Excitation is limited by the ADS1292R itself (100 uA max): ~80 uA here, NOT the 0.34 mA the design assumed (notes)."]
+
+[nets]
+power = ["GND", "3V3_MAIN"]
+global = [
+  "PT_FE_A", "PT_FE_B",                 # from 14 (relay rest contacts)
+  "AFE_SCLK", "AFE_MOSI", "AFE_CS_N", "AFE_START", "AFE_RESET_N",   # 04 -> 15
+  "AFE_MISO", "AFE_DRDY_N",             # 15 -> 04
+]
+flag_nodes = ["AVDD_AFE"]   # analog supply fed from 3V3_MAIN through ferrite FB1501
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "/15_frontend_main/"
+until_sheet = "03_power_rails"
+reason = "3V3_MAIN is made on 03_power_rails and GND on 01_power_battery (WP-A), placeholders in this worktree; no package flags another package's rail (contract §4)."
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "AFE_SCLK|AFE_MOSI|AFE_CS_N|AFE_START|AFE_RESET_N|U1501 Pin (14|15|16|18|19|20)"
+until_sheet = "04_main_mcu"
+reason = "SPI, START and PWDN/RESET are driven by the main controller on 04_main_mcu (WP-B, placeholder here); this sheet's 100 k default resistors (contract §5.8) define CS high, START low, RESET low meanwhile."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "AFE_"
+reason = "Other end on 04_main_mcu (WP-B, placeholder in this worktree). Disappears at the merge."
+
+
+# ====================================================================== groups
+[[group]]
+id = "drive"
+title = "Drive taps (respiration excitation RESP_MODP -> pad A, RESP_MODN -> pad B): 2 x 4.7 nF 3 kV C0G + 2 x 24 k DPCR in parallel + TVS + 2.0 k"
+note = """
+Excitation: the ADS1292R modulator is a square wave of amplitude VREFP (2.42 V) with a datasheet MAXIMUM of 100 uA (SBAS502C EC p.8); current = 2.42 V / loop impedance. Loop = 2 x (12 k + 2.0 k) + 2 x 1.06 k (2.35 nF at 64 kHz) + pads <= 0.25 k = 30.4 k -> ~80 uA [CALC]. The design's '1 k drive resistor, 0.34 mA' is impossible with this chip (contract issue).
+Why DPCR 24 k x 2 in parallel instead of the contract's 1 k pulse resistor: an external 5 kV defibrillator pulse puts up to ~5 kV across this resistor before the 2.35 nF charges (tau = 12 k x 2.35 nF = 28 us); no 1 k part found is rated above ~1.75 kV (Vishay CRCW2512-HP Umax), while TT DPCR is tested with 100 pulses of 5 kV peak (IEC 60601-2-27). DPCR's range starts at 20 k, so two 24 k (E24) in parallel give 12 k. Each sees <= 5 kV, ~15 mJ per external pulse (1/2 C V^2 split) [CALC].
+Capacitors (two in series per pad, so one shorted capacitor still blocks DC): C0G 4.7 nF 3 kV exists only in 3640 (Knowles AEC-Q200 range; Vishay/KEMET max 3.3-4 nF) [MPN derived from the ordering code: verify]. Voltage per capacitor: own shock 2,182 V -> <= 1.1 kV; external 5 kV -> ~1.25 kV balanced, <= 2.5 kV one-sided.
+TVS D1501/D1502 Bourns CDSOD323-T03C (bidirectional, VWM 3.3 V, VBR >= 4.0 V, 350 W 8/20 us, 3 pF, 5 uA): takes the edge current (<= 5 kV / 12 k = 0.42 A, tau 28 us). It CANNOT clamp below the chip's 3.6 V abs max (no 3.3 V TVS has VBR < 4 V): the 2.0 k inner resistor limits the pin current to <= (6.5 - 3.6) / 2 k = 1.5 mA, inside the chip's +/-10 mA continuous rating.
+"""
+
+[[group]]
+id = "sense"
+title = "Sense taps: DPCR2512 51 k + TVS to GND, then 10 k to the ECG inputs (IN2) and 10 k + 2.2 nF to the respiration inputs (IN1)"
+note = """
+External 5 kV pulse: <= 98 mA one-sided (49 mA balanced) through each 51 k; <= 0.74 J one-sided per pulse (V^2 tau / 2R with tau = 3.4 ms); DPCR rating = 100 pulses of 5 kV peak, single-pulse curve ~1.5 kW at 1 ms. Own shock 2,182 V for up to 20 ms (relay fault): 43 mA, 93 W, 1.9 J per resistor; curve ~250 W at 20 ms [CALC; curve values read from the graph].
+TVS currents 43-98 mA for milliseconds: energy small (<= 5 mJ) but outside the 8/20 us rating basis [UNVERIFIED for ms pulses]. Chip pin current through 10 k <= 0.34 mA.
+ECG (channel 2): IN2P/IN2N DC-coupled through 61 k per side; C1505 470 pF C0G differential: 2.8 kHz pole against the charger's 3-43 kHz band [CALC]. IN2 common mode set by the RLD amplifier (below).
+Respiration (channel 1): from the same clamp node through a separate 10 k and 2.2 nF C0G into IN1P/IN1N, biased at mid-supply by 10 M to AVDD and 10 M to GND each (datasheet Figure 68 arrangement). Pole ~1/(2 pi x 61 k x ~25 pF) ~ 100 kHz: ~15 % attenuation and some phase at 64 kHz, removed by RESP_PH choice and calibration.
+Kept apart so the 470 pF ECG filter does not short the 64 kHz carrier. No test points (R9).
+"""
+
+[[group]]
+id = "rld"
+title = "Bias with two electrodes: RLD amplifier as mid-supply driver into both ECG inputs through 10 M"
+note = """
+No third (right-leg) electrode exists. With RESP2.RLDREF_INT = 1 the RLD amplifier references (AVDD+AVSS)/2; RLDOUT drives each ECG input node through 10 M (R1513, R1514), which sets the patient's DC potential (the drive taps are DC-blocked, so this is the only DC path). Feedback R1527 1 M || C1507 1.5 nF (datasheet typical). RLDIN/RLDREF tied to AVDD (datasheet: 'connect to AVDD if not used'). Whether to also sense the IN2 common mode (RLD_SENS) is a firmware choice [the datasheet gives no explicit two-electrode guidance: UNVERIFIED].
+DC patient current from this path: both pads at the same potential -> ~0; with a 300 mV electrode offset <= 15 nA [CALC].
+"""
+
+[[group]]
+id = "afe"
+title = "U1501 ADS1292R: channel 1 = impedance (respiration, internal clock, 64 kHz, RESP_CTRL = 0), channel 2 = ECG 250/s"
+note = """
+Clock: CLKSEL = 1 (internal 512 kHz, +/-1.5 % over -40..+85 C); CLK 3-stated (CLK_EN = 0), held by 100 k. 64 kHz respiration needs RESP_CTRL = 0 (internal clock mode) and RESP2.RESP_FREQ = 1. Recommended at 64 kHz: channel 1 gain 2 or 3, phase 135-157.5 deg (SBAS502C p.63).
+Reference: internal 2.42 V (CONFIG2.PDB_REFBUF = 1 required: power-up default is external), VREFP 10 uF || 0.1 uF; VREFN = AVSS. VCAP1, VCAP2 1 uF (datasheet: C0G/tantalum if the board vibrates — belt-worn, CPR: X7R used here, flagged).
+PGA filters: 47 nF across PGA1P/N (respiration; three datasheet places say 47 nF, one says 4.7 nF: flagged), 4.7 nF across PGA2P/N.
+GPIO1/2 unused: to GND through 10 k (datasheet). Supplies: AVDD_AFE from 3V3_MAIN via ferrite, 10 u + 1 u + 0.1 u; DVDD 3V3_MAIN 1 u + 0.1 u. AVDD shunt clamp D1505 ESD5Z3.3 (VBR >= 5.0 V, below the 5.5 V abs max): backup only; the real limit on injected current is the inner resistors (<= ~4 mA total, absorbed by 3V3_MAIN's load) [notes].
+Contract defaults: AFE_CS_N 100 k up, AFE_START 100 k down, AFE_RESET_N 100 k down (held in reset until the main controller releases it).
+"""
+
+# ====================================================================== drive taps, pad A
+[[part]]
+ref = "C1501"
+group = "drive"
+lib_id = "Device:C"
+value = "4.7n 3kV C0G"
+footprint = "Capacitor_SMD:C_3640_9110Metric"
+mpn = "3640J3K00472KAT"
+manufacturer = "Knowles Syfer"
+datasheet = "https://www.knowlescapacitors.com/getattachment/301898a4-1b95-4cfa-b0d6-1dffd3ef5816/AEC-Q200"
+fields = { DocRef = "drive tap A, cap 1 of 2", Verify = "MPN built from the catalogue ordering code; surge rating not published; surface-arc coating" }
+between = ["PT_FE_A", "PT_MDA1"]
+
+[[part]]
+ref = "C1502"
+group = "drive"
+lib_id = "Device:C"
+value = "4.7n 3kV C0G"
+footprint = "Capacitor_SMD:C_3640_9110Metric"
+mpn = "3640J3K00472KAT"
+manufacturer = "Knowles Syfer"
+datasheet = "https://www.knowlescapacitors.com/getattachment/301898a4-1b95-4cfa-b0d6-1dffd3ef5816/AEC-Q200"
+fields = { DocRef = "drive tap A, cap 2 of 2", Verify = "MPN built from the catalogue ordering code; surge rating not published; surface-arc coating" }
+between = ["PT_MDA1", "PT_MDA2"]
+
+[[part]]
+ref = "R1501"
+group = "drive"
+lib_id = "Device:R"
+value = "24k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-24KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "drive tap A resistor 1 of 2 (parallel)", Verify = "24 k is an 'other E24 value' (standard values 20 k, 51 k): availability" }
+between = ["PT_MDA2", "PT_MDA_CL"]
+
+[[part]]
+ref = "R1502"
+group = "drive"
+lib_id = "Device:R"
+value = "24k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-24KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "drive tap A resistor 2 of 2 (parallel)", Verify = "24 k is an 'other E24 value' (standard values 20 k, 51 k): availability" }
+between = ["PT_MDA2", "PT_MDA_CL"]
+
+[[part]]
+ref = "D1501"
+group = "drive"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_MDA_CL
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1505"
+group = "drive"
+lib_id = "Device:R"
+value = "2.0k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-072KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_MDA_CL", "FEM_MODP"]
+
+# ====================================================================== drive taps, pad B
+[[part]]
+ref = "C1503"
+group = "drive"
+lib_id = "Device:C"
+value = "4.7n 3kV C0G"
+footprint = "Capacitor_SMD:C_3640_9110Metric"
+mpn = "3640J3K00472KAT"
+manufacturer = "Knowles Syfer"
+datasheet = "https://www.knowlescapacitors.com/getattachment/301898a4-1b95-4cfa-b0d6-1dffd3ef5816/AEC-Q200"
+fields = { DocRef = "drive tap B, cap 1 of 2", Verify = "MPN built from the catalogue ordering code; surge rating not published; surface-arc coating" }
+between = ["PT_FE_B", "PT_MDB1"]
+
+[[part]]
+ref = "C1504"
+group = "drive"
+lib_id = "Device:C"
+value = "4.7n 3kV C0G"
+footprint = "Capacitor_SMD:C_3640_9110Metric"
+mpn = "3640J3K00472KAT"
+manufacturer = "Knowles Syfer"
+datasheet = "https://www.knowlescapacitors.com/getattachment/301898a4-1b95-4cfa-b0d6-1dffd3ef5816/AEC-Q200"
+fields = { DocRef = "drive tap B, cap 2 of 2", Verify = "MPN built from the catalogue ordering code; surge rating not published; surface-arc coating" }
+between = ["PT_MDB1", "PT_MDB2"]
+
+[[part]]
+ref = "R1503"
+group = "drive"
+lib_id = "Device:R"
+value = "24k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-24KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "drive tap B resistor 1 of 2 (parallel)", Verify = "24 k is an 'other E24 value' (standard values 20 k, 51 k): availability" }
+between = ["PT_MDB2", "PT_MDB_CL"]
+
+[[part]]
+ref = "R1504"
+group = "drive"
+lib_id = "Device:R"
+value = "24k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-24KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "drive tap B resistor 2 of 2 (parallel)", Verify = "24 k is an 'other E24 value' (standard values 20 k, 51 k): availability" }
+between = ["PT_MDB2", "PT_MDB_CL"]
+
+[[part]]
+ref = "D1502"
+group = "drive"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_MDB_CL
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1506"
+group = "drive"
+lib_id = "Device:R"
+value = "2.0k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-072KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_MDB_CL", "FEM_MODN"]
+
+# ====================================================================== sense taps
+[[part]]
+ref = "R1507"
+group = "sense"
+lib_id = "Device:R"
+value = "51k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-51KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "sense tap A (service item, design §B3.2)" }
+between = ["PT_FE_A", "PT_MSA_CL"]
+
+[[part]]
+ref = "D1503"
+group = "sense"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_MSA_CL
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1509"
+group = "sense"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_MSA_CL", "FEM_ECGA"]
+
+[[part]]
+ref = "R1511"
+group = "sense"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_MSA_CL", "FEM_RSA"]
+
+[[part]]
+ref = "C1506"
+group = "sense"
+lib_id = "Device:C"
+value = "2.2n C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H222JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H222JA01D"
+between = ["FEM_RSA", "FEM_IN1P"]
+
+[[part]]
+ref = "R1515"
+group = "sense"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_IN1P", "AVDD_AFE"]
+
+[[part]]
+ref = "R1516"
+group = "sense"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_IN1P", "GND"]
+
+[[part]]
+ref = "R1508"
+group = "sense"
+lib_id = "Device:R"
+value = "51k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-51KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "sense tap B (service item, design §B3.2)" }
+between = ["PT_FE_B", "PT_MSB_CL"]
+
+[[part]]
+ref = "D1504"
+group = "sense"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_MSB_CL
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1510"
+group = "sense"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_MSB_CL", "FEM_ECGB"]
+
+[[part]]
+ref = "R1512"
+group = "sense"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["PT_MSB_CL", "FEM_RSB"]
+
+[[part]]
+ref = "C1519"
+group = "sense"
+lib_id = "Device:C"
+value = "2.2n C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H222JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H222JA01D"
+between = ["FEM_RSB", "FEM_IN1N"]
+
+[[part]]
+ref = "R1517"
+group = "sense"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_IN1N", "AVDD_AFE"]
+
+[[part]]
+ref = "R1518"
+group = "sense"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_IN1N", "GND"]
+
+[[part]]
+ref = "C1505"
+group = "sense"
+lib_id = "Device:C"
+value = "470p C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H471JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H471JA01D"
+between = ["FEM_ECGA", "FEM_ECGB"]
+
+# ====================================================================== RLD bias
+[[part]]
+ref = "R1513"
+group = "rld"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_RLD", "FEM_ECGA"]
+
+[[part]]
+ref = "R1514"
+group = "rld"
+lib_id = "Device:R"
+value = "10M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_RLD", "FEM_ECGB"]
+
+[[part]]
+ref = "R1527"
+group = "rld"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_RLD", "FEM_RLDINV"]
+
+[[part]]
+ref = "C1507"
+group = "rld"
+lib_id = "Device:C"
+value = "1.5n C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H152JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H152JA01D"
+between = ["FEM_RLD", "FEM_RLDINV"]
+
+# ====================================================================== ADS1292R
+[[part]]
+ref = "U1501"
+group = "afe"
+lib_id = "aed_patient:ADS1292R"
+value = "ADS1292RIPBSR"
+footprint = "Package_QFP:TQFP-32_5x5mm_P0.5mm"
+mpn = "ADS1292RIPBSR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/ads1292r.pdf"
+fields = { DocRef = "U1501" }
+pins = """
+1  PGA1N             FEM_PGA1N
+2  PGA1P             FEM_PGA1P
+3  IN1N              FEM_IN1N
+4  IN1P              FEM_IN1P
+5  IN2N              FEM_ECGB
+6  IN2P              FEM_ECGA
+7  PGA2N             FEM_PGA2N
+8  PGA2P             FEM_PGA2P
+9  VREFP             FEM_VREFP
+10 VREFN             GND
+11 VCAP1             FEM_VCAP1
+12 AVDD              AVDD_AFE
+13 AVSS              GND
+14 CLKSEL            3V3_MAIN
+15 PWDN/RESET        AFE_RESET_N
+16 START             AFE_START
+17 CLK               FEM_CLK
+18 CS                AFE_CS_N
+19 DIN               AFE_MOSI
+20 SCLK              AFE_SCLK
+21 DOUT              AFE_MISO
+22 DRDY              AFE_DRDY_N
+23 DVDD              3V3_MAIN
+24 DGND              GND
+25 GPIO2/RCLK2       FEM_GPIO2
+26 GPIO1/RCLK1       FEM_GPIO1
+27 VCAP2             FEM_VCAP2
+28 RLDINV            FEM_RLDINV
+29 RLDIN/RLDREF      AVDD_AFE
+30 RLDOUT            FEM_RLD
+31 RESP_MODP/IN3P    FEM_MODP
+32 RESP_MODN/IN3N    FEM_MODN
+"""
+
+[[part]]
+ref = "C1508"
+group = "afe"
+lib_id = "Device:C"
+value = "47n C0G"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "GRM3195C1H473JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM3195C1H473JA01D"
+fields = { DocRef = "CFILTER channel 1 (respiration)", Verify = "47 nF vs 4.7 nF (SBAS502C contradicts itself; 47 nF in three places)" }
+between = ["FEM_PGA1P", "FEM_PGA1N"]
+
+[[part]]
+ref = "C1509"
+group = "afe"
+lib_id = "Device:C"
+value = "4.7n C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM1885C1H472JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H472JA01D"
+fields = { DocRef = "CFILTER channel 2 (ECG)" }
+between = ["FEM_PGA2P", "FEM_PGA2N"]
+
+[[part]]
+ref = "C1510"
+group = "afe"
+lib_id = "Device:C"
+value = "10u 16V X5R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "GRM21BR61C106KE15L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM21BR61C106KE15L"
+between = ["FEM_VREFP", "GND"]
+
+[[part]]
+ref = "C1511"
+group = "afe"
+lib_id = "Device:C"
+value = "100n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+between = ["FEM_VREFP", "GND"]
+
+[[part]]
+ref = "C1512"
+group = "afe"
+lib_id = "Device:C"
+value = "1u 16V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12D"
+fields = { Verify = "datasheet advises C0G/tantalum on VCAP1 if the board vibrates (belt-worn, CPR)" }
+between = ["FEM_VCAP1", "GND"]
+
+[[part]]
+ref = "C1513"
+group = "afe"
+lib_id = "Device:C"
+value = "1u 16V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12D"
+between = ["FEM_VCAP2", "GND"]
+
+[[part]]
+ref = "FB1501"
+group = "afe"
+lib_id = "Device:FerriteBead_Small"
+value = "220R@100MHz"
+footprint = "Inductor_SMD:L_0603_1608Metric"
+mpn = "BLM18PG221SN1D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=BLM18PG221SN1D"
+between = ["3V3_MAIN", "AVDD_AFE"]
+
+[[part]]
+ref = "C1514"
+group = "afe"
+lib_id = "Device:C"
+value = "10u 16V X5R"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "GRM21BR61C106KE15L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM21BR61C106KE15L"
+between = ["AVDD_AFE", "GND"]
+
+[[part]]
+ref = "C1515"
+group = "afe"
+lib_id = "Device:C"
+value = "1u 16V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12D"
+between = ["AVDD_AFE", "GND"]
+
+[[part]]
+ref = "C1516"
+group = "afe"
+lib_id = "Device:C"
+value = "100n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+between = ["AVDD_AFE", "GND"]
+
+[[part]]
+ref = "D1505"
+group = "afe"
+lib_id = "Device:D_Zener"
+value = "ESD5Z3.3"
+footprint = "Diode_SMD:D_SOD-523"
+mpn = "SZESD5Z3.3T1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/pdf/datasheet/esd5z2.5t1-d.pdf"
+fields = { DocRef = "AVDD_AFE rail shunt clamp (backup)", Verify = "VBR min 5.0 V vs ADS1292R AVDD abs max 5.5 V: little margin" }
+pins = """
+1 K AVDD_AFE
+2 A GND
+"""
+
+[[part]]
+ref = "C1517"
+group = "afe"
+lib_id = "Device:C"
+value = "100n 50V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "C1518"
+group = "afe"
+lib_id = "Device:C"
+value = "1u 16V X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12D"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "R1521"
+group = "afe"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_CLK", "GND"]
+
+[[part]]
+ref = "R1522"
+group = "afe"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_GPIO1", "GND"]
+
+[[part]]
+ref = "R1523"
+group = "afe"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+between = ["FEM_GPIO2", "GND"]
+
+[[part]]
+ref = "R1524"
+group = "afe"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+fields = { DocRef = "AFE_CS_N default (contract §5.8)" }
+between = ["AFE_CS_N", "3V3_MAIN"]
+
+[[part]]
+ref = "R1525"
+group = "afe"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+fields = { DocRef = "AFE_START default (contract §5.8)" }
+between = ["AFE_START", "GND"]
+
+[[part]]
+ref = "R1526"
+group = "afe"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+fields = { DocRef = "AFE_RESET_N default (contract §5.8)" }
+between = ["AFE_RESET_N", "GND"]

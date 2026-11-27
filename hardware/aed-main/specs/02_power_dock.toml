@@ -1,0 +1,647 @@
+# 02_power_dock — dock contacts (5 V, data, ground), 6.0 V TVS, TPS25947 eFuse (UVLO/OVLO, reverse blocking) -> VDOCK,
+# BQ25887 2-cell boost charger with 0-45 C TS window, dock data transceiver (VDOCK-powered open-drain driver,
+# 74LVC1G17 receiver on 3V3_MAIN), dock-detect MOSFET.
+# NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a). Nothing here is an instruction to build or power anything.
+# Source: docs/HARDWARE_DESIGN.md §B1.4-B1.5, §11; contract.md issue 2 §5.1, §5.2, §8 row 02, §9 WP-A.
+# Capture notes: hardware/aed-main/capture-notes/WP-A.md. References 201-299.
+
+[sheet]
+name = "02_power_dock"
+title = "Dock contacts, TPS25947 input protection, BQ25887 2S charger (TS window), dock data, dock detect"
+source = "docs/HARDWARE_DESIGN.md §B1.4-B1.5; contract.md issue 2 §5.1, §5.2, §8, §9 (WP-A)"
+date = "2026-11-27"
+comments = [
+  "Contacts are dead when undocked (D-46): the eFuse blocks reverse current, the data contact is only ever pulled low by Q201",
+  "U201 MID / CBSET node BAT_MID_02 is NOT yet joined to the pack mid-point (sheet 01 BAT_MID): contract has no net (issue C-1)",
+]
+
+[nets]
+power = ["GND", "VDOCK", "VBAT_PACK", "3V3_MAIN"]
+# The dock contact node is supplied from outside the device (passive contact): permanent flag.
+flag_nodes = ["VDOCK_IN"]
+global = [
+  "CHGR_INT_N",   # U201 INT (open drain) -> 04; pull-up 100k on 04
+  "CHGR_CE_N",    # 04 -> U201 CD; 100k pull-down HERE (R211): low = charging allowed (D-48)
+  "DOCK_TX",      # 04 -> 02; 100k pull-up on 04; enters the VDOCK-powered inverter through R212 100k (R7)
+  "DOCK_RX",      # 02 (U204 on 3V3_MAIN, Ioff) -> 04
+  "DOCK_DET_N",   # Q202 (open drain) -> 03, 04; pull-up 100k to 3V3_AON on 03
+  "I2C_M_SCL",
+  "I2C_M_SDA",
+]
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "CHGR_INT_N|DOCK_TX|DOCK_RX"
+reason = "Other end on 04_main_mcu (WP-B, placeholder in this worktree); disappears when 04 is captured."
+
+# ====================================================================== groups
+[[group]]
+id = "in"
+title = "Dock contacts J201 (5 V, DATA, GND), SMAJ6.0A TVS, TPS259474A eFuse -> VDOCK (UVLO 4.26 V, OVLO 5.88 V, 2.7 A)"
+note = """
+D201 SMAJ6.0A (Bourns): VRWM 6.0 V, VBR 6.67-7.37 V, VC 10.3 V at 38.8 A (10/1000 us); IR <= 800 uA at 6.0 V (only while docked).
+UVLO (EN/UVLO, 1.20 V rising / 1.09 V falling, SLVSFC9C EC): R201 255 k / R202 100 k: on at 1.20 x 3.55 = 4.26 V (4.20-4.34 V), off at 3.87 V.
+OVLO (1.20 V rising / 1.09 V falling): R203 390 k / R204 100 k: off at 1.20 x 4.90 = 5.88 V (5.80-5.99 V), back on below 5.34 V (dock 5 V +5 % = 5.25 V stays on).
+Current limit: RILM = 3334 / ILIM (Eq 7): R205 1.24 k -> 2.69 A (about +/-11 % from the EC table: 2.4-3.0 A), above the charger's 2.0 A input limit.
+Slew: CdVdt = 2000 / SR (Eq 4): C201 1.5 nF -> 1.33 V/ms; into ~66 uF on VDOCK and PMID that is 88 mA inrush.
+ITIMER open = fastest overcurrent response (pin table). PG unused (open drain, left open); PGTH tied to GND [design choice: PG not used].
+True reverse-current blocking keeps VDOCK (and the battery behind the charger) off the 5 V contact when undocked (D-46).
+"""
+
+[[group]]
+id = "chg"
+title = "U201 BQ25887 2S boost charger: VDOCK -> VBAT_PACK, input limit 2.0 A (ILIM 562 ohm), TS window ~1-44 C, CE from main"
+note = """
+Typical application SLUSD89B §9.2: VBUS 1 uF, PMID 2 x 22 uF (44 uF 'optimal'), L 1 uH (XAL4020-102ME: Isat 8.7 A, 14.6 mOhm max), BTST 47 nF, REGN 4.7 uF, SNS 2 x 22 uF (44 uF minimum), BAT 10 uF.
+ILIM: IINMAX = KILIM / RILIM, KILIM = 1110 A.ohm typ: R206 562 ohm -> 1.98 A. Charge current and per-cell voltage (4.2 V) are I2C registers (firmware); defaults per datasheet.
+CD (active-high disable, 900 k internal pull-down) = CHGR_CE_N directly: low = charge (D-48 default: a docked, switched-off device still charges). R211 100 k is the contract's default resistor.
+TS window (D-48 hard stop 0-45 C): the 0-45 C window cannot be made with the RT1/RT2 pair of Eq 1-2 (RT2 comes out negative: the BQ25887 T1-T5 span is 0-60 C). Chosen: RT1 only (R209 10.0 k REGN->TS), RT2 not fitted. With a 10 k B25/50 = 3380 NTC: T1 (73.25 % REGN, charge suspended below) at about +1 C, T5 (34.375 %) at about 44 C; with VT and 1 % NTC/resistor tolerance T5 = 43.5-44.8 C, T1 = 0.5-1.9 C [CALC from the B-equation, not from the maker's R-T table: VERIFY]. Between T3 (about 31 C) and T5 the JEITA defaults apply: 4.0 V/cell, 100 % current (REG08 reset values) - conservative.
+NTC TH201 is a board-mounted 0402 NTC placed against the cells (the pack's two NTCs belong to U101 on sheet 01): DEPARTURE, see capture notes.
+MID / CBSET: MID through 300 ohm (pin table: reverse-plug protection), CBSET through R208 100 ohm (balancing 4.2 / 100 = 42 mA, 0.18 W). Their common node BAT_MID_02 must be the pack mid-point (J101 pin 3 on sheet 01); the contract has NO inter-sheet net for it (issue C-1). Without it the charger cannot regulate per cell. Until the contract adds it this node is left joined only to R207 and R208.
+STAT and PG unused (open drain, left open). PSEL = GND (adapter, 3 A class; ILIM pin sets the real limit).
+"""
+
+[[group]]
+id = "data"
+title = "Dock data (Q-47 option a, one contact, half duplex): VDOCK-powered open-drain driver, 74LVC1G17 receiver on 3V3_MAIN"
+note = """
+Driver: DOCK_TX (3V3_MAIN UART, idle high) -> R212 100 k (R7: U203 is unpowered when undocked) -> U203 SN74LV1T04 on VDOCK (VIH 2.03 V at VCC 4.5-5 V, 5 V-tolerant input, SCLS738E) -> Q201 BSS138 gate -> drain pulls the DATA contact low. TX high = inverter low = Q201 off = line released (pull-up is in the dock, design §B1.4). Undocked: VDOCK = 0, U203 output low, R213 holds the gate low: the contact is never driven high by the device (D-46).
+Receiver: contact -> R214 100 ohm -> node DOCK_DATA -> R216 1 k -> U204 SN74LVC1G17 (Ioff, 5.5 V-tolerant input) on 3V3_MAIN -> DOCK_RX. The receiver also hears the device's own transmission (half duplex). R215 100 k defines the line when undocked. D202 TPD1E10B06 ESD clamp at the contact.
+"""
+
+[[group]]
+id = "det"
+title = "Dock detect: Q202 pulls DOCK_DET_N low while VDOCK is present (wake on dock, 03 and 04)"
+note = """
+Gate from VDOCK through R217 10 k, R218 100 k gate pull-down: VGS = 4.55 V at VDOCK 5.0 V (BSS138 VGS(th) 0.8-1.5 V, onsemi BSS138/D). Pull-up 100 k to 3V3_AON is on 03 (contract §5.1). Undocked or unpowered: DOCK_DET_N reads high = 'not docked'.
+"""
+
+[[group]]
+id = "tp"
+title = "Test points (design §15)"
+
+# ====================================================================== parts: input
+[[part]]
+ref = "J201"
+group = "in"
+lib_id = "Connector_Generic:Conn_01x03"
+value = "DOCK"
+footprint = "aed_power:Dock_Contact_Pads_1x3"
+footprint_todo = true
+mpn = "none (hard-gold plated PCB pads, sealed in the enclosure)"
+manufacturer = "none"
+description = "Dock contacts: flat pads on the device, springs in the dock (design §B1.4); pad 1 = DOCK_5V, 2 = DOCK_DATA, 3 = DOCK_GND"
+fields = { DocRef = "design §B1.4, D-46, Q-47 option (a)", Verify = "pad geometry and sealing with the enclosure; DOCK_D2 (option b) reserved, not drawn" }
+pins = """
+  1   Pin_1   VDOCK_IN
+  2   Pin_2   DOCK_DATA_C
+  3   Pin_3   GND
+"""
+
+[[part]]
+ref = "D201"
+group = "in"
+lib_id = "Diode:SMAJ6.0A"
+value = "SMAJ6.0A"
+footprint = "Diode_SMD:D_SMA"
+mpn = "SMAJ6.0A"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/Product-Datasheets/SMAJ.pdf"
+description = "400 W unidirectional TVS, VRWM 6.0 V, VC 10.3 V; TJ -55..+150 C"
+fields = { Verify = "symbol pin 1 (A1) = cathode band = pad 1 of D_SMA (KiCad unidirectional TVS convention)" }
+pins = """
+  1   A1   VDOCK_IN   # cathode (band)
+  2   A2   GND        # anode
+"""
+
+[[part]]
+ref = "C202"
+group = "in"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 1uF 25V"
+manufacturer = "any"
+description = "eFuse input bypass"
+between = ["VDOCK_IN", "GND"]
+
+[[part]]
+ref = "U202"
+group = "in"
+lib_id = "aed_power:TPS259474ARPW"
+value = "TPS259474ARPWR"
+footprint = "aed_power:Texas_RPW0010A_QFN-10_2x2mm"
+footprint_todo = true
+mpn = "TPS259474ARPWR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps25947.pdf"
+description = "Dock input eFuse: UVLO, OVLO cut-off, true reverse blocking, auto-retry; TJ -40..+125 C"
+fields = { DocRef = "design §B1.4 'TPS25947'" }
+pins = """
+  5    IN        VDOCK_IN
+  1    EN/UVLO   EF_EN
+  2    OVLO      EF_OV
+  4    PGTH      GND        # PG not used
+  6    OUT       VDOCK
+  3    PG        NC         # open drain, not used
+  9    ILM       EF_ILM
+  7    DVDT      EF_DVDT
+  10   ITIMER    NC         # open = fastest overcurrent response (pin table)
+  8    GND       GND
+"""
+
+[[part]]
+ref = "R201"
+group = "in"
+lib_id = "Device:R"
+value = "255k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 255k 1%"
+manufacturer = "any"
+description = "UVLO divider top (4.26 V rising)"
+new_row = true
+between = ["VDOCK_IN", "EF_EN"]
+
+[[part]]
+ref = "R202"
+group = "in"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "UVLO divider bottom"
+between = ["EF_EN", "GND"]
+
+[[part]]
+ref = "R203"
+group = "in"
+lib_id = "Device:R"
+value = "390k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 390k 1%"
+manufacturer = "any"
+description = "OVLO divider top (5.88 V rising)"
+between = ["VDOCK_IN", "EF_OV"]
+
+[[part]]
+ref = "R204"
+group = "in"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "OVLO divider bottom"
+between = ["EF_OV", "GND"]
+
+[[part]]
+ref = "R205"
+group = "in"
+lib_id = "Device:R"
+value = "1.24k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 1.24k 1%"
+manufacturer = "any"
+description = "eFuse current limit 2.69 A (RILM = 3334/ILIM)"
+between = ["EF_ILM", "GND"]
+
+[[part]]
+ref = "C201"
+group = "in"
+lib_id = "Device:C"
+value = "1.5nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 C0G 1.5nF 50V"
+manufacturer = "any"
+description = "dVdt: 1.33 V/ms output slew"
+between = ["EF_DVDT", "GND"]
+
+# ====================================================================== parts: charger
+[[part]]
+ref = "U201"
+group = "chg"
+lib_id = "Battery_Management:BQ25887RGE"
+value = "BQ25887RGER"
+footprint = "Package_DFN_QFN:Texas_RGE0024H_VQFN-24-1EP_4x4mm_P0.5mm_EP2.7x2.7mm"
+mpn = "BQ25887RGER"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/bq25887.pdf"
+description = "2-cell boost charger with cell balancing, I2C, -40..+85 C (SLUSD89B)"
+fields = { DocRef = "design §B1.4 'BQ25887'" }
+pins = """
+  1    ~{PG}    NC           # open drain, not used
+  2    STAT     NC           # open drain, not used (STAT_DIS)
+  3    CD       CHGR_CE_N    # high = disable; 900 k internal pull-down
+  4    SDA      I2C_M_SDA
+  5    SCL      I2C_M_SCL
+  6    ~{INT}   CHGR_INT_N   # open drain, pulled up on 04
+  7    TS       CHG_TS
+  8    ILIM     CHG_ILIM
+  9    MID      CHG_MID      # through R207 300 ohm to the mid-point node
+  10   CBSET    CHG_CB       # through R208 100 ohm to the mid-point node
+  11   REGN     CHG_REGN
+  12   BTST     CHG_BTST
+  13   BAT      VBAT_PACK
+  14   BAT      VBAT_PACK
+  15   SNS      CHG_SNS
+  16   SNS      CHG_SNS
+  17   SW       CHG_SW
+  18   SW       CHG_SW
+  19   GND      GND
+  20   GND      GND
+  21   PMID     CHG_PMID
+  22   PMID     CHG_PMID
+  23   VBUS     VDOCK
+  24   PSEL     GND          # low = adapter
+  25   GND      GND          # exposed pad
+"""
+
+[[part]]
+ref = "C203"
+group = "chg"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 1uF 25V"
+manufacturer = "any"
+description = "VBUS bypass >= 1 uF at the pin (pin table)"
+new_row = true
+between = ["VDOCK", "GND"]
+
+[[part]]
+ref = "C204"
+group = "chg"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "generic 1210 X7R 22uF 25V"
+manufacturer = "any"
+description = "PMID input capacitor (44 uF optimal, §9.2.2.2; 25 V rating preferred)"
+between = ["CHG_PMID", "GND"]
+
+[[part]]
+ref = "C205"
+group = "chg"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "generic 1210 X7R 22uF 25V"
+manufacturer = "any"
+description = "PMID input capacitor, second half of 44 uF"
+between = ["CHG_PMID", "GND"]
+
+[[part]]
+ref = "L201"
+group = "chg"
+lib_id = "Device:L"
+value = "1uH"
+footprint = "Inductor_SMD:L_Coilcraft_XAL4020-XXX"
+mpn = "XAL4020-102MEB"
+manufacturer = "Coilcraft"
+datasheet = "https://www.coilcraft.com/getmedia/6adcb47d-8b55-416c-976e-1e22e0d2848c/xal4000.pdf"
+description = "Boost inductor 1.0 uH, DCR 14.6 mOhm max, Isat 8.7 A, -40..+125 C (Coilcraft doc 806-1 rev. 02/25/26); input 2 A + ripple"
+pins = """
+  1   1   CHG_PMID
+  2   2   CHG_SW
+"""
+
+[[part]]
+ref = "C206"
+group = "chg"
+lib_id = "Device:C"
+value = "47nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 47nF 25V"
+manufacturer = "any"
+description = "Bootstrap SW -> BTST 47 nF (pin table)"
+between = ["CHG_BTST", "CHG_SW"]
+
+[[part]]
+ref = "C207"
+group = "chg"
+lib_id = "Device:C"
+value = "4.7uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 4.7uF 10V"
+manufacturer = "any"
+description = "REGN bypass 4.7 uF (pin table)"
+between = ["CHG_REGN", "GND"]
+
+[[part]]
+ref = "C208"
+group = "chg"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "generic 1210 X7R 22uF 16V"
+manufacturer = "any"
+description = "SNS (boost output) capacitor, 44 uF minimum in total, 16 V rating (§9.2.2.3)"
+new_row = true
+between = ["CHG_SNS", "GND"]
+
+[[part]]
+ref = "C209"
+group = "chg"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "generic 1210 X7R 22uF 16V"
+manufacturer = "any"
+description = "SNS capacitor, second half"
+between = ["CHG_SNS", "GND"]
+
+[[part]]
+ref = "C210"
+group = "chg"
+lib_id = "Device:C"
+value = "10uF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "generic 1206 X7R 10uF 16V"
+manufacturer = "any"
+description = "BAT capacitor >= 10 uF after derating (pin table)"
+between = ["VBAT_PACK", "GND"]
+
+[[part]]
+ref = "R206"
+group = "chg"
+lib_id = "Device:R"
+value = "562"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 562R 1%"
+manufacturer = "any"
+description = "Input current limit 1110/562 = 1.98 A"
+new_row = true
+between = ["CHG_ILIM", "GND"]
+
+[[part]]
+ref = "R209"
+group = "chg"
+lib_id = "Device:R"
+value = "10.0k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 10.0k 1% 100ppm"
+manufacturer = "any"
+description = "TS RT1 REGN -> TS; RT2 not fitted (0-45 C window, see box note)"
+between = ["CHG_REGN", "CHG_TS"]
+
+[[part]]
+ref = "TH201"
+group = "chg"
+lib_id = "Device:Thermistor_NTC"
+value = "10k B3380"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "NCP15XH103F03RC"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=NCP15XH103F03RC"
+description = "Charger TS NTC 10 k 1 %, B25/50 = 3380 K 1 %, -40..+125 C [maker data not read: VERIFY]; placed against the cells"
+fields = { Verify = "R-T table at 0 and 45 C; thermal coupling to the cells" }
+between = ["CHG_TS", "GND"]
+
+[[part]]
+ref = "R211"
+group = "chg"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "CHGR_CE_N default pull-down (contract §5.2: 02, 100 kOhm to GND): charging allowed with the main off"
+between = ["CHGR_CE_N", "GND"]
+
+[[part]]
+ref = "R207"
+group = "chg"
+lib_id = "Device:R"
+value = "300"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 300R 1%"
+manufacturer = "any"
+description = "MID series 300 ohm (pin table: bottom-cell reverse plug protection)"
+new_row = true
+between = ["CHG_MID", "BAT_MID_02"]
+
+[[part]]
+ref = "R208"
+group = "chg"
+lib_id = "Device:R"
+value = "100"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "generic 1206 100R 1% 0.25W"
+manufacturer = "any"
+description = "CBSET current limit: 4.2/100 = 42 mA balancing, 0.18 W"
+between = ["CHG_CB", "BAT_MID_02"]
+
+# ====================================================================== parts: data
+[[part]]
+ref = "R212"
+group = "data"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "R7: DOCK_TX enters the VDOCK-powered inverter through >= 100 k (it is unpowered when undocked)"
+between = ["DOCK_TX", "DD_TXIN"]
+
+[[part]]
+ref = "U203"
+group = "data"
+lib_id = "74xGxx:74LVC1G04"
+value = "SN74LV1T04DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LV1T04DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lv1t04.pdf"
+description = "Single-supply level-shifting inverter on VDOCK (VIH 2.03 V at 4.5-5 V), -40..+125 C; standard 74LVC1G04 pinout (SCLS738E Table 5-1)"
+fields = { Verify = "VCC recommended max 5.5 V; VDOCK can reach 5.8-6.0 V before the eFuse OVLO trips (abs max 7 V)" }
+pins = """
+  1   NC    NC
+  2   ~     DD_TXIN
+  3   GND   GND
+  4   ~     DD_GATE
+  5   VCC   VDOCK
+"""
+
+[[part]]
+ref = "C211"
+group = "data"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 100nF 16V"
+manufacturer = "any"
+description = "U203 bypass"
+between = ["VDOCK", "GND"]
+
+[[part]]
+ref = "R213"
+group = "data"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "Q201 gate pull-down: line released when undocked"
+between = ["DD_GATE", "GND"]
+
+[[part]]
+ref = "Q201"
+group = "data"
+lib_id = "Transistor_FET:BSS138"
+value = "BSS138"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS138"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss138-d.pdf"
+description = "Open-drain dock data driver, 50 V N-MOSFET, TJ -55..+150 C"
+pins = """
+  1   G   DD_GATE
+  2   S   GND
+  3   D   DOCK_DATA
+"""
+
+[[part]]
+ref = "R214"
+group = "data"
+lib_id = "Device:R"
+value = "100"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100R 1%"
+manufacturer = "any"
+description = "Contact series resistor (ESD current limit into Q201 / U204)"
+new_row = true
+between = ["DOCK_DATA_C", "DOCK_DATA"]
+
+[[part]]
+ref = "D202"
+group = "data"
+lib_id = "Device:D_TVS"
+value = "TPD1E10B06"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E10B06DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e10b06.pdf"
+description = "Bidirectional ESD clamp, VRWM 5.5 V either polarity, 12 pF, at the data contact (SLLSEB1G)"
+fields = { Verify = "DPY (0402) land pattern vs the generic D_0402 footprint" }
+pins = """
+  1   A1   DOCK_DATA_C
+  2   A2   GND
+"""
+
+[[part]]
+ref = "R215"
+group = "data"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "Data line defined low when undocked"
+between = ["DOCK_DATA", "GND"]
+
+[[part]]
+ref = "R216"
+group = "data"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 1k 1%"
+manufacturer = "any"
+description = "Receiver input series resistor"
+between = ["DOCK_DATA", "DD_RXIN"]
+
+[[part]]
+ref = "U204"
+group = "data"
+lib_id = "74xGxx:74LVC1G17"
+value = "SN74LVC1G17DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G17DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g17.pdf"
+description = "Schmitt buffer, Ioff, 5.5 V-tolerant input, on 3V3_MAIN: DOCK_RX (contract §5.2), -40..+125 C (SCES351Y)"
+pins = """
+  1   NC    NC
+  2   ~     DD_RXIN
+  3   GND   GND
+  4   ~     DOCK_RX
+  5   VCC   3V3_MAIN
+"""
+
+[[part]]
+ref = "C212"
+group = "data"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 100nF 16V"
+manufacturer = "any"
+description = "U204 bypass"
+between = ["3V3_MAIN", "GND"]
+
+# ====================================================================== parts: dock detect
+[[part]]
+ref = "R217"
+group = "det"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 10k 1%"
+manufacturer = "any"
+description = "Q202 gate series"
+between = ["VDOCK", "DET_GATE"]
+
+[[part]]
+ref = "R218"
+group = "det"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "Q202 gate pull-down"
+between = ["DET_GATE", "GND"]
+
+[[part]]
+ref = "Q202"
+group = "det"
+lib_id = "Transistor_FET:BSS138"
+value = "BSS138"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS138"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss138-d.pdf"
+description = "Dock detect, open drain onto DOCK_DET_N"
+pins = """
+  1   G   DET_GATE
+  2   S   GND
+  3   D   DOCK_DET_N
+"""
+
+# ====================================================================== parts: test points
+[[part]]
+ref = "TP201"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "VDOCK"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad VDOCK"
+pins = """
+  1   1   VDOCK
+"""
+
+[[part]]
+ref = "TP202"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "GND"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad GND"
+pins = """
+  1   1   GND
+"""

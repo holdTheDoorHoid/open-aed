@@ -4,7 +4,7 @@
 
 An open source design for a small, light automated external defibrillator (AED) that a police officer, paramedic or medical professional can carry on a belt, with one set of pads that works on both adults and children.
 
-**Status: research, plan, and first firmware running in simulation only. No hardware exists. Nothing here has been built or tested on a device.**
+**Status: research, plan, firmware running in simulation only, and a first circuit design on paper. No hardware exists. Nothing here has been built or tested on a device, and the circuit design is unreviewed and not for construction.**
 
 > **This is not a medical device.** Nothing in this repository is approved, cleared or safe for use on a person or an animal. A defibrillator stores enough energy to kill the person building it. Read [SAFETY.md](SAFETY.md) before doing anything beyond reading.
 

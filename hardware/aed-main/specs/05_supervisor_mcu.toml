@@ -1,0 +1,738 @@
+# 05_supervisor_mcu — supervisor controller NXP MCXA153VLH (U501): own crystal, SWD pads, own alarm sounder and
+# fault light (D-26), supervisor capacitor NTC bias, Ioff receivers, and the default resistors the contract gives to
+# the supervisor's sheet. Everything here is powered from 3V3_SUP only; no part on this sheet touches 3V3_MAIN.
+# NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a). Nothing here is an instruction to build or power anything.
+# Sources: docs/HARDWARE_DESIGN.md §B2, §B10, §F; hardware/aed-main/contract.md (issue 2) §2, §5, §7, §8, §9;
+# NXP MCXAP064M096F30 Rev. 5.2 (26 May 2026) Table 41 (pin assignments), Tables 8/9 (ratings), Table 23/24
+# (system oscillator), Table 42 (unused pins). Pin assignment, arithmetic and doubts:
+# hardware/aed-main/capture-notes/WP-B.md.
+
+[sheet]
+name = "05_supervisor_mcu"
+title = "Supervisor controller NXP MCXA153VLH: own crystal, SWD, own alarm sounder and fault light, capacitor NTC (supervisor)"
+source = "docs/HARDWARE_DESIGN.md §B2, §B10; contract.md issue 2 §5, §8"
+comments = ["U501 GPIOs come out of reset with the input buffer disabled and no pull (Table 41 'Default - DIS'); every safe default comes from a resistor (contract §5)",
+            "Pin assignment, alternate functions, reset states and arithmetic: hardware/aed-main/capture-notes/WP-B.md"]
+
+[nets]
+power = ["GND", "3V3_SUP"]
+flag_nodes = ["VDDA_S", "VDDUSB_S"]
+global = [
+  "HOLD_S_CLK", "PERMIT_CLK", "TEST_PERMIT_CLK",
+  "SEQ_ACT_S_N", "SEQ_DONE_S_N", "OVP_TRIP",
+  "CANCEL_S_N", "LINK_M2S", "LINK_S2M",
+  "SBZ_SCLK", "SBZ_MOSI", "SBZ_MISO", "SBZ_CS_N", "SBZ_INT_N",
+  "HVS_SCLK", "HVS_DOUT", "HVS_PDRST_N",
+  "NTC_CAP_S", "SUP_KEEP",
+]
+
+# ---------------------------------------------------------------- accepted ERC findings (each with its reason)
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR5000 "
+until_sheet = "01_power_battery"
+reason = "GND is made on 01_power_battery (WP-A, placeholder in this worktree); by contract §4 no package flags another package's rail."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "/05_supervisor_mcu/"
+until_sheet = "03_power_rails"
+reason = "3V3_SUP is made by U302 on 03_power_rails (WP-A, placeholder in this worktree); no flag by contract §4."
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "U503 Pin 2 "
+until_sheet = "08_sense_sup"
+reason = "OVP_TRIP is driven by the push-pull OVP comparator on 08_sense_sup (WP-C) and defaulted by 100 kOhm to GND on 11_hv_storage; both placeholders here. U503 is the R7 Ioff receiver; contract 5.4 puts no pull on 05."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "Global Label '(SUP_KEEP)'"
+reason = "Contract 5.1: load and 100 kOhm pull-down on 03_power_rails (WP-A, placeholder in this worktree)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "Global Label '(HOLD_S_CLK|PERMIT_CLK|TEST_PERMIT_CLK)'"
+reason = "Contract 5.4: detectors and 100 kOhm pull-downs on 09_interlock (WP-D, placeholder in this worktree)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "Global Label '(HVS_SCLK|HVS_DOUT|HVS_PDRST_N|OVP_TRIP)'"
+reason = "Contract 5.4/5.6: AD7171, its PDRST pull-down and the OVP comparator on 08_sense_sup (WP-C, placeholder in this worktree)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "Global Label '(SBZ_SCLK|SBZ_MOSI|SBZ_MISO|SBZ_CS_N)'"
+reason = "Contract 5.8: MAX30009 and the SBZ_CS_N pull-up on 16_frontend_sup (WP-H, placeholder in this worktree)."
+
+
+# ====================================================================== groups
+[[group]]
+id = "mcu"
+title = "U501 MCXA153VLH (LQFP64): every pin"
+note = """
+Pin numbers and names from NXP Table 41 (LQFP64 column). The three consent clocks (HOLD_S_CLK, PERMIT_CLK, TEST_PERMIT_CLK) are plain GPIOs toggled by the control loop (F-1); the same pins also carry CTIMER1 match outputs for a one-pulse variant, never a free-running timer. Ports are 3.3 V only: VDIO max = VDD + 0.3 V (Table 8); only P3_27/P3_28 are 5 V tolerant and they are unused.
+Wake-capable inputs (WUU0) are used for SEQ_ACT_S_N, SEQ_DONE_S_N, OVP_TRIP, CANCEL_S_N, SBZ_INT_N and the link receiver. LPSPI0 = pad-impedance front end (16), LPSPI1 = voltage ADC (08), LPUART2 = link.
+"""
+
+[[group]]
+id = "supply"
+title = "U501 supply decoupling and analog supply"
+note = """
+VDD: 4 pins, 100 nF each + 10 uF. VDD_ANA through a ferrite bead with 100 nF + 1 uF (VDD and VDD_ANA within 0.1 V of each other, Table 9; the bead's DC drop at the ADC's current is negligible). The ADC reference VREFH is bonded to VDD_ANA in this package, so the NTC bias is taken from VDDA_S (ratiometric). VDD_USB unused: 10 kOhm to GND as Table 42 recommends; USB0_DP/DM float. The datasheet gives no decoupling figure: values are common practice [EST] (capture notes).
+"""
+
+[[group]]
+id = "clock"
+title = "Supervisor's own 16 MHz crystal (§B2.4)"
+note = """
+ECX-32 16 MHz, CL 10 pF, ESR <= 80 Ohm (inside Table 24's 16 MHz examples, Rm 80-200 Ohm). Load caps 12 pF C0G: CL = 12*12/(12+12) + Cstray (EXTAL/XTAL pin parasitics 2 pF typ each, about 1 pF in series, + ~2 pF board) = 9-10 pF. Different crystal maker from the main controller's (Abracon) so a batch defect cannot stop both clocks (D-39 spirit).
+"""
+
+[[group]]
+id = "reset"
+title = "Reset, ISP strap and SWD pads"
+note = """
+RESET_B (P1_29, reset function by default): 10 kOhm up + 10 nF; the pad's own pull is only the ~1 MOhm high-resistance option (Table 11). ISPMODE_N (P3_29) is sampled at reset: 10 kOhm up = normal boot from flash. J501: Tag-Connect TC2030-NL pads, separate from the main's J401 (no debug path joins the controllers, §B2.5).
+"""
+
+[[group]]
+id = "rx"
+title = "Ioff receivers on 3V3_SUP (rule R7)"
+note = """
+LINK_M2S: 100 kOhm to GND (an unpowered main reads as a continuous break) + 1 kOhm series + SN74LVC1G17 Schmitt (contract 5.3). OVP_TRIP: its default resistor (100 kOhm to GND) is on sheet 11; it enters U501 only through U503, no pull here. With 3V3_SUP off, both buffers' inputs and outputs are high-impedance (Ioff <= 10 uA), so the main domain cannot feed 3V3_SUP through U501's pin diodes.
+"""
+
+[[group]]
+id = "pulls"
+title = "Default resistors the contract assigns to sheet 05"
+note = """
+SEQ_ACT_S_N, SEQ_DONE_S_N (open-drain from 12): 100 kOhm to 3V3_SUP, open or unpowered reads "not active / not done" (R11). SBZ_INT_N (open drain from 16): 100 kOhm. CANCEL_S_N (contact to GND on 06): 10 kOhm.
+"""
+
+[[group]]
+id = "analog"
+title = "Supervisor capacitor NTC bias (contract 5.6)"
+note = """
+NTC_CAP_S (10 kOhm NTC on J1102, sheet 11, to GND): 10.0 kOhm 0.1 % bias to VDDA_S (= the ADC reference), then 1 kOhm + 100 nF at the ADC pin (P1_10, ADC0_A8). Half-scale at 25 C.
+"""
+
+[[group]]
+id = "alarm"
+title = "Supervisor's own alarm: piezo sounder driven as a bridge, and a red fault light (D-26)"
+note = """
+U504 dual Schmitt buffer on 3V3_SUP drives the sounder differentially from the complementary pair PWM0_A0/B0 (P3_6/P3_7): 6.6 V peak-to-peak across the element from a 3.3 V rail. 100 kOhm pull-downs hold both inputs low (silent) while U501 is in reset; 33 Ohm per side limits the charging current of the element's capacitance. Fault light: red LED from a high-drive pad (P3_0) through 220 Ohm. Both are off by default and switched on by firmware (set_fault_alarm). The sounder part and its loudness belong to WP-C (contract §9) and are provisional here.
+"""
+
+# ====================================================================== U501
+[[part]]
+ref = "U501"
+group = "mcu"
+lib_id = "aed_mcu:MCXA153VLH"
+value = "MCXA153VLH"
+footprint = "Package_QFP:LQFP-64_10x10mm_P0.5mm"
+mpn = "MCXA153VLH"
+manufacturer = "NXP Semiconductors"
+datasheet = "https://www.nxp.com/docs/en/data-sheet/MCXAP064M096F30.pdf"
+description = "Arm Cortex-M33 96 MHz, 128 KB flash, 32 KB SRAM, LQFP64"
+fields = { DocRef = "supervisor controller (§B2)", Verify = "pin table drafted from Table 41 by script, symbol PinoutVerified = NO until a person checks it; TA -40..+125 C per Table 18" }
+pins = """
+# pin  name  net   # function; mux; note
+  1    P1_7              NC                 # unused
+  2    P1_8              NC                 # unused
+  3    P1_9              NC                 # unused
+  4    P1_10             NTC_CAP_S_ADC      # ADC0_A8; analog; NTC_CAP_S after R507/C512
+  5    P1_11             OVP_TRIP_S         # GPIO in, WUU0_IN11; ALT0; from U503 (Ioff receiver of OVP_TRIP)
+  6    P1_12             CANCEL_S_N         # GPIO in, WUU0_IN12; ALT0; 10k up here
+  7    P1_13             SUP_KEEP           # GPIO out; ALT0; 100k to GND on 03
+  8    P1_29/RESET_B     RESET_S_N          # RESET_B; ALT1 (reset default); 10k up + 10 nF + SWD
+  9    P1_30/XTAL48M     XTAL_S             # XTAL48M (system oscillator); analog; Y501
+  10   P1_31/EXTAL48M    EXTAL_S            # EXTAL48M (system oscillator); analog; Y501
+  11   VSS               GND                # supply
+  12   VDD_ANA           VDDA_S             # supply
+  13   VDD               3V3_SUP            # supply
+  14   P2_0              SEQ_ACT_S_N        # GPIO in, WUU0_IN18; ALT0; 100k up here
+  15   P2_1              NC                 # unused
+  16   P2_2              NC                 # unused
+  17   P2_3              SEQ_DONE_S_N       # GPIO in, WUU0_IN19; ALT0; 100k up here
+  18   P2_4              HOLD_S_CLK         # GPIO out toggled by the control loop (CT1_MAT0 available); ALT0 (ALT5); F-1; 100k to GND on 09
+  19   P2_5              PERMIT_CLK         # GPIO out toggled by the control loop (CT1_MAT1 available); ALT0 (ALT5); F-1; 100k to GND on 09
+  20   P2_6              TEST_PERMIT_CLK    # GPIO out toggled by the control loop (CT1_MAT2 available); ALT0 (ALT5); F-1; 100k to GND on 09
+  21   P2_7              NC                 # unused
+  22   P2_12             NC                 # unused
+  23   P2_13             NC                 # unused
+  24   P2_16             NC                 # unused
+  25   VDD_USB           VDDUSB_S           # supply
+  26   USB0_DM           NC                 # unused
+  27   USB0_DP           NC                 # unused
+  28   VSS               GND                # supply
+  29   VDD               3V3_SUP            # supply
+  30   P3_31             NC                 # unused
+  31   P3_30             NC                 # unused
+  32   P3_29/ISPMODE_N   ISPMODE_S_N        # ISPMODE_N (boot strap); ALT1 (reset default); 10k up (R503): boot from flash
+  33   P3_28             NC                 # unused
+  34   P3_27             NC                 # unused
+  35   P3_15             LINK_S2M           # LPUART2_TXD; ALT2; link to 04
+  36   P3_14             LINK_M2S_RX        # LPUART2_RXD, WUU0_IN25; ALT2; from U502 (Ioff Schmitt receiver of LINK_M2S)
+  37   P3_13             NC                 # unused
+  38   P3_12             NC                 # unused
+  39   P3_11             HVS_PDRST_N        # GPIO out; ALT0; 100k to GND on 08
+  40   P3_10             HVS_SCLK           # LPSPI1_SCK; ALT2; AD7171 (08)
+  41   P3_9              HVS_DOUT           # LPSPI1_SDI (GPIO interrupt for DOUT/RDY); ALT2; AD7171 (08)
+  42   P3_8              NC                 # unused
+  43   P3_7              PIEZO_B_DRV        # PWM0_B0; ALT5; to U504 channel 2 (complementary)
+  44   P3_6              PIEZO_A_DRV        # PWM0_A0; ALT5; to U504 channel 1
+  45   P3_1              NC                 # unused
+  46   P3_0              FAULT_LED_S        # GPIO out (high-drive pad); ALT0; red fault light via R513
+  47   VSS               GND                # supply
+  48   VDD               3V3_SUP            # supply
+  49   P0_0/SWDIO        SWDIO_S            # SWDIO; ALT1 (reset default); debug; reset default ALT1 with pull-up
+  50   P0_1/SWCLK        SWCLK_S            # SWCLK; ALT1 (reset default); debug; reset default ALT1 with pull-down
+  51   P0_2/SWO          SWO_S              # SWO; ALT1 (reset default); debug trace out
+  52   P0_3              NC                 # unused
+  53   P0_6              NC                 # unused
+  54   P0_16             NC                 # unused
+  55   P0_17             NC                 # unused
+  56   P1_0              SBZ_MOSI           # LPSPI0_SDO; ALT2; MAX30009 (16)
+  57   P1_1              SBZ_SCLK           # LPSPI0_SCK; ALT2
+  58   P1_2              SBZ_MISO           # LPSPI0_SDI; ALT2
+  59   P1_3              SBZ_CS_N           # LPSPI0_PCS0 (or GPIO); ALT2; 100k up on 16
+  60   VDD               3V3_SUP            # supply
+  61   VSS               GND                # supply
+  62   P1_4              SBZ_INT_N          # GPIO in, WUU0_IN8; ALT0; 100k up here
+  63   P1_5              NC                 # unused
+  64   P1_6              NC                 # unused
+"""
+[[part]]
+ref = "C501"
+group = "supply"
+lib_id = "Device:C"
+value = "100n"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+description = "100nF 50V X7R"
+fields = { DocRef = "U501 VDD pin 13" }
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C502"
+group = "supply"
+lib_id = "Device:C"
+value = "100n"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+description = "100nF 50V X7R"
+fields = { DocRef = "U501 VDD pin 29" }
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C503"
+group = "supply"
+lib_id = "Device:C"
+value = "100n"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+description = "100nF 50V X7R"
+fields = { DocRef = "U501 VDD pin 48" }
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C504"
+group = "supply"
+lib_id = "Device:C"
+value = "100n"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+description = "100nF 50V X7R"
+fields = { DocRef = "U501 VDD pin 60" }
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C505"
+group = "supply"
+lib_id = "Device:C"
+value = "10u"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "GRM21BR71A106KE51L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM21BR71A106KE51L"
+description = "10uF 10V X7R"
+fields = { DocRef = "U501 VDD bulk", Verify = "Murata MPN suffix built from the GRM part-numbering scheme; not checked against the Murata catalogue page" }
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "FB501"
+group = "supply"
+lib_id = "Device:FerriteBead_Small"
+value = "220R@100MHz"
+footprint = "Inductor_SMD:L_0603_1608Metric"
+mpn = "BLM18PG221SN1D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=BLM18PG221SN1D"
+description = "Ferrite bead 220 Ohm at 100 MHz, 1.4 A, 0603"
+fields = { DocRef = "VDDA_S filter", Verify = "rating from Murata catalogue memory; datasheet page not opened" }
+between = ["3V3_SUP", "VDDA_S"]
+
+[[part]]
+ref = "C506"
+group = "supply"
+lib_id = "Device:C"
+value = "100n"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+description = "100nF 50V X7R"
+fields = { DocRef = "U501 VDD_ANA pin 12" }
+between = ["VDDA_S", "GND"]
+
+[[part]]
+ref = "C507"
+group = "supply"
+lib_id = "Device:C"
+value = "1u"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12D"
+description = "1uF 16V X7R"
+fields = { DocRef = "U501 VDD_ANA pin 12" }
+between = ["VDDA_S", "GND"]
+
+[[part]]
+ref = "R501"
+group = "supply"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "10K 1% 0.1 W thick film 0603"
+fields = { DocRef = "VDD_USB unused: 10 kOhm to ground (Table 42)" }
+between = ["VDDUSB_S", "GND"]
+
+[[part]]
+ref = "Y501"
+group = "clock"
+lib_id = "Device:Crystal_GND24"
+value = "16MHz CL10pF"
+footprint = "Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm"
+mpn = "ECS-160-10-33-AGN-TR"
+manufacturer = "ECS Inc."
+datasheet = "https://ecsxtal.com/store/pdf/ECX-32.pdf"
+description = "16.000 MHz crystal ECX-32, CL 10 pF, +/-25 ppm, +/-30 ppm -40..+85 C, ESR <= 80 Ohm, C0 <= 5 pF, 3.2 x 2.5 mm"
+fields = { DocRef = "supervisor crystal (§B2.4)", Verify = "ordering code built from the ECX-32 part-numbering guide (Rev.2017); availability of the A/G/N option set not confirmed with ECS" }
+pins = """
+  1  1  XTAL_S
+  2  G  GND
+  3  3  EXTAL_S
+  4  G  GND
+"""
+
+[[part]]
+ref = "C508"
+group = "clock"
+lib_id = "Device:C"
+value = "12p"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "GRM1555C1H120JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1555C1H120JA01D"
+description = "12pF 50V C0G"
+fields = { DocRef = "supervisor crystal load capacitor (arithmetic in group note)", Verify = "Murata MPN suffix built from the GRM part-numbering scheme; not checked against the Murata catalogue page" }
+between = ["XTAL_S", "GND"]
+
+[[part]]
+ref = "C509"
+group = "clock"
+lib_id = "Device:C"
+value = "12p"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "GRM1555C1H120JA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1555C1H120JA01D"
+description = "12pF 50V C0G"
+fields = { DocRef = "supervisor crystal load capacitor", Verify = "Murata MPN suffix built from the GRM part-numbering scheme; not checked against the Murata catalogue page" }
+between = ["EXTAL_S", "GND"]
+
+[[part]]
+ref = "R502"
+group = "reset"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "10K 1% 0.1 W thick film 0603"
+fields = { DocRef = "RESET_B pull-up (internal is only ~1 MOhm)" }
+between = ["RESET_S_N", "3V3_SUP"]
+
+[[part]]
+ref = "C510"
+group = "reset"
+lib_id = "Device:C"
+value = "10n"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "GRM155R71H103KA88D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM155R71H103KA88D"
+description = "10nF 50V X7R"
+fields = { DocRef = "RESET_B filter", Verify = "Murata MPN suffix built from the GRM part-numbering scheme; not checked against the Murata catalogue page" }
+between = ["RESET_S_N", "GND"]
+
+[[part]]
+ref = "R503"
+group = "reset"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "10K 1% 0.1 W thick film 0603"
+fields = { DocRef = "ISPMODE_N high = boot from flash" }
+between = ["ISPMODE_S_N", "3V3_SUP"]
+
+[[part]]
+ref = "J501"
+group = "reset"
+lib_id = "Connector:Conn_ARM_SWD_TagConnect_TC2030-NL"
+value = "TC2030-NL pads"
+footprint = "Connector:Tag-Connect_TC2030-IDC-NL_2x03_P1.27mm_Vertical"
+mpn = "TC2030-IDC-NL"
+manufacturer = "Tag-Connect"
+datasheet = "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/TC2030-IDC-NL_Datasheet_8.pdf"
+description = "SWD programming pads for the Tag-Connect TC2030-IDC-NL cable (footprint only, nothing fitted)"
+dnp = true
+variant = "Pads only: no part is fitted; the cable is test equipment"
+fields = { DocRef = "supervisor SWD (§B2.5)", Verify = "Tag-Connect datasheet URL not opened; pinout = KiCad stock symbol" }
+pins = """
+  1  VCC      3V3_SUP
+  2  SWDIO    SWDIO_S
+  3  ~{RESET} RESET_S_N
+  4  SWCLK    SWCLK_S
+  5  GND      GND
+  6  SWO      SWO_S
+"""
+
+[[part]]
+ref = "R504"
+group = "rx"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "100K 1% 0.1 W thick film 0603"
+fields = { DocRef = "contract 5.3: LINK_M2S default (unpowered main = break)" }
+between = ["LINK_M2S", "GND"]
+
+[[part]]
+ref = "R505"
+group = "rx"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "1K 1% 0.1 W thick film 0603"
+fields = { DocRef = "contract 5.3: 1 kOhm series" }
+between = ["LINK_M2S", "LINK_M2S_IN"]
+
+[[part]]
+ref = "U502"
+group = "rx"
+lib_id = "74xGxx:74LVC1G17"
+value = "SN74LVC1G17DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G17DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g17.pdf"
+description = "Single Schmitt-trigger buffer, Ioff (partial power-down), 1.65-5.5 V, -40..+125 C"
+fields = { DocRef = "LINK_M2S Ioff Schmitt receiver (§B2.6)" }
+pins = """
+  1  NC   NC
+  2  ~    LINK_M2S_IN
+  3  GND  GND
+  4  ~    LINK_M2S_RX
+  5  VCC  3V3_SUP
+"""
+
+[[part]]
+ref = "U503"
+group = "rx"
+lib_id = "74xGxx:74LVC1G17"
+value = "SN74LVC1G17DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G17DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g17.pdf"
+description = "Single Schmitt-trigger buffer, Ioff (partial power-down), 1.65-5.5 V, -40..+125 C"
+fields = { DocRef = "OVP_TRIP receiver (R7; pull-down is on 11)" }
+pins = """
+  1  NC   NC
+  2  ~    OVP_TRIP
+  3  GND  GND
+  4  ~    OVP_TRIP_S
+  5  VCC  3V3_SUP
+"""
+
+[[part]]
+ref = "C511"
+group = "rx"
+lib_id = "Device:C"
+value = "100n"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+description = "100nF 50V X7R"
+fields = { DocRef = "U502 VCC" }
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C513"
+group = "rx"
+lib_id = "Device:C"
+value = "100n"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+description = "100nF 50V X7R"
+fields = { DocRef = "U503 VCC" }
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "R508"
+group = "pulls"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "100K 1% 0.1 W thick film 0603"
+fields = { DocRef = "contract 5.7 (open = not active)" }
+between = ["SEQ_ACT_S_N", "3V3_SUP"]
+
+[[part]]
+ref = "R509"
+group = "pulls"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "100K 1% 0.1 W thick film 0603"
+fields = { DocRef = "contract 5.7 (open = not done)" }
+between = ["SEQ_DONE_S_N", "3V3_SUP"]
+
+[[part]]
+ref = "R510"
+group = "pulls"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "100K 1% 0.1 W thick film 0603"
+fields = { DocRef = "contract 5.8" }
+between = ["SBZ_INT_N", "3V3_SUP"]
+
+[[part]]
+ref = "R511"
+group = "pulls"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0710KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "10K 1% 0.1 W thick film 0603"
+fields = { DocRef = "contract 5.8" }
+between = ["CANCEL_S_N", "3V3_SUP"]
+
+[[part]]
+ref = "R506"
+group = "analog"
+lib_id = "Device:R"
+value = "10.0k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "ERA-3AEB103V"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/cdbs/www-data/pdf/RDM0000/AOA0000C307.pdf"
+description = "10.0 kOhm 0.1% 25 ppm/K thin film 0603"
+fields = { DocRef = "contract 5.6 NTC_CAP_S bias to the supervisor ADC reference" }
+between = ["VDDA_S", "NTC_CAP_S"]
+
+[[part]]
+ref = "R507"
+group = "analog"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "1K 1% 0.1 W thick film 0603"
+fields = { DocRef = "NTC_CAP_S series R" }
+between = ["NTC_CAP_S", "NTC_CAP_S_ADC"]
+
+[[part]]
+ref = "C512"
+group = "analog"
+lib_id = "Device:C"
+value = "100n"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+description = "100nF 50V X7R"
+fields = { DocRef = "NTC_CAP_S filter" }
+between = ["NTC_CAP_S_ADC", "GND"]
+
+[[part]]
+ref = "U504"
+group = "alarm"
+lib_id = "74xGxx:74LVC2G17"
+value = "SN74LVC2G17DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC2G17DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc2g17.pdf"
+description = "Dual Schmitt-trigger buffer, +/-24 mA, Ioff, 1.65-5.5 V, -40..+125 C; piezo bridge driver"
+fields = { DocRef = "alarm sounder driver (§B10, D-26)" }
+pins = """
+  1  ~    PIEZO_A_DRV
+  2  GND  GND
+  3  ~    PIEZO_B_DRV
+  4  ~    PIEZO_B_OUT
+  5  VCC  3V3_SUP
+  6  ~    PIEZO_A_OUT
+"""
+
+[[part]]
+ref = "C514"
+group = "alarm"
+lib_id = "Device:C"
+value = "100n"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93D"
+description = "100nF 50V X7R"
+fields = { DocRef = "U504 VCC" }
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "R514"
+group = "alarm"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "100K 1% 0.1 W thick film 0603"
+fields = { DocRef = "sounder silent while U501 is in reset" }
+between = ["PIEZO_A_DRV", "GND"]
+
+[[part]]
+ref = "R515"
+group = "alarm"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "100K 1% 0.1 W thick film 0603"
+fields = { DocRef = "sounder silent while U501 is in reset" }
+between = ["PIEZO_B_DRV", "GND"]
+
+[[part]]
+ref = "R516"
+group = "alarm"
+lib_id = "Device:R"
+value = "33"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0733RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "33R 1% 0.1 W thick film 0603"
+fields = { DocRef = "piezo charge-current limit" }
+between = ["PIEZO_A_OUT", "PIEZO_A"]
+
+[[part]]
+ref = "R517"
+group = "alarm"
+lib_id = "Device:R"
+value = "33"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0733RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "33R 1% 0.1 W thick film 0603"
+fields = { DocRef = "piezo charge-current limit" }
+between = ["PIEZO_B_OUT", "PIEZO_B"]
+
+[[part]]
+ref = "LS501"
+group = "alarm"
+lib_id = "Device:Buzzer"
+value = "PKLCS1212E4001-R1"
+footprint = "Buzzer_Beeper:Buzzer_Murata_PKLCS1212E"
+mpn = "PKLCS1212E4001-R1"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=PKLCS1212E4001-R1"
+description = "Piezo sounder 4 kHz, 12 x 12 mm SMD, external drive; supervisor fault alarm (D-26)"
+fields = { DocRef = "supervisor alarm (D-26)", Verify = "PROVISIONAL: sounder part is WP-C's decision (contract §9); sound level at 6.6 Vpp differential vs the >= 85 dB at 10 cm target NOT verified (datasheet not opened)" }
+pins = """
+  1  +  PIEZO_A
+  2  -  PIEZO_B
+"""
+
+[[part]]
+ref = "R513"
+group = "alarm"
+lib_id = "Device:R"
+value = "220"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07220RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "220R 1% 0.1 W thick film 0603"
+fields = { DocRef = "red LED current (3.3 - 1.9 V) / 220 Ohm = 6.4 mA" }
+between = ["FAULT_LED_S", "FAULT_LED_A"]
+
+[[part]]
+ref = "D501"
+group = "alarm"
+lib_id = "Device:LED"
+value = "red"
+footprint = "LED_SMD:LED_0805_2012Metric"
+mpn = "APT2012SURCK"
+manufacturer = "Kingbright"
+datasheet = "https://www.kingbrightusa.com/images/catalog/SPEC/APT2012SURCK.pdf"
+description = "Red LED 0805 (AlGaInP), -40..+85 C; supervisor fault light (D-26)"
+fields = { DocRef = "supervisor fault light (D-26)", Verify = "forward voltage and pad polarity from the Kingbright datasheet (not opened)" }
+pins = """
+  1  K  GND
+  2  A  FAULT_LED_A
+"""
+

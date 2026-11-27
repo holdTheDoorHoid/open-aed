@@ -1,0 +1,413 @@
+# 08_sense_sup - supervisor's capacitor-voltage chain and the hardware over-voltage comparator.
+# NOT FOR CONSTRUCTION — unreviewed design.
+# Source: docs/HARDWARE_DESIGN.md §B9.1, §B4.4 (threshold stack-up), §B4.6, §B5.4 (OVP force); contract.md issue 2
+# §5.4 (OVP_TRIP), §5.6, §8 (sheet 08). References 801-899. Work package WP-C. Arithmetic: capture-notes/WP-C.md.
+# The supervisor string (12 x 3.32 MOhm thin film + 2 x 79.6 kOhm) and its tap clamp are on 11_hv_storage.
+
+[sheet]
+name = "08_sense_sup"
+title = "Supervisor capacitor-voltage chain: AD7171 + ADR3425, hardware over-voltage comparator"
+source = "docs/HARDWARE_DESIGN.md §B9.1, §B4.4, §B4.6; contract.md §5.4, §5.6"
+date = "2026-11-27"
+comments = [
+  "Shares nothing with 07_sense_main: own rail 3V3_SUP, ADI ADC and reference, a different op-amp and comparator family, internal ADC clock (D-28).",
+  "OVP_TRIP trips at 2,160 V nominal (band 2,132-2,189 V worst case) and releases near 1,000 V: the forced dump continues well below the operating range.",
+]
+
+[nets]
+power = ["GND", "3V3_SUP", "VREF_S"]
+global = [
+  "VCAP_S_TAP",               # 11 -> 08, scaled capacitor voltage 1:1,002
+  "HVS_SCLK", "HVS_PDRST_N",  # 05 -> 08
+  "HVS_DOUT",                 # 08 -> 05
+  "OVP_TRIP",                 # 08 -> 11 (opto LEDs), 05 ; high = over-voltage
+]
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR8001 "
+until_sheet = "03_power_rails"
+reason = "#PWR8001 = 3V3_SUP (KiCad reports the power symbol, not the net). 3V3_SUP is made by U302 on 03_power_rails (WP-A, placeholder in this worktree); contract §4."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "GND"
+until_sheet = "01_power_battery"
+reason = "GND is made on 01_power_battery (WP-A, placeholder in this worktree); contract §4."
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "U801 Pin (1|9) "
+until_sheet = "05_supervisor_mcu"
+reason = "Driven by the supervisor U501 on 05_supervisor_mcu (WP-B, placeholder here). HVS_PDRST_N has its 100 kOhm pull-down R804 here (contract §5.6)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "VCAP_S_TAP"
+until_sheet = "11_hv_storage"
+reason = "Driven from the supervisor string tap on 11_hv_storage (WP-F), placeholder in this worktree."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "HVS_|OVP_TRIP"
+until_sheet = "05_supervisor_mcu"
+reason = "Partner is the supervisor on 05_supervisor_mcu (WP-B); OVP_TRIP also goes to the opto LEDs on 11_hv_storage. Placeholders in this worktree."
+
+[[group]]
+id = "tap"
+title = "VCAP_S_TAP input: 100 kOhm + 10 nF, OPA388 zero-drift follower (feeds the ADC and the OVP comparator)"
+note = """
+VCAP_S_TAP = Vcap x 39.8 k / (39.84 M + 39.8 k) = Vcap / 1,002.0 (string on 11; contract says 1:1,000). 1,950 V -> 1.946 V; 2,160 V -> 2.156 V.
+R801 100 kOhm meets R7: 3.6 V clamped tap into an unpowered OPA388 -> at most 33 uA (abs. max. +-10 mA, SBOS777D 6.1). R801 + C801: 1.6 ms.
+U804 OPA388: Vos 5 uV max (7.5 uV over temperature), IB 350 pA max at 25 C / 400 pA 0-85 C (SBOS777D 6.7) -> 0.4 nA x 150 kOhm = 60 uV = 0.06 V of capacitor voltage. It is a different family (zero-crossover, not chopper) from the main chain's OPA333. An Analog Devices ADA4528-1 was preferred for maker diversity but its data sheet could not be retrieved (capture notes).
+R802 1 MOhm to 3V3_SUP: a failed-open follower reads full scale -> OVP trips (a detected, no-shock failure, like §13 fault 16a) instead of hiding an over-voltage.
+"""
+
+[[group]]
+id = "adc"
+title = "AD7171 16-bit delta-sigma ADC, 125 Hz, ratiometric to VREF_S (ADR3425)"
+note = """
+AIN+ = buffered tap through R803 1 k / C803 10 nF C0G; AIN- = GND; REFIN = VREF_S 2.5 V -> full scale 2.5 V = 2,505 V; LSB (offset binary, +-VREF) 76.3 uV = 76 mV of capacitor voltage.
+AD7171 average input current 400 nA/V (Rev. C Table 2) -> 0.78 uA x 1 k = 0.78 mV static at 1.95 V: proportional to the input, so it is a gain term removed by calibration; its drift (60 pA/V/K) is 5 uV over 45 K.
+Two-wire read-only interface: SCLK in (Schmitt), DOUT/RDY out. PDRST low = power-down/reset; R804 100 kOhm pull-down = default off (contract §5.6). Exposed pad to GND (Table 6).
+Decoupling 100 nF + 1 uF at VDD.
+"""
+
+[[group]]
+id = "ref"
+title = "VREF_S = 2.5 V, ADR3425 (Analog Devices), supervisor chain only"
+note = """
+ADR3425ARJZ: +-0.1 % initial, 8 ppm/K max, 30 ppm / 1000 h at 50 C, thermal hysteresis 70 ppm, VIN 2.7-5.5 V, dropout 200 mV (Rev. B Table 5). Load: AD7171 reference 1 uA, threshold divider 0.1 mA. ENABLE tied to VIN (>= 0.85 VIN). Input 100 nF + 1 uF, output 1 uF + 100 nF (Rev. B 'Input and Output Capacitors': 1-10 uF input, 0.1 uF ceramic).
+VREF_S is drawn as a power symbol made here by the reference's power_out pin (contract §4); used on this sheet only.
+"""
+
+[[group]]
+id = "ovp"
+title = "Hardware over-voltage comparator OVP_TRIP (2,160 V), TLV9031 push-pull on 3V3_SUP"
+note = """
+U803 IN- = VREF_S x 15.6 k / (9.09 k + 15.6 k) = 1.5796 V (0.1 % parts, C810 100 nF). IN+ = buffered tap through R805 36.5 k, positive feedback R806 100 k from the output.
+Trip (output low before): tap = 1.5796 x (1 + 36.5/100) = 2.1561 V = 2,160 V nominal. Release (output high, VOH about 3.15 V): tap = 2.1561 - 3.15 x 0.365 = 1.006 V = about 1,000 V.
+Band [CALC, worst case]: TLV9031 Vos +-2 mV over temperature (SNOSDA3H 5.7), ADR3425 0.24 %, resistors 0.1 % + 25 ppm/K, follower 0.07 mV, supervisor string ratio +-0.2 % tolerance +-0.225 % temperature +-0.25 % life -> 2,132-2,189 V (design table §B4.4: 2,138-2,182 V). Top 11 V below the 2,200 V rating; bottom 123 V above the top of the firmware window (2,008.6 V). Release 919-1,098 V (depends on VOH, i.e. on 3V3_SUP and the opto LED load on 11).
+Why a wide hysteresis: after a hardware over-voltage something has already failed; the forced dump runs to about 1,000 V instead of stopping 1-2 % below the trip point and re-arming the charger at the top of the range. The comparator does not latch (no latch net in the contract): see capture notes, contract issue C-5.
+Output: push-pull high = over-voltage -> opto LEDs on 11 (series resistor and 100 kOhm pull-down on 11) and the supervisor (R7 receiver on 05). TLV9031 inputs are fault-tolerant to 6 V regardless of V+ (SNOSDA3H 5.1 note 2).
+Unpowered (3V3_SUP off) -> OVP_TRIP low = no force: the accepted latent fault 33 (§13); 3V3_SUP off also stops the supervisor's hold clock, so stack B conducts anyway.
+"""
+
+# ================================================================== parts: tap buffer
+[[part]]
+ref = "R801"
+group = "tap"
+lib_id = "Device:R"
+value = "100k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW0603100KBEEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
+description = "R7 input resistor, VCAP_S_TAP; thin film 25 ppm/K (different maker from 07's input resistor)"
+fields = { DocRef = "§B9.1 supervisor chain input", Verify = "TNPW0603 0.1 % 25 ppm/K ordering code" }
+between = ["VCAP_S_TAP", "VCAPS_IN"]
+
+[[part]]
+ref = "C801"
+group = "tap"
+lib_id = "Device:C"
+value = "10nF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C103J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G_SMD.pdf"
+description = "Tap filter, 1.6 ms"
+between = ["VCAPS_IN", "GND"]
+
+[[part]]
+ref = "U804"
+group = "tap"
+lib_id = "aed_uisense:OPA388_DBV"
+value = "OPA388IDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "OPA388IDBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/opa388.pdf"
+description = "Zero-drift follower for VCAP_S_TAP (the 'zero-drift buffer' of contract §8 sheet 08)"
+fields = { DocRef = "§B9.1 supervisor buffer" }
+pins = """
+  3  +IN  VCAPS_IN
+  4  -IN  VCAPS_BUF
+  1  OUT  VCAPS_BUF
+  5  V+   3V3_SUP
+  2  V-   GND
+"""
+
+[[part]]
+ref = "C802"
+group = "tap"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C104K5RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "U804 supply decoupling"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "R802"
+group = "tap"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW06031M00FKEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Fail-high pull-up on the follower output"
+between = ["VCAPS_BUF", "3V3_SUP"]
+
+# ================================================================== parts: ADC
+[[part]]
+ref = "R803"
+group = "adc"
+lib_id = "Device:R"
+value = "1k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW06031K00BEEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
+description = "AD7171 input filter R"
+new_row = true
+between = ["VCAPS_BUF", "VCAPS_ADC"]
+
+[[part]]
+ref = "C803"
+group = "adc"
+lib_id = "Device:C"
+value = "10nF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C103J5GACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1003_C0G_SMD.pdf"
+description = "AD7171 input filter C (charge reservoir for the sampling input)"
+between = ["VCAPS_ADC", "GND"]
+
+[[part]]
+ref = "U801"
+group = "adc"
+lib_id = "Analog_ADC:AD7171"
+value = "AD7171BCPZ-REEL7"
+footprint = "Package_DFN_QFN:DFN-10-1EP_3x3mm_P0.5mm_EP1.55x2.48mm"
+mpn = "AD7171BCPZ-REEL7"
+manufacturer = "Analog Devices"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/AD7171.pdf"
+description = "16-bit delta-sigma ADC, 125 Hz, internal clock, 2-wire read-only, -40..105 C, 10-lead LFCSP 3x3"
+fields = { DocRef = "§B9.1 ADC (supervisor)", SymbolNote = "stock symbol numbers match AD7171 Rev. C Table 6 (read 27 Nov 2026 from the eicom-hosted copy); stock names SCK and ~{PDRST} = datasheet SCLK and PDRST", FootprintNote = "stock default footprint is the Microchip 3x3 DFN-10 with EP 1.55 x 2.48 mm; check against ADI CP-10-9 outline before layout" }
+pins = """
+  1   SCK          HVS_SCLK
+  2   DOUT/~{RDY}  HVS_DOUT
+  3   AIN+         VCAPS_ADC
+  4   AIN-         GND
+  5   REFIN+       VREF_S
+  6   REFIN-       GND
+  7   GND          GND
+  8   VDD          3V3_SUP
+  9   ~{PDRST}     HVS_PDRST_N
+  10  GND          GND
+  11  PAD          GND
+"""
+
+[[part]]
+ref = "R804"
+group = "adc"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "HVS_PDRST_N default low = ADC held in reset (contract §5.6 default resistor, sheet 08)"
+new_row = true
+between = ["HVS_PDRST_N", "GND"]
+
+[[part]]
+ref = "C804"
+group = "adc"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C104K5RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "AD7171 VDD decoupling"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C805"
+group = "adc"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C105K4RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "AD7171 VDD bulk"
+between = ["3V3_SUP", "GND"]
+
+# ================================================================== parts: reference
+[[part]]
+ref = "U802"
+group = "ref"
+lib_id = "aed_uisense:ADR3425_RJ"
+value = "ADR3425ARJZ-R7"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "ADR3425ARJZ-R7"
+manufacturer = "Analog Devices"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/ADR3412_3420_3425_3430_3433_3440_3450.pdf"
+description = "VREF_S 2.5 V, +-0.1 %, 8 ppm/K"
+fields = { DocRef = "§B9.1 reference (supervisor)" }
+pins = """
+  4  VIN         3V3_SUP
+  3  ENABLE      3V3_SUP
+  6  VOUT_FORCE  VREF_S
+  5  VOUT_SENSE  VREF_S
+  1  GND_FORCE   GND
+  2  GND_SENSE   GND
+"""
+
+[[part]]
+ref = "C806"
+group = "ref"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C104K5RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "ADR3425 input, ceramic"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C807"
+group = "ref"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C105K4RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "ADR3425 input bulk (1-10 uF recommended)"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C808"
+group = "ref"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C105K4RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "ADR3425 output capacitor"
+between = ["VREF_S", "GND"]
+
+[[part]]
+ref = "C809"
+group = "ref"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C104K5RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Local VREF_S capacitor at AD7171 REFIN+"
+between = ["VREF_S", "GND"]
+
+# ================================================================== parts: OVP comparator
+[[part]]
+ref = "R807"
+group = "ovp"
+lib_id = "Device:R"
+value = "9.09k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW06039K09BEEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
+description = "OVP threshold divider, top"
+between = ["VREF_S", "OVP_REF"]
+
+[[part]]
+ref = "R808"
+group = "ovp"
+lib_id = "Device:R"
+value = "15.6k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW060315K6BEEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
+description = "OVP threshold divider, bottom (1.5796 V)"
+between = ["OVP_REF", "GND"]
+
+[[part]]
+ref = "C810"
+group = "ovp"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C104K5RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Threshold node noise filter (static node)"
+between = ["OVP_REF", "GND"]
+
+[[part]]
+ref = "R805"
+group = "ovp"
+lib_id = "Device:R"
+value = "36.5k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW060336K5BEEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
+description = "OVP input resistor (sets trip x 1.365 and hysteresis)"
+new_row = true
+between = ["VCAPS_BUF", "OVP_SENSE"]
+
+[[part]]
+ref = "R806"
+group = "ovp"
+lib_id = "Device:R"
+value = "100k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "TNPW0603100KBEEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
+description = "OVP positive feedback: release about 1,000 V"
+between = ["OVP_TRIP", "OVP_SENSE"]
+
+[[part]]
+ref = "U803"
+group = "ovp"
+lib_id = "aed_uisense:TLV9031_DBV"
+value = "TLV9031DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TLV9031DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv9031.pdf"
+description = "OVP comparator, push-pull on 3V3_SUP (contract U803)"
+fields = { DocRef = "§B4.4 over-voltage comparator; §B4.6", Verify = "source current into the two series opto LEDs on 11 (VOH 175 mV max at 4 mA): LED resistor on 11 must keep the load <= 4 mA or the release point moves" }
+pins = """
+  3  IN+  OVP_SENSE
+  4  IN-  OVP_REF
+  1  OUT  OVP_TRIP
+  5  V+   3V3_SUP
+  2  V-   GND
+"""
+
+[[part]]
+ref = "C811"
+group = "ovp"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C104K5RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "U803 supply decoupling"
+between = ["3V3_SUP", "GND"]

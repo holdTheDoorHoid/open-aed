@@ -1,0 +1,955 @@
+# 03_power_rails — VBAT_SYS -> independent fused regulators: TPS629210 #1 (3V3_MAIN), TPS629210 #2 (3V3_SUP), TPS62130
+# (5V0_SYS, EN_5V0), TPS70933 (3V3_AON, always on); power-on logic (button straight to both controller regulators
+# through two P-MOSFETs, wake-OR), RV-3028-C7 wake timer, SN74AUP1G74 ready latch and LED flasher.
+# NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a). Nothing here is an instruction to build or power anything.
+# Source: docs/HARDWARE_DESIGN.md §B1.6-B1.8, §B10 (ready LED), §B11 (RV-3028-C7), §11, §12; contract.md issue 2
+# §4, §5.1, §8 row 03, §9 WP-A. Capture notes: hardware/aed-main/capture-notes/WP-A.md. References 301-399.
+
+[sheet]
+name = "03_power_rails"
+title = "Rails: fused 3V3_MAIN, 3V3_SUP (separate regulators), 5V0_SYS, 3V3_AON; power-on and wake logic, RTC, ready latch and LED"
+source = "docs/HARDWARE_DESIGN.md §B1.6-B1.8, §B10, §B11; contract.md issue 2 §4, §5.1, §8, §9 (WP-A)"
+date = "2026-11-27"
+comments = [
+  "Main and supervisor regulators: separate parts, separate fuses, separate enable networks; the button enables both through separate P-MOSFETs, no logic IC between (D-26)",
+  "VBAT_SYS carries no resistive load below 100 kOhm on this sheet (MAX17320 short-removal test, sheet 01)",
+]
+
+[nets]
+power = ["GND", "VBAT_SYS", "3V3_MAIN", "3V3_SUP", "5V0_SYS", "3V3_AON"]
+# Made here through an inductor (passive): permanent flags. 3V3_AON is driven by the LDO output pin (power output).
+power_flags = ["3V3_MAIN", "3V3_SUP", "5V0_SYS"]
+# Regulator inputs behind their own fuses, and the RTC backup pin tied to VSS through 10 k: permanent flags.
+flag_nodes = ["VIN_M", "VIN_S", "VIN_5", "RTC_VBAK"]
+global = [
+  "PWR_BTN_N",    # 06 -> 03, 04; 100k pull-up to 3V3_AON HERE (R301)
+  "MAIN_KEEP",    # 04 -> 03; 100k pull-down HERE (R302)
+  "SUP_KEEP",     # 05 -> 03; 100k pull-down HERE (R303)
+  "SUP_WAKE",     # 04 -> 03; 100k pull-down HERE (R304)
+  "EN_5V0",       # 04 -> 03; 100k pull-down HERE (R305): 5V0_SYS off by default (F-2)
+  "RTC_INT_N",    # U305 INT (open drain) -> 03, 04; 100k pull-up to 3V3_AON HERE (R306, R8 exception)
+  "RTC_CLKOUT",   # U305 CLKOUT (push-pull, 3V3_AON) -> 06 and the LED pulse network here
+  "READY_D",      # 04 -> U306 D; 1M pull-down HERE (R307)
+  "READY_CLK",    # 04 -> U306 CLK; 1M pull-down HERE (R308)
+  "DOCK_DET_N",   # 02 (open drain) -> 03, 04; 100k pull-up to 3V3_AON HERE (R309)
+  "I2C_M_SCL",
+  "I2C_M_SDA",
+]
+
+# No ERC acceptances needed on this sheet: every inter-sheet input here also has its default resistor on this sheet
+# (a passive driver for KiCad), and the RTC I2C pins share I2C_M_SCL/SDA with sheet 01, whose acceptance covers the net.
+
+# ====================================================================== groups
+[[group]]
+id = "main"
+title = "3V3_MAIN: F301 1 A -> U301 TPS629210 (VSET open = 3.3 V, MODE 64.9 k = 1 MHz auto PFM/PWM, output discharge on)"
+note = """
+Smart-CONFIG (SLVSGE0B Table 8-1 #13): MODE/S-CONF 64.9 k -> VSET, 1 MHz, output discharge active, auto PFM/PWM. VSET pin open -> 3.3 V (Table 8-2 #18 '249 k or larger/open'). Accuracy -1.3/+1.1 % over TJ -40..125 C -> 3.26-3.34 V.
+L 2.2 uH nominal (Table 7.3 1.0-4.7 uH): XAL4020-222ME (Isat 5.6 A, DCR 38.7 mOhm max); load 80 mA peak (design §B1.6). CIN 4.7 uF 25 V 1206 (TI list C3216X7R1E475K160AC); COUT 2 x 22 uF 10 V (>= 10 uF effective after DC bias; Table 9-3 allows 10-200 uF with 2.2 uH).
+EN_MAIN (precise enable, 1.00 V rising / 0.90 V falling; internal pull-down): wired-OR of Q301 (power button), Q303 (RTC_INT_N, the wake timer holds INT low until cleared = latch), Q304 (DOCK_DET_N) and D301 (MAIN_KEEP). P-MOSFET drains drive 3V3_AON straight onto EN; the diode from MAIN_KEEP gives 3.3 - 0.85 = 2.45 V. R310 100 k defines EN low when all are off.
+Fuse F301 SF-1206S100-2 (1 A slow blow, 50 A at 63 V DC interrupting, 0.132 ohm): input current about 45 mA average at 80 mA / 3.3 V / 6 V in.
+"""
+
+[[group]]
+id = "sup"
+title = "3V3_SUP: F302 1 A -> U302 TPS629210 (separate part, fuse and enable network from 3V3_MAIN)"
+note = """
+Same configuration as U301. EN_SUP: wired-OR of Q302 (power button, a second P-MOSFET so no single transistor serves both regulators), and D302 (SUP_WAKE from the main for scheduled self-tests, SUP_KEEP from the supervisor). The supervisor domain shares nothing with the main domain on this sheet except VBAT_SYS, GND and the button line (design §B1.6, D-26).
+"""
+
+[[group]]
+id = "five"
+title = "5V0_SYS: F303 3 A -> U303 TPS62130 (FB 107 k / 20.0 k = 5.08 V, 1.25 MHz, SS 4.7 nF), EN = EN_5V0 (default off)"
+note = """
+VOUT = 0.8 V x (1 + 107/20.0) = 5.08 V (Eq 6). Chosen 1.6 % above 5.00 V so that the worst case stays >= 4.9 V (design §B1.6, LT3751 VCC lock-out): VFB 785.6-814.4 mV in PWM (SLVSAG7F EC) and 1 % resistors -> 4.96-5.20 V; in power-save mode (781.6-822.4 mV) 4.93-5.25 V.
+Dropout: at 5.2 V pack and 1.2 A: (170 mOhm high-side max + 38.7 mOhm L + 23 mOhm fuse) x 1.2 A = 0.28 V -> 4.92 V in 100 % mode [CALC, ignores pack-path drop of ~0.1 V at 9.2 A charger current: VERIFY with sheet 10's load timing].
+FSW tied to VOUT -> 1.25 MHz (pin table note 2); DEF low -> nominal voltage. Soft start Css = tSS x 2.5 uA / 1.25 V (Eq 10): 4.7 nF -> 2.35 ms. L 2.2 uH XAL4020-222ME (Isat 5.6 A > 1.2 A + ripple); CIN 10 uF 25 V 1210 + 0.1 uF at AVIN (§9.2.2.2); COUT 2 x 22 uF 10 V.
+EN = EN_5V0 with R305 100 k pull-down (contract): 5V0_SYS is off unless the main asks for it; loss of 5V0_SYS is a safe failure (design §B1.6).
+"""
+
+[[group]]
+id = "aon"
+title = "3V3_AON: U304 TPS70933 from VBAT_SYS, always on; EN from a 4.7 M / 3.3 M divider (EN max 6.5 V)"
+note = """
+EN abs max 7 V, recommended <= 6.5 V (SBVS186H 6.1, 6.3), VEN(HI) >= 0.9 V: EN = VBAT_SYS x 3.3/8.0 = 2.27 V at 5.5 V, 3.47 V at 8.4 V. Divider current 1.05 uA at 8.4 V (part of the standby budget; design §12 'disabled regulators, eFuse off ~4 uA' row).
+CIN 1 uF (0.1-2.2 uF advised); COUT 2.2 uF (1.5-47 uF for stability). Load 5 mA peak / 10 uA standby (design §B1.6).
+"""
+
+[[group]]
+id = "rtc"
+title = "Wake timer U305 RV-3028-C7 on 3V3_AON (I2C on the main bus, INT open drain, CLKOUT 1 Hz to the display and LED)"
+note = """
+App Manual rev 1.4 §7.1 'no backup source / event input not used': VBACKUP to VSS through 10 k (do not float; switchover disabled, BSM = 00 default), EVI to VSS through a resistor (10 k), 100 nF at VDD.
+CLKOUT is push-pull and runs at 32.768 kHz from delivery until the firmware writes FD = 1 Hz and stores it in EEPROM (App Manual §4.6.3): a firmware requirement (capture notes).
+I2C pull-ups are on 04 to 3V3_MAIN (contract §5.1); with the main off the bus sits low, which the RV-3028 tolerates (it is the VDD-powered side).
+"""
+
+[[group]]
+id = "ready"
+title = "Ready latch U306 SN74AUP1G74 on 3V3_AON (cleared at power-up) + LED flash ~3 ms per second from RTC_CLKOUT"
+note = """
+D = READY_D, CLK = READY_CLK (1 M pull-downs: contract). ~PRE tied high. ~CLR held low for about 100 ms after 3V3_AON appears (R320 1 M x C316 100 nF, Schmitt inputs Vhys 250 mV typ, SCES644D): the indicator starts 'not ready' instead of a random state (R11: an unpowered or reset latch must not show READY).
+LED: Q output -> R321 470 ohm -> D303 (Kingbright APT1608SGC green, VF 2.2 V typ at 20 mA) -> Q305 BSS138 -> GND. Q305 gate is RTC_CLKOUT differentiated by C317 33 nF / R322 100 k (tau 3.3 ms): on for about tau x ln(3.3/VGS) = 2-4 ms after each rising edge (VGS(th) 0.8-1.5 V). Current (3.0 - 1.9 V) / 470 = 2.3 mA; average 2.3 mA x 3 ms/s = 7 uA, 23 uW at 3.3 V (design §B10 '~20 uW').
+"""
+
+[[group]]
+id = "tp"
+title = "Test points (design §15: every rail with GND beside it)"
+
+# ====================================================================== parts: 3V3_MAIN
+[[part]]
+ref = "F301"
+group = "main"
+lib_id = "Device:Fuse"
+value = "1A"
+footprint = "Fuse:Fuse_1206_3216Metric"
+mpn = "SF-1206S100-2"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/Product-Datasheets/SF-1206S.pdf"
+description = "3V3_MAIN regulator fuse 1 A slow blow, 63 V DC, 50 A interrupting"
+fields = { DocRef = "design §B1.6 'own 1 A fuse'", Verify = "interrupting rating 50 A vs prospective VBAT_SYS short current (capture notes doubt 4)" }
+between = ["VBAT_SYS", "VIN_M"]
+
+[[part]]
+ref = "C301"
+group = "main"
+lib_id = "Device:C"
+value = "4.7uF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "C3216X7R1E475K160AC"
+manufacturer = "TDK"
+description = "U301 CIN 4.7 uF 25 V X7R (SLVSGE0B Table 9-1)"
+between = ["VIN_M", "GND"]
+
+[[part]]
+ref = "U301"
+group = "main"
+lib_id = "aed_power:TPS629210"
+value = "TPS629210DRLR"
+footprint = "Package_TO_SOT_SMD:SOT-583-8"
+mpn = "TPS629210DRLR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps629210.pdf"
+description = "3V3_MAIN buck, 1 A (contract U301)"
+fields = { DocRef = "design §B1.6 '3V3_MAIN TPS629210'" }
+pins = """
+  6   VIN          VIN_M
+  7   EN           EN_MAIN
+  8   MODE/S-CONF  U301_MODE
+  1   FB/VSET      NC          # open = 3.3 V (Table 8-2 #18)
+  4   SW           U301_SW
+  3   VOS          3V3_MAIN
+  2   PG           NC          # open drain, not used
+  5   GND          GND
+"""
+
+[[part]]
+ref = "R312"
+group = "main"
+lib_id = "Device:R"
+value = "64.9k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 64.9k 1% 100ppm"
+manufacturer = "any"
+description = "Smart-CONFIG #13: VSET, 1 MHz, output discharge, auto PFM/PWM"
+between = ["U301_MODE", "GND"]
+
+[[part]]
+ref = "L301"
+group = "main"
+lib_id = "Device:L"
+value = "2.2uH"
+footprint = "Inductor_SMD:L_Coilcraft_XAL4020-XXX"
+mpn = "XAL4020-222MEB"
+manufacturer = "Coilcraft"
+datasheet = "https://www.coilcraft.com/getmedia/6adcb47d-8b55-416c-976e-1e22e0d2848c/xal4000.pdf"
+description = "2.2 uH, DCR 38.7 mOhm max, Isat 5.6 A, -40..+125 C"
+pins = """
+  1   1   U301_SW
+  2   2   3V3_MAIN
+"""
+
+[[part]]
+ref = "C302"
+group = "main"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "generic 1206 X7R 22uF 10V"
+manufacturer = "any"
+description = "U301 COUT"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "C303"
+group = "main"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "generic 1206 X7R 22uF 10V"
+manufacturer = "any"
+description = "U301 COUT"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "Q301"
+group = "main"
+lib_id = "Transistor_FET:BSS84"
+value = "BSS84"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS84"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss84-d.pdf"
+description = "Power button -> EN_MAIN (no logic between, D-26); -50 V P-MOSFET, VGS(th) -0.8..-2.0 V, TJ -55..+150 C"
+new_row = true
+pins = """
+  1   G   PWR_BTN_N
+  2   S   3V3_AON
+  3   D   EN_MAIN
+"""
+
+[[part]]
+ref = "Q303"
+group = "main"
+lib_id = "Transistor_FET:BSS84"
+value = "BSS84"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS84"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss84-d.pdf"
+description = "Wake timer interrupt -> EN_MAIN"
+pins = """
+  1   G   RTC_INT_N
+  2   S   3V3_AON
+  3   D   EN_MAIN
+"""
+
+[[part]]
+ref = "Q304"
+group = "main"
+lib_id = "Transistor_FET:BSS84"
+value = "BSS84"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS84"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss84-d.pdf"
+description = "Dock present -> EN_MAIN"
+pins = """
+  1   G   DOCK_DET_N
+  2   S   3V3_AON
+  3   D   EN_MAIN
+"""
+
+[[part]]
+ref = "D301"
+group = "main"
+lib_id = "Diode:BAV70"
+value = "BAV70"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV70LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bav70lt1-d.pdf"
+description = "MAIN_KEEP -> EN_MAIN (one diode of the common-cathode pair used), 100 V"
+pins = """
+  1   A   MAIN_KEEP
+  2   A   NC          # second diode not used
+  3   K   EN_MAIN
+"""
+
+[[part]]
+ref = "R310"
+group = "main"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "EN_MAIN pull-down (all wake sources off = regulator off)"
+between = ["EN_MAIN", "GND"]
+
+[[part]]
+ref = "R301"
+group = "main"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "PWR_BTN_N default pull-up to 3V3_AON (contract §5.1)"
+new_row = true
+between = ["PWR_BTN_N", "3V3_AON"]
+
+[[part]]
+ref = "R302"
+group = "main"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "MAIN_KEEP default pull-down (contract §5.1)"
+between = ["MAIN_KEEP", "GND"]
+
+[[part]]
+ref = "R306"
+group = "main"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "RTC_INT_N default pull-up to 3V3_AON (contract §5.1, R8 exception)"
+between = ["RTC_INT_N", "3V3_AON"]
+
+[[part]]
+ref = "R309"
+group = "main"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "DOCK_DET_N default pull-up to 3V3_AON (contract §5.1)"
+between = ["DOCK_DET_N", "3V3_AON"]
+
+# ====================================================================== parts: 3V3_SUP
+[[part]]
+ref = "F302"
+group = "sup"
+lib_id = "Device:Fuse"
+value = "1A"
+footprint = "Fuse:Fuse_1206_3216Metric"
+mpn = "SF-1206S100-2"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/Product-Datasheets/SF-1206S.pdf"
+description = "3V3_SUP regulator fuse 1 A slow blow (separate from F301)"
+fields = { DocRef = "design §B1.6 'own 1 A fuse'", Verify = "as F301" }
+between = ["VBAT_SYS", "VIN_S"]
+
+[[part]]
+ref = "C304"
+group = "sup"
+lib_id = "Device:C"
+value = "4.7uF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "C3216X7R1E475K160AC"
+manufacturer = "TDK"
+description = "U302 CIN 4.7 uF 25 V X7R"
+between = ["VIN_S", "GND"]
+
+[[part]]
+ref = "U302"
+group = "sup"
+lib_id = "aed_power:TPS629210"
+value = "TPS629210DRLR"
+footprint = "Package_TO_SOT_SMD:SOT-583-8"
+mpn = "TPS629210DRLR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps629210.pdf"
+description = "3V3_SUP buck, 1 A (contract U302)"
+fields = { DocRef = "design §B1.6 '3V3_SUP separate TPS629210'" }
+pins = """
+  6   VIN          VIN_S
+  7   EN           EN_SUP
+  8   MODE/S-CONF  U302_MODE
+  1   FB/VSET      NC          # open = 3.3 V
+  4   SW           U302_SW
+  3   VOS          3V3_SUP
+  2   PG           NC
+  5   GND          GND
+"""
+
+[[part]]
+ref = "R313"
+group = "sup"
+lib_id = "Device:R"
+value = "64.9k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 64.9k 1% 100ppm"
+manufacturer = "any"
+description = "Smart-CONFIG #13 (as U301)"
+between = ["U302_MODE", "GND"]
+
+[[part]]
+ref = "L302"
+group = "sup"
+lib_id = "Device:L"
+value = "2.2uH"
+footprint = "Inductor_SMD:L_Coilcraft_XAL4020-XXX"
+mpn = "XAL4020-222MEB"
+manufacturer = "Coilcraft"
+datasheet = "https://www.coilcraft.com/getmedia/6adcb47d-8b55-416c-976e-1e22e0d2848c/xal4000.pdf"
+description = "2.2 uH, Isat 5.6 A"
+pins = """
+  1   1   U302_SW
+  2   2   3V3_SUP
+"""
+
+[[part]]
+ref = "C305"
+group = "sup"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "generic 1206 X7R 22uF 10V"
+manufacturer = "any"
+description = "U302 COUT"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "C306"
+group = "sup"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "generic 1206 X7R 22uF 10V"
+manufacturer = "any"
+description = "U302 COUT"
+between = ["3V3_SUP", "GND"]
+
+[[part]]
+ref = "Q302"
+group = "sup"
+lib_id = "Transistor_FET:BSS84"
+value = "BSS84"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS84"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss84-d.pdf"
+description = "Power button -> EN_SUP (second, separate P-MOSFET)"
+new_row = true
+pins = """
+  1   G   PWR_BTN_N
+  2   S   3V3_AON
+  3   D   EN_SUP
+"""
+
+[[part]]
+ref = "D302"
+group = "sup"
+lib_id = "Diode:BAV70"
+value = "BAV70"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV70LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bav70lt1-d.pdf"
+description = "SUP_WAKE, SUP_KEEP -> EN_SUP (diode OR)"
+pins = """
+  1   A   SUP_WAKE
+  2   A   SUP_KEEP
+  3   K   EN_SUP
+"""
+
+[[part]]
+ref = "R311"
+group = "sup"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "EN_SUP pull-down"
+between = ["EN_SUP", "GND"]
+
+[[part]]
+ref = "R303"
+group = "sup"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "SUP_KEEP default pull-down (contract §5.1)"
+new_row = true
+between = ["SUP_KEEP", "GND"]
+
+[[part]]
+ref = "R304"
+group = "sup"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "SUP_WAKE default pull-down (contract §5.1)"
+between = ["SUP_WAKE", "GND"]
+
+# ====================================================================== parts: 5V0_SYS
+[[part]]
+ref = "F303"
+group = "five"
+lib_id = "Device:Fuse"
+value = "3A"
+footprint = "Fuse:Fuse_1206_3216Metric"
+mpn = "SF-1206S300-2"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/Product-Datasheets/SF-1206S.pdf"
+description = "5V0_SYS regulator fuse 3 A slow blow, 63 V DC, 50 A interrupting, 23 mOhm"
+fields = { DocRef = "design §B1.6 'own 3 A fuse'", Verify = "as F301" }
+between = ["VBAT_SYS", "VIN_5"]
+
+[[part]]
+ref = "C307"
+group = "five"
+lib_id = "Device:C"
+value = "10uF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "generic 1210 X7R 10uF 25V"
+manufacturer = "any"
+description = "U303 CIN 10 uF 25 V (SLVSAG7F §9.2.2.2)"
+between = ["VIN_5", "GND"]
+
+[[part]]
+ref = "C308"
+group = "five"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 100nF 25V"
+manufacturer = "any"
+description = "AVIN bypass 0.1 uF (§9.2.2.2)"
+between = ["VIN_5", "GND"]
+
+[[part]]
+ref = "U303"
+group = "five"
+lib_id = "Regulator_Switching:TPS62130"
+value = "TPS62130RGTR"
+footprint = "Package_DFN_QFN:VQFN-16-1EP_3x3mm_P0.5mm_EP1.68x1.68mm_ThermalVias"
+mpn = "TPS62130RGTR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps62130.pdf"
+description = "5V0_SYS buck 3 A, 3-17 V in, TJ -40..+125 C (SLVSAG7F); stock symbol merges AVIN/PVIN as VIN and AGND/PGND/pad as GND"
+fields = { DocRef = "design §B1.6 '5V0_SYS TPS62130'" }
+pins = """
+  1    SW      U303_SW
+  2    SW      U303_SW
+  3    SW      U303_SW
+  4    PG      NC          # open drain, not used
+  5    FB      U303_FB
+  6    GND     GND         # AGND
+  7    FSW     5V0_SYS     # high = 1.25 MHz (tie to VOUT, pin table note 2)
+  8    DEF     GND         # nominal output voltage
+  9    SS/TR   U303_SS
+  10   VIN     VIN_5       # AVIN
+  11   VIN     VIN_5       # PVIN
+  12   VIN     VIN_5       # PVIN
+  13   EN      EN_5V0
+  14   VOS     5V0_SYS
+  15   GND     GND         # PGND
+  16   GND     GND         # PGND
+  17   GND     GND         # exposed thermal pad
+"""
+
+[[part]]
+ref = "R305"
+group = "five"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "EN_5V0 default pull-down (contract §5.1): 5V0_SYS off"
+new_row = true
+between = ["EN_5V0", "GND"]
+
+[[part]]
+ref = "C311"
+group = "five"
+lib_id = "Device:C"
+value = "4.7nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 4.7nF 25V"
+manufacturer = "any"
+description = "Soft start 2.35 ms"
+between = ["U303_SS", "GND"]
+
+[[part]]
+ref = "R314"
+group = "five"
+lib_id = "Device:R"
+value = "107k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 107k 1%"
+manufacturer = "any"
+description = "FB divider top (5.08 V)"
+between = ["5V0_SYS", "U303_FB"]
+
+[[part]]
+ref = "R315"
+group = "five"
+lib_id = "Device:R"
+value = "20.0k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 20.0k 1%"
+manufacturer = "any"
+description = "FB divider bottom (40 uA)"
+between = ["U303_FB", "GND"]
+
+[[part]]
+ref = "L303"
+group = "five"
+lib_id = "Device:L"
+value = "2.2uH"
+footprint = "Inductor_SMD:L_Coilcraft_XAL4020-XXX"
+mpn = "XAL4020-222MEB"
+manufacturer = "Coilcraft"
+datasheet = "https://www.coilcraft.com/getmedia/6adcb47d-8b55-416c-976e-1e22e0d2848c/xal4000.pdf"
+description = "2.2 uH, Isat 5.6 A, Irms 4.0 A (20 C rise)"
+pins = """
+  1   1   U303_SW
+  2   2   5V0_SYS
+"""
+
+[[part]]
+ref = "C309"
+group = "five"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "generic 1206 X7R 22uF 10V"
+manufacturer = "any"
+description = "U303 COUT"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "C310"
+group = "five"
+lib_id = "Device:C"
+value = "22uF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "generic 1206 X7R 22uF 10V"
+manufacturer = "any"
+description = "U303 COUT"
+between = ["5V0_SYS", "GND"]
+
+# ====================================================================== parts: 3V3_AON
+[[part]]
+ref = "U304"
+group = "aon"
+lib_id = "aed_power:TPS70933DBV"
+value = "TPS70933DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TPS70933DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tps709.pdf"
+description = "3V3_AON LDO, 150 mA, 1 uA IQ, 30 V in (contract U304)"
+fields = { DocRef = "design §B1.6 '3V3_AON TPS70933'" }
+pins = """
+  1   IN    VBAT_SYS
+  3   EN    U304_EN
+  5   OUT   3V3_AON
+  4   NC    NC
+  2   GND   GND
+"""
+
+[[part]]
+ref = "R316"
+group = "aon"
+lib_id = "Device:R"
+value = "4.7M"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 4.7M 1%"
+manufacturer = "any"
+description = "EN divider top (keeps EN <= 3.5 V at 8.4 V)"
+between = ["VBAT_SYS", "U304_EN"]
+
+[[part]]
+ref = "R317"
+group = "aon"
+lib_id = "Device:R"
+value = "3.3M"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 3.3M 1%"
+manufacturer = "any"
+description = "EN divider bottom"
+between = ["U304_EN", "GND"]
+
+[[part]]
+ref = "C312"
+group = "aon"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 1uF 25V"
+manufacturer = "any"
+description = "U304 CIN"
+between = ["VBAT_SYS", "GND"]
+
+[[part]]
+ref = "C313"
+group = "aon"
+lib_id = "Device:C"
+value = "2.2uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 2.2uF 10V"
+manufacturer = "any"
+description = "U304 COUT (1.5-47 uF)"
+between = ["3V3_AON", "GND"]
+
+# ====================================================================== parts: RTC
+[[part]]
+ref = "U305"
+group = "rtc"
+lib_id = "Timer_RTC:RV-3028-C7"
+value = "RV-3028-C7"
+footprint = "Package_SON:MicroCrystal_C7_SON-8_1.5x3.2mm_P0.9mm"
+mpn = "RV-3028-C7 32.768kHz 1ppm-TA-QC"
+manufacturer = "Micro Crystal"
+datasheet = "https://www.microcrystal.com/fileadmin/Media/Products/RTC/Datasheet/RV-3028-C7.pdf"
+description = "Wake timer, 45 nA, 1.1-5.5 V, -40..+85 C (datasheet v1.3 09.2021); pinout per 'Pin connections' table"
+fields = { DocRef = "design §B11 'RV-3028-C7'", Verify = "full ordering code string" }
+pins = """
+  1   CLKOUT    RTC_CLKOUT   # push-pull
+  2   ~{INT}    RTC_INT_N    # open drain
+  3   SCL       I2C_M_SCL
+  4   SDA       I2C_M_SDA
+  5   VSS       GND
+  6   VBACKUP   RTC_VBAK     # not used: 10 k to VSS (App Manual §7.1)
+  7   VDD       3V3_AON
+  8   EVI       RTC_EVI      # not used: resistor to VSS (App Manual §7.1)
+"""
+
+[[part]]
+ref = "C314"
+group = "rtc"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 100nF 16V"
+manufacturer = "any"
+description = "VDD decoupling 100 nF (App Manual §7.1)"
+between = ["3V3_AON", "GND"]
+
+[[part]]
+ref = "R318"
+group = "rtc"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 10k 1%"
+manufacturer = "any"
+description = "VBACKUP to VSS 10 k (App Manual §7.1)"
+between = ["RTC_VBAK", "GND"]
+
+[[part]]
+ref = "R319"
+group = "rtc"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 10k 1%"
+manufacturer = "any"
+description = "EVI to VSS (App Manual §7.1, 10 k as drawn there)"
+between = ["RTC_EVI", "GND"]
+
+# ====================================================================== parts: ready latch and LED
+[[part]]
+ref = "U306"
+group = "ready"
+lib_id = "74xGxx:74AUP1G74"
+value = "SN74AUP1G74DCUR"
+footprint = "Package_SO:VSSOP-8_2.3x2mm_P0.5mm"
+mpn = "SN74AUP1G74DCUR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74aup1g74.pdf"
+description = "Ready latch on 3V3_AON, Ioff, Schmitt inputs, -40..+85 C (SCES644D); VSSOP-8 pinout per Pin Functions"
+fields = { DocRef = "design §B10 'Ready LED'" }
+pins = """
+  1   C        READY_CLK
+  2   D        READY_D
+  3   ~{Q}     NC
+  4   GND      GND
+  5   Q        RDY_Q
+  6   ~{CLR}   RDY_CLR_N
+  7   ~{PRE}   3V3_AON
+  8   VCC      3V3_AON
+"""
+
+[[part]]
+ref = "C315"
+group = "ready"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 100nF 16V"
+manufacturer = "any"
+description = "U306 bypass"
+between = ["3V3_AON", "GND"]
+
+[[part]]
+ref = "R307"
+group = "ready"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 1M 1%"
+manufacturer = "any"
+description = "READY_D default pull-down (contract §5.1)"
+new_row = true
+between = ["READY_D", "GND"]
+
+[[part]]
+ref = "R308"
+group = "ready"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 1M 1%"
+manufacturer = "any"
+description = "READY_CLK default pull-down (contract §5.1)"
+between = ["READY_CLK", "GND"]
+
+[[part]]
+ref = "R320"
+group = "ready"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 1M 1%"
+manufacturer = "any"
+description = "Power-on clear RC (100 ms)"
+between = ["3V3_AON", "RDY_CLR_N"]
+
+[[part]]
+ref = "C316"
+group = "ready"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 100nF 16V"
+manufacturer = "any"
+description = "Power-on clear RC"
+between = ["RDY_CLR_N", "GND"]
+
+[[part]]
+ref = "R321"
+group = "ready"
+lib_id = "Device:R"
+value = "470"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 470R 1%"
+manufacturer = "any"
+description = "LED current 2.3 mA"
+new_row = true
+between = ["RDY_Q", "LED_A"]
+
+[[part]]
+ref = "D303"
+group = "ready"
+lib_id = "Device:LED"
+value = "green"
+footprint = "LED_SMD:LED_0603_1608Metric"
+mpn = "APT1608SGC"
+manufacturer = "Kingbright"
+datasheet = "https://www.kingbrightusa.com/images/catalog/SPEC/APT1608SGC.pdf"
+description = "Ready LED, super bright green 568 nm, 0603, -40..+85 C (DSAD0932 V.22B)"
+fields = { Verify = "visibility at 2.3 mA x 3 ms flashes; cathode mark vs footprint pad 1" }
+pins = """
+  1   K   LED_K
+  2   A   LED_A
+"""
+
+[[part]]
+ref = "Q305"
+group = "ready"
+lib_id = "Transistor_FET:BSS138"
+value = "BSS138"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS138"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss138-d.pdf"
+description = "LED flash switch, on ~3 ms after each RTC_CLKOUT rising edge"
+pins = """
+  1   G   FLASH_G
+  2   S   GND
+  3   D   LED_K
+"""
+
+[[part]]
+ref = "C317"
+group = "ready"
+lib_id = "Device:C"
+value = "33nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 33nF 16V"
+manufacturer = "any"
+description = "Flash differentiator (tau 3.3 ms)"
+between = ["RTC_CLKOUT", "FLASH_G"]
+
+[[part]]
+ref = "R322"
+group = "ready"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "Flash differentiator"
+between = ["FLASH_G", "GND"]
+
+# ====================================================================== parts: test points
+[[part]]
+ref = "TP301"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "3V3_MAIN"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad 3V3_MAIN"
+pins = """
+  1   1   3V3_MAIN
+"""
+
+[[part]]
+ref = "TP302"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "3V3_SUP"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad 3V3_SUP"
+pins = """
+  1   1   3V3_SUP
+"""
+
+[[part]]
+ref = "TP303"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "5V0_SYS"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad 5V0_SYS"
+pins = """
+  1   1   5V0_SYS
+"""
+
+[[part]]
+ref = "TP304"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "3V3_AON"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad 3V3_AON"
+pins = """
+  1   1   3V3_AON
+"""
+
+[[part]]
+ref = "TP305"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "GND"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad GND"
+pins = """
+  1   1   GND
+"""

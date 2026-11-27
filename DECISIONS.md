@@ -165,6 +165,13 @@ Answered on 27 November 2026.
 
 - **Q-50** (owner): confirm D-59, D-60 and D-61, which came out of the independent review of the circuit design (docs/reviews/2026-11-27-hardware-design-review.md).
 
+- **Q-51** (owner): how is the device switched on in an emergency? Assumed: a sealed button separate from cancel.
+- **Q-52** (owner): a short on the battery wiring would silence everything, including the supervisor's alarm, until the device is docked. Accept, or add a small independent cell for that alarm?
+- **Q-53** (owner): the 25 ms hardware time cap limits a pulse's length but hardly its energy (up to about 179 J against 150 J if the main controller's timer sticks). Shorten the cap to about 17 ms, or make it depend on the planned pulse?
+- **Q-54** (owner): may the self-test move the patient relay and exercise the real permit path at low voltage, with pads possibly attached to nothing? Without it, several faults stay hidden until the first real shock and then block it (integration issue I-7).
+- **Q-55** (owner): the speaker reaches about 79 dB at one metre against an 85 dB target, and a larger speaker costs size and weight. Accept, enlarge, or add a second sounder?
+- **Q-56** (owner): the circuit design's safety additions put the lower-risk prototype at about 880–910 g, at or over the 900 g accepted in D-43. Accept for the prototype?
+
 ## Things that need a professional, not a guess
 
 - **Patent attorney:** freedom to operate, especially against Avive's 30+ patents on its compact unit and the Philips patent on analysing during CPR (to about 2036).

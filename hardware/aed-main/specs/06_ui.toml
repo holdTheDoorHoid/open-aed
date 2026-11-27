@@ -1,0 +1,734 @@
+# 06_ui - user interface: memory LCD with always-on blanking inverter, I2S class-D amplifier and speaker,
+# cancel button (two independent contacts), adult/child switch (two poles, D-60), power button.
+# NOT FOR CONSTRUCTION — unreviewed design.
+# Source: docs/HARDWARE_DESIGN.md §B10, §B8.4, §B4.4 (D-60), §B1.7-B1.8; contract.md issue 2 §5.1, §5.5, §5.8, §8.
+# References 601-699. Work package WP-C. Arithmetic: hardware/aed-main/capture-notes/WP-C.md.
+# Not on this sheet: the supervisor's own alarm (piezo + red light, D-26) is on 05; the ready LED/latch is on 03.
+
+[sheet]
+name = "06_ui"
+title = "User interface: memory LCD, speaker and class-D amplifier, cancel button (two contacts), adult/child switch, power button"
+source = "docs/HARDWARE_DESIGN.md §B10; contract.md §5.8"
+date = "2026-11-27"
+comments = [
+  "Display, its blanking inverter and the power button live on 3V3_AON (always on); the amplifier on 5V0_SYS; nothing here is powered from 3V3_MAIN or 3V3_SUP.",
+  "Cancel: two separate sealed switches under one cap; the only shared conductor is GND (§B8.4).",
+]
+
+[nets]
+power = ["GND", "3V3_AON", "5V0_SYS"]
+global = [
+  "LCD_SCLK", "LCD_SI", "LCD_SCS", "LCD_BLANK",   # 04 -> 06
+  "RTC_CLKOUT",                                    # 03 -> 06 (1 Hz)
+  "I2S_BCLK", "I2S_LRCLK", "I2S_SD", "AMP_SD_N",   # 04 -> 06
+  "CANCEL_M_N",                                    # 06 -> 04
+  "CANCEL_S_N",                                    # 06 -> 05
+  "MODE_ADULT_N", "MODE_CHILD_N",                  # 06 -> 04
+  "MODE_CHILD_HW",                                 # 06 -> 10
+  "PWR_BTN_N",                                     # 06 -> 03, 04
+]
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR6000 |#PWR6020 "
+until_sheet = "03_power_rails"
+reason = "KiCad names the power symbol, not the net: #PWR6000 = 3V3_AON, #PWR6020 = 5V0_SYS (checked in the generated sheet). 3V3_AON (U304) and 5V0_SYS (U303) are made on 03_power_rails (WP-A, placeholder in this worktree); contract §4."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "#PWR6003 "
+until_sheet = "01_power_battery"
+reason = "#PWR6003 = GND. GND is made on 01_power_battery (WP-A, placeholder in this worktree); contract §4."
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "LCD_|I2S_|AMP_SD|U601 Pin [1235]|U602 Pin (1|4|14|16)|U603 Pin 2"
+until_sheet = "04_main_mcu"
+reason = "LCD SPI, LCD_BLANK, I2S and AMP_SD_N are driven by the main controller U401 on 04_main_mcu (WP-B, placeholder here); their default resistors (1 MOhm / 100 kOhm to GND) are on this sheet."
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "RTC_CLKOUT|U601 Pin 4"
+until_sheet = "03_power_rails"
+reason = "EXTCOMIN is driven by the RV-3028-C7 CLKOUT on 03_power_rails (WP-A, placeholder here)."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "LCD_|I2S_|AMP_SD_N|CANCEL_M_N|MODE_ADULT_N|MODE_CHILD_N"
+until_sheet = "04_main_mcu"
+reason = "Partner is the main controller on 04_main_mcu (WP-B), placeholder in this worktree."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "RTC_CLKOUT|PWR_BTN_N"
+until_sheet = "03_power_rails"
+reason = "RTC CLKOUT source and the power-button pull-up / wake logic are on 03_power_rails (WP-A), placeholder in this worktree."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "CANCEL_S_N"
+until_sheet = "05_supervisor_mcu"
+reason = "Read by the supervisor on 05_supervisor_mcu (WP-B), placeholder in this worktree."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "MODE_CHILD_HW"
+until_sheet = "10_hv_charger"
+reason = "Read by the FB-switch gate drive on 10_hv_charger (WP-E), which fits its 100 kOhm pull-down; placeholder in this worktree."
+
+# ------------------------------------------------------------------ groups
+[[group]]
+id = "lcd"
+title = "Memory LCD LS013B7DH05 on 3V3_AON: last image (READY / NOT READY) stays while the device is off"
+note = """
+Sharp LD-26912A: VDD/VDDA 2.7-3.3 V (3V3_AON, TPS70933 3.3 V), input high 2.7 V to VDD, operating -20 to +70 C at the panel. EXTMODE = H (tied to VDD): COM inversion from EXTCOMIN = RTC_CLKOUT, 1 Hz from the always-on RTC on 03. Sharp's 57-66 Hz EXTCOMIN figure applies only while data are written continuously (Remark 6-3/6-4); 1 Hz holds a static image (Fig 6-4 shows 1 Hz LC inversion).
+SPI from the main (LCD_SCLK, LCD_SI, LCD_SCS): 1 MOhm to GND on each (contract §5.8 default resistors: main off -> lines low -> SCS low, display holds its memory) and 1 kOhm series into the panel (limits current into the panel inputs if 3V3_MAIN is momentarily above 3V3_AON; input high must not exceed VDD, LD-26912A Table 5-1). 1 kOhm x about 10 pF = 10 ns against SCLK 1 MHz max (twSCLKH 405 ns).
+External capacitors per LD-26912A §9: 1 uF on VDD, 1 uF on VDDA, 0.1 uF on DISP.
+"""
+
+[[group]]
+id = "blank"
+title = "Blanking: LCD_BLANK (high = blank) -> 74AUP1G04 on 3V3_AON -> DISP (R-21)"
+note = """
+Main off -> LCD_BLANK held low by R607 1 MOhm -> inverter output high -> DISP high = display ON showing memory. The AUP input has Ioff (0.6 uA max with VCC = 0, SCES571K), so a powered main never back-feeds 3V3_AON and an unpowered main is never fed.
+R608 220 Ohm between the inverter and Sharp's recommended 0.1 uF on DISP: limits the charging current to (3.3 V / 220) = 15 mA, inside the AUP's +-20 mA output current rating [UNVERIFIED: abs. max. table not re-read]; DISP rise time becomes about 3 x 22 us instead of Sharp's 50 ns figure, which the recommended 0.1 uF already makes unattainable.
+"""
+
+[[group]]
+id = "audio"
+title = "Voice prompts and metronome: MAX98357A (I2S, mono mix) on 5V0_SYS, 28 mm 8 Ohm speaker"
+note = """
+I2S_BCLK / LRCLK / SD each through 4.7 kOhm (contract §5.8; R-21: with 5V0_SYS off and the main on, the amplifier's inputs cannot back-power 5V0_SYS; firmware also holds I2S low while EN_5V0 is low). 4.7 k x 3 pF = 14 ns against BCLK 3.072 MHz (325 ns period).
+SD_MODE: AMP_SD_N (push-pull 3.3 V) through R612 634 kOhm (Table 6 'R_LARGE' for 3.3 V logic) into the internal 92-108 kOhm pull-down -> 0.38-0.50 V = between trip points B0 (0.355 max) and B1 (0.65 min) = (left + right)/2 mono mix; AMP_SD_N low = shutdown. 634 k also limits current into SD_MODE to 5 uA if 5V0_SYS is off. R613 100 kOhm to GND is the contract's default resistor (main off -> shutdown).
+GAIN_SLOT tied to VDD = +6 dB (Table 8). 0 dBFS -> 2.1 + 6 = 8.1 dBV = 2.54 Vrms -> 0.81 W into 8 Ohm (0.95 W at 6.8 Ohm, -15 %) = within the speaker's 1.0 W rating. Sound [CALC from PUI data]: 80 +- 3 dB at 1 m / 1 W -> 79 +- 3 dB at 1 m at full scale. The parts-study target of 85 dB(A) at 1 m needs about 3.2 W into this speaker: NOT MET (capture notes, departure D-C1).
+VDD: 10 uF + 0.1 uF (data sheet 'Power-Supply Input'). Filterless output: speaker leads short, inductance of the voice coil > 10 uH required (data sheet); EP to GND plane. Operating range of the MAX98357A is -40 to +85 C.
+"""
+
+[[group]]
+id = "cancel"
+title = "Cancel: two sealed tactile switches under one guarded cap, CANCEL_M_N -> main, CANCEL_S_N -> supervisor (§B8.4)"
+note = """
+Each contract: switch to GND, TVS at the switch (TPD1E10B06, 100 nA max leakage at 5 V), 1 kOhm series + 100 nF to GND. Pull-ups are on the readers' sheets (10 kOhm to 3V3_MAIN on 04, 10 kOhm to 3V3_SUP on 05; contract §5.8). Release time constant (10 k + 1 k) x 100 nF = 1.1 ms; press discharges through 1 k in 0.1 ms; contact bounce < 1 ms (C&K KSC data) is left to the controllers' debounce. 1 kOhm limits ESD current into the controller pin after the TVS.
+Gold-contact KSC6 (contact material code 3) because the pull-up current is only 0.3 mA: the silver version's minimum current is 1 mA (C&K KSC sheet).
+The two circuits share only GND; one cap presses both (mechanical, not drawn). D-31 stuck rule and M/S disagreement: §13 fault 37.
+"""
+
+[[group]]
+id = "mode"
+title = "Adult/child switch, two-pole changeover (D-60): pole A to the main, pole B to the charger ceiling"
+note = """
+Pole A (common to GND): CHILD throw -> MODE_CHILD_N, ADULT throw -> MODE_ADULT_N; pull-ups 10 kOhm on 04. Between positions or open: both high = fault (contract §5.8).
+Pole B (common to 5V0_SYS): CHILD throw -> R622 1 kOhm -> MODE_CHILD_HW; ADULT throw unused. Closed only in CHILD: MODE_CHILD_HW = 5.0 V x 100 k / 101 k = 4.95 V (100 kOhm pull-down on 10). Open, broken or between positions -> MODE_CHILD_HW low -> ADULT ceiling (D-60). R622 limits a short of the board-to-board wire to GND to 5 mA so it cannot pull 5V0_SYS down. C619 10 nF filters the line (10 us).
+The two poles are mechanically ganged; pins 1 and 4 (CHILD throws) sit on the same side of the switch so one slider position closes both (C&K JS DPDT circuit diagram: commons 2 and 5) [UNVERIFIED for the SMT JCQN variant, see capture notes].
+ESD: TVS on each pole-A throw at the switch, 1 kOhm series + 10 nF to the controller (release 0.1 ms).
+"""
+
+[[group]]
+id = "pwr"
+title = "Power button PWR_BTN_N into the always-on wake logic (03) and the main (04)"
+note = """
+Sealed tactile switch to GND, TVS at the switch, 1 kOhm series, 10 nF to GND. Pull-up 100 kOhm to 3V3_AON is on 03 (contract §5.1); release time constant 101 k x 10 nF = 1 ms. The 1 k / 10 nF also slows ESD edges into the wake logic, which enables both controller regulators directly (§B1.7, D-26).
+"""
+
+# ================================================================== parts: LCD
+[[part]]
+ref = "U601"
+group = "lcd"
+lib_id = "aed_uisense:LS013B7DH05"
+value = "LS013B7DH05"
+footprint = "Connector_FFC-FPC:Hirose_FH12-10S-0.5SH_1x10-1MP_P0.50mm_Horizontal"
+mpn = "LS013B7DH05"
+manufacturer = "Sharp"
+datasheet = "https://cdn.eicom.ru/media/PDF/6421265.pdf"
+description = "1.26 in memory LCD 144x168, 3 V; footprint is the 10-way 0.5 mm FPC connector its tail plugs into (connector MPN FH12-10S-0.5SH(55), Hirose)"
+fields = { DocRef = "§B10 display", Verify = "FPC tail contact side and connector orientation (top/bottom contact) against LD-26912A Fig 8-1; Sharp lifecycle status of LS013B7DH05", FootprintNote = "MP = connector mounting pads, tied to GND" }
+pins = """
+  1   SCLK      LCD_SCLK_D
+  2   SI        LCD_SI_D
+  3   SCS       LCD_SCS_D
+  4   EXTCOMIN  RTC_CLKOUT
+  5   DISP      LCD_DISP
+  6   VDDA      3V3_AON
+  7   VDD       3V3_AON
+  8   EXTMODE   3V3_AON     # H = COM inversion from EXTCOMIN
+  9   VSS       GND
+  10  VSSA      GND
+  MP  MP        GND
+"""
+
+[[part]]
+ref = "C601"
+group = "lcd"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12%23"
+description = "LCD VDD capacitor (LD-26912A §9 C3)"
+between = ["3V3_AON", "GND"]
+
+[[part]]
+ref = "C602"
+group = "lcd"
+lib_id = "Device:C"
+value = "1uF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71C105KA12D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71C105KA12%23"
+description = "LCD VDDA capacitor (LD-26912A §9 C2)"
+between = ["3V3_AON", "GND"]
+
+[[part]]
+ref = "C603"
+group = "lcd"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "DISP capacitor (LD-26912A §9 C1)"
+between = ["LCD_DISP", "GND"]
+
+[[part]]
+ref = "R601"
+group = "lcd"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "SCLK series into the panel"
+new_row = true
+between = ["LCD_SCLK", "LCD_SCLK_D"]
+
+[[part]]
+ref = "R602"
+group = "lcd"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "SI series into the panel"
+between = ["LCD_SI", "LCD_SI_D"]
+
+[[part]]
+ref = "R603"
+group = "lcd"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "SCS series into the panel"
+between = ["LCD_SCS", "LCD_SCS_D"]
+
+[[part]]
+ref = "R604"
+group = "lcd"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "LCD_SCLK default low (contract §5.8, sheet 06)"
+between = ["LCD_SCLK", "GND"]
+
+[[part]]
+ref = "R605"
+group = "lcd"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "LCD_SI default low (contract §5.8, sheet 06)"
+between = ["LCD_SI", "GND"]
+
+[[part]]
+ref = "R606"
+group = "lcd"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "LCD_SCS default low = panel deselected, memory held (contract §5.8, sheet 06)"
+between = ["LCD_SCS", "GND"]
+
+# ================================================================== parts: blanking
+[[part]]
+ref = "U603"
+group = "blank"
+lib_id = "aed_uisense:SN74AUP1G04_DBV"
+value = "SN74AUP1G04DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74AUP1G04DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74aup1g04.pdf"
+description = "Blanking inverter on 3V3_AON, Ioff input (contract §8 sheet 06)"
+fields = { DocRef = "§B10 display blanking (R-21)" }
+pins = """
+  2  A    LCD_BLANK
+  1  NC   NC
+  4  Y    DISP_DRV
+  5  VCC  3V3_AON
+  3  GND  GND
+"""
+
+[[part]]
+ref = "R607"
+group = "blank"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071ML"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "LCD_BLANK default low = display on (contract §5.8, sheet 06)"
+between = ["LCD_BLANK", "GND"]
+
+[[part]]
+ref = "R608"
+group = "blank"
+lib_id = "Device:R"
+value = "220"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07220RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Limits the inverter's charging current into the 0.1 uF DISP capacitor"
+between = ["DISP_DRV", "LCD_DISP"]
+
+[[part]]
+ref = "C604"
+group = "blank"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "U603 decoupling"
+between = ["3V3_AON", "GND"]
+
+# ================================================================== parts: audio
+[[part]]
+ref = "R609"
+group = "audio"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-074K7L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "I2S_BCLK series (contract §5.8: 4.7 kOhm on 06)"
+between = ["I2S_BCLK", "AMP_BCLK"]
+
+[[part]]
+ref = "R610"
+group = "audio"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-074K7L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "I2S_LRCLK series (contract §5.8)"
+between = ["I2S_LRCLK", "AMP_LRCLK"]
+
+[[part]]
+ref = "R611"
+group = "audio"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-074K7L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "I2S_SD series (contract §5.8)"
+between = ["I2S_SD", "AMP_DIN"]
+
+[[part]]
+ref = "R612"
+group = "audio"
+lib_id = "Device:R"
+value = "634k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07634KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "SD_MODE R_LARGE for 3.3 V logic (MAX98357A Table 6): mono mix (L+R)/2"
+new_row = true
+between = ["AMP_SD_N", "AMP_SDMODE"]
+
+[[part]]
+ref = "R613"
+group = "audio"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "AMP_SD_N default low = amplifier off (contract §5.8, sheet 06)"
+between = ["AMP_SD_N", "GND"]
+
+[[part]]
+ref = "U602"
+group = "audio"
+lib_id = "aed_uisense:MAX98357A_TQFN"
+value = "MAX98357AETE+T"
+footprint = "Package_DFN_QFN:TQFN-16-1EP_3x3mm_P0.5mm_EP1.23x1.23mm"
+mpn = "MAX98357AETE+T"
+manufacturer = "Analog Devices (Maxim)"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/MAX98357A-MAX98357B.pdf"
+description = "I2S class-D mono amplifier on 5V0_SYS (contract U602)"
+fields = { DocRef = "§B10 speaker", FootprintNote = "stock TQFN-16 3x3 EP 1.23 mm: check against Maxim T1633-5 land pattern" }
+pins = """
+  1   DIN        AMP_DIN
+  16  BCLK       AMP_BCLK
+  14  LRCLK      AMP_LRCLK
+  4   SD_MODE    AMP_SDMODE
+  2   GAIN_SLOT  5V0_SYS     # +6 dB (Table 8)
+  7   VDD        5V0_SYS
+  8   VDD        5V0_SYS
+  9   OUTP       SPK_P
+  10  OUTN       SPK_N
+  3   GND        GND
+  11  GND        GND
+  15  GND        GND
+  17  EP         GND         # not internally connected; GND plane for heat
+  5   NC         NC
+  6   NC         NC
+  12  NC         NC
+  13  NC         NC
+"""
+
+[[part]]
+ref = "C605"
+group = "audio"
+lib_id = "Device:C"
+value = "10uF 10V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "GRM21BR71A106KA73L"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM21BR71A106KA73%23"
+description = "MAX98357A VDD bulk (data sheet: 0.1 uF and 10 uF)"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "C606"
+group = "audio"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "MAX98357A VDD decoupling"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "LS601"
+group = "audio"
+lib_id = "Device:Speaker"
+value = "8R 1W 28mm"
+footprint = "Connector_Wire:SolderWire-0.127sqmm_1x02_P3.7mm_D0.48mm_OD1mm"
+mpn = "AS02808MR-R"
+manufacturer = "PUI Audio"
+datasheet = "https://api.puiaudio.com/filename/AS02808MR-R.pdf"
+description = "28 mm 8 Ohm speaker, 1.0 W rated / 1.5 W max, 80 +- 3 dB SPL at 1 m / 1 W, operating -20..+60 C (data sheet rev D, 17 Jul 2025); enclosure-mounted, wired to two solder pads"
+fields = { DocRef = "§B10 speaker", Verify = "no ingress rating; operating limit +60 C is below the device's +70 C service range; loudness target 85 dB(A) at 1 m not met (capture notes D-C1)" }
+pins = """
+  1  1  SPK_P
+  2  2  SPK_N
+"""
+
+# ================================================================== parts: cancel
+[[part]]
+ref = "SW601"
+group = "cancel"
+lib_id = "Switch:SW_Push"
+value = "KSC643J"
+footprint = "Button_Switch_SMD:SW_Push_1P1T_NO_CK_KSC6xxJ"
+mpn = "KSC643J LFS"
+manufacturer = "C&K"
+datasheet = "https://www.ckswitches.com/media/1972/ksc6.pdf"
+description = "Cancel contact to the MAIN: sealed IP67 tactile, 3 N, gold contacts, J-lead"
+fields = { DocRef = "§B8.4 cancel (main contact)", Verify = "gold-contact minimum current and -40..125 C rating for code 3 (KSC sheet read shows the silver column only)" }
+pins = """
+  1  1  CANCEL_M_SW
+  2  2  GND
+"""
+
+[[part]]
+ref = "D601"
+group = "cancel"
+lib_id = "Device:D_TVS"
+value = "TPD1E10B06"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E10B06DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e10b06.pdf"
+description = "ESD clamp at the switch, bidirectional 5.5 V working, 100 nA max leakage"
+fields = { FootprintNote = "DPY (X1SON 1.0 x 0.6) on a generic 0402 land: check TI land pattern" }
+between = ["CANCEL_M_SW", "GND"]
+
+[[part]]
+ref = "R614"
+group = "cancel"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Series / debounce R"
+between = ["CANCEL_M_SW", "CANCEL_M_N"]
+
+[[part]]
+ref = "C607"
+group = "cancel"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "Debounce C (1.1 ms with the 10 k pull-up on 04)"
+between = ["CANCEL_M_N", "GND"]
+
+[[part]]
+ref = "SW602"
+group = "cancel"
+lib_id = "Switch:SW_Push"
+value = "KSC643J"
+footprint = "Button_Switch_SMD:SW_Push_1P1T_NO_CK_KSC6xxJ"
+mpn = "KSC643J LFS"
+manufacturer = "C&K"
+datasheet = "https://www.ckswitches.com/media/1972/ksc6.pdf"
+description = "Cancel contact to the SUPERVISOR: second, independent sealed tactile under the same cap"
+fields = { DocRef = "§B8.4 cancel (supervisor contact)" }
+new_row = true
+pins = """
+  1  1  CANCEL_S_SW
+  2  2  GND
+"""
+
+[[part]]
+ref = "D602"
+group = "cancel"
+lib_id = "Device:D_TVS"
+value = "TPD1E10B06"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E10B06DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e10b06.pdf"
+description = "ESD clamp at the switch"
+between = ["CANCEL_S_SW", "GND"]
+
+[[part]]
+ref = "R615"
+group = "cancel"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Series / debounce R"
+between = ["CANCEL_S_SW", "CANCEL_S_N"]
+
+[[part]]
+ref = "C608"
+group = "cancel"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H104KA93D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H104KA93%23"
+description = "Debounce C (1.1 ms with the 10 k pull-up on 05)"
+between = ["CANCEL_S_N", "GND"]
+
+# ================================================================== parts: mode switch
+[[part]]
+ref = "SW604"
+group = "mode"
+lib_id = "Switch:SW_DPDT_x2"
+value = "JS202011JCQN"
+footprint = "Button_Switch_SMD:SW_DPDT_CK_JS202011JCQN"
+mpn = "JS202011JCQN"
+manufacturer = "C&K"
+datasheet = "https://www.ckswitches.com/media/1422/js.pdf"
+description = "Adult/child slide switch, DPDT on-on, 0.3 A 6 VDC, -40..+85 C. Unit A = pole A (GND common), unit B = pole B (5V0_SYS common)"
+fields = { DocRef = "§B10 adult/child switch (D-60)", Verify = "SMT JCQN terminal numbering (commons 2 and 5) and that 1/4 are the same slider side; break-before-make; contact reliability at 50-330 uA (silver contacts); not sealed - enclosure must seal the actuator", SymbolNote = "Switch:SW_DPDT_x2 pin 2 / 5 = common (B), 1/4 = throw A, 3/6 = throw C" }
+pins = """
+  2  B  GND
+  1  A  MODE_CHILD_SW
+  3  C  MODE_ADULT_SW
+  5  B  5V0_SYS
+  4  A  MODE_HW_SW
+  6  C  NC
+"""
+
+[[part]]
+ref = "D603"
+group = "mode"
+lib_id = "Device:D_TVS"
+value = "TPD1E10B06"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E10B06DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e10b06.pdf"
+description = "ESD clamp, pole A CHILD throw"
+new_row = true
+between = ["MODE_CHILD_SW", "GND"]
+
+[[part]]
+ref = "R616"
+group = "mode"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Series R, MODE_CHILD_N"
+between = ["MODE_CHILD_SW", "MODE_CHILD_N"]
+
+[[part]]
+ref = "C609"
+group = "mode"
+lib_id = "Device:C"
+value = "10nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H103KA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H103KA01%23"
+description = "Filter C, MODE_CHILD_N"
+between = ["MODE_CHILD_N", "GND"]
+
+[[part]]
+ref = "D604"
+group = "mode"
+lib_id = "Device:D_TVS"
+value = "TPD1E10B06"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E10B06DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e10b06.pdf"
+description = "ESD clamp, pole A ADULT throw"
+between = ["MODE_ADULT_SW", "GND"]
+
+[[part]]
+ref = "R617"
+group = "mode"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Series R, MODE_ADULT_N"
+between = ["MODE_ADULT_SW", "MODE_ADULT_N"]
+
+[[part]]
+ref = "C610"
+group = "mode"
+lib_id = "Device:C"
+value = "10nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H103KA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H103KA01%23"
+description = "Filter C, MODE_ADULT_N"
+between = ["MODE_ADULT_N", "GND"]
+
+[[part]]
+ref = "R622"
+group = "mode"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Pole B series R: limits a shorted MODE_CHILD_HW wire to 5 mA from 5V0_SYS"
+new_row = true
+between = ["MODE_HW_SW", "MODE_CHILD_HW"]
+
+[[part]]
+ref = "C619"
+group = "mode"
+lib_id = "Device:C"
+value = "10nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H103KA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H103KA01%23"
+description = "Filter C, MODE_CHILD_HW (10 us)"
+between = ["MODE_CHILD_HW", "GND"]
+
+# ================================================================== parts: power button
+[[part]]
+ref = "SW603"
+group = "pwr"
+lib_id = "Switch:SW_Push"
+value = "KSC643J"
+footprint = "Button_Switch_SMD:SW_Push_1P1T_NO_CK_KSC6xxJ"
+mpn = "KSC643J LFS"
+manufacturer = "C&K"
+datasheet = "https://www.ckswitches.com/media/1972/ksc6.pdf"
+description = "Power button: sealed IP67 tactile, gold contacts"
+fields = { DocRef = "§B10 power button; §B1.7" }
+pins = """
+  1  1  PWR_BTN_SW
+  2  2  GND
+"""
+
+[[part]]
+ref = "D605"
+group = "pwr"
+lib_id = "Device:D_TVS"
+value = "TPD1E10B06"
+footprint = "Diode_SMD:D_0402_1005Metric"
+mpn = "TPD1E10B06DPYR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tpd1e10b06.pdf"
+description = "ESD clamp at the switch"
+between = ["PWR_BTN_SW", "GND"]
+
+[[part]]
+ref = "R618"
+group = "pwr"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-071KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Series R"
+between = ["PWR_BTN_SW", "PWR_BTN_N"]
+
+[[part]]
+ref = "C611"
+group = "pwr"
+lib_id = "Device:C"
+value = "10nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "GRM188R71H103KA01D"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H103KA01%23"
+description = "Filter C (1 ms with the 100 k pull-up on 03)"
+between = ["PWR_BTN_N", "GND"]

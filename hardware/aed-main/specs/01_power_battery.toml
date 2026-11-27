@@ -1,0 +1,590 @@
+# 01_power_battery — 2S Li-ion pack connector, ADI MAX17320 protector + fuel gauge with two high-side N-FETs and a
+# 2 mOhm sense resistor, cell NTCs, main fuse F101 -> VBAT_SYS, battery-under-load test with a hardware time limit.
+# NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a). Nothing here is an instruction to build or power anything.
+# Source: docs/HARDWARE_DESIGN.md §B1.1-B1.3, §11, §13 (faults 13, 40), §16 rank 17; contract.md issue 2 §2, §4, §5.1,
+# §5.2, §8 row 01, §9 WP-A. Capture notes: hardware/aed-main/capture-notes/WP-A.md. References 101-199.
+
+[sheet]
+name = "01_power_battery"
+title = "2S pack: connector, MAX17320 protector and gauge, cell NTCs, main fuse, battery load test"
+source = "docs/HARDWARE_DESIGN.md §B1.1-B1.3; contract.md issue 2 §5.2, §8, §9 (WP-A)"
+date = "2026-11-27"
+comments = [
+  "Device ground of U101 (GND, CSP, cell filters, NTC return) is BAT_NEG, the cell side of R101; system GND is the load side (CSN)",
+  "MAX17320 thresholds are non-volatile configuration, not parts: see the 'gauge' box and capture notes (COMMSH must be 0)",
+]
+
+[nets]
+power = ["GND", "VBAT_PACK", "VBAT_SYS", "3V3_MAIN"]
+# Made here: GND is the load side of the sense resistor R101 (passive), VBAT_SYS is the load side of F101 (passive).
+# VBAT_PACK is driven by the BQ25887 BAT pin (power output) on 02_power_dock, so it needs no flag.
+power_flags = ["GND", "VBAT_SYS"]
+# Local supply nodes: the cell stack (through the connector) and the 10-ohm IN filter.
+flag_nodes = ["BAT_NEG", "U101_IN"]
+global = [
+  "GAUGE_ALRT_N",   # U101 ALRT (open drain) -> 04; pull-up 100k to 3V3_MAIN on 04 (contract §5.2)
+  "BAT_LOAD_EN",    # 04 -> 01; 100k pull-down HERE (R110, contract §5.2)
+  "I2C_M_SCL",      # 04 master; 4.7k pull-ups on 04 (contract §5.1)
+  "I2C_M_SDA",
+]
+# BAT_MID is the pack mid-point; it also belongs at U201 MID/CBSET on 02_power_dock, but the contract has no
+# inter-sheet net for it (capture notes, contract issue C-1). Here it reaches only R106 and J101 pin 3.
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "U101 Pin 8|U201 Pin 5|U305 Pin 3"
+until_sheet = "04_main_mcu"
+reason = "I2C_M_SCL (SCL inputs of U101, U201 on 02, U305 on 03; KiCad reports one of them) is driven by the main controller and pulled up on 04_main_mcu (WP-B), a placeholder in this worktree."
+
+[[erc_accepted]]
+type = "isolated_pin_label"
+match = "GAUGE_ALRT_N"
+reason = "Other end on 04_main_mcu (WP-B, placeholder in this worktree); disappears when 04 is captured."
+
+# ====================================================================== groups
+[[group]]
+id = "pack"
+title = "Pack connector J101 (keyed, Molex Mini-Fit Jr 2x4): two contacts each for + and -, mid-point, two cell NTCs"
+note = """
+Pack = 2 x Molicel INR-18650-P28A in series with an NTC on each cell, made by a pack assembler (design §B1.1). Keyed housing instead of a reverse-polarity MOSFET (design §B1.1: a series MOSFET would cost 0.2-0.4 W at 21 A peaks).
+Current per contact: 9.2 A average / 21 A peak (design §B4.2) shared by two contacts = 4.6 A / 10.5 A each. Mini-Fit Jr terminals are rated 9 A (standard) to 13 A (HCS) per circuit [BK, Molex drawing not read: VERIFY terminal rating and wire gauge].
+Pin 8 returns both NTCs to BAT_NEG (device ground of U101). The mid-point (pin 3) feeds the gauge's cell sense here and must also reach U201 MID/CBSET on 02_power_dock: no contract net exists for that (contract issue C-1).
+"""
+
+[[group]]
+id = "gauge"
+title = "U101 MAX17320G20 protector + gauge: 2S wiring (CELL1 = CELL2 = CELL3 = mid-point), high-side CHG/DIS N-FETs, 2 mOhm sense"
+note = """
+2S wiring per datasheet Figure 23: BATTS = top of stack through RBAL; CELL1, CELL2 and CELL3 joined on the pin side of RBAL to the mid-point ('short for 2S', 'short for 2S or 3S') [read from the figure graphic: VERIFY]. RBAL = 100 ohm: balancing current CELL1 = 4.2/(100+9) = 39 mA, BATTS = 4.2/(2x100+9) = 20 mA (datasheet formulas, RSWITCH 9 ohm typ), < 100 mA pin limit; 0.15 W in R105/R106 -> 1206 0.25 W.
+IN: 10 ohm from the top of stack + 0.1 uF/25 V; CP: 0.47 uF/25 V to IN; REG3, REG2: 0.47 uF/10 V; CHG FET gate-source 0.1 uF (all per the pin table). PCKP: 1 k to VBAT_PACK. PFAIL unused: 1 k to ground. AOLDO unused: 10 k to ground. ZVC open (zero-volt charging not used). TH3, TH4 unused: to ground.
+Sense R101 = 2 mOhm (Bourns CSS2H-2512K-2L00F, 5 W): 9.2 A average -> 0.17 W; current register range +/-51.2 mV / 2 mOhm = +/-25.6 A covers the 21 A peak.
+PROTECTION THRESHOLDS (non-volatile configuration, R-16 coordination, contract §9): fast over-discharge ODTH = -70 mV = 35 A, OCDLY = 5 -> 70 us + 5 x 977 us = 4.96 ms; short circuit SCTH = -130 mV = 65 A, SCDLY = 2 -> 70 + 2 x 61 = 192 us (>= 100 us). Both are above everything a limited branch can draw (eFuse 13 A, regulator fuses 1/1/3 A, load test 10.5 A, coil boost 2 A).
+'Auto-retry': the MAX17320 releases an over-discharge / short-circuit fault when PCKP rises above 1 V while it sources 30 uA into PCKP, or when a charger is detected (datasheet 'Overcurrent Protection'). That works only if VBAT_SYS carries no resistive load below about 33 kohm (1 V / 30 uA): every sheet on VBAT_SYS must keep that (capture notes). It is NOT a timed retry [contract wording 'auto-retry' approximated].
+nConfig.COMMSH MUST be 0: with COMMSH = 1 the part shuts down (FETs off) when SCL and SDA are both held low, which is exactly the state of I2C_M_* with the main controller off (design §B11, F-10). Answers design §16 rank 17.
+"""
+
+[[group]]
+id = "fuse"
+title = "F101 main fuse 25 A (Littelfuse 456 NANO2) VBAT_PACK -> VBAT_SYS"
+note = """
+0456025.ER: 25 A, very fast-acting, 1000 A interrupting at 32 V DC, cold resistance 1.92 mOhm, melting I2t 45 A2s (456 series datasheet rev. 04/27/16). Drop at 9.2 A: 18 mV, 0.16 W.
+DEPARTURE: the design asks for 'time-lag'; no surface-mount 25 A time-lag fuse was found. 100 % rating carries 4 h minimum; 9.2 A average is 37 % of rating; the 21 A peaks are switching ripple drawn from the charger's bulk capacitors, not through this fuse at full height [VERIFY with the charger input filter on 10].
+Coordination: a hard short on VBAT_SYS is ended by the MAX17320 short-circuit comparator (65 A, 192 us); the fuse is the backup for a failed protector (FET short).
+"""
+
+[[group]]
+id = "load"
+title = "Battery-under-load test: 2 x 0.40 ohm PWR263S in series, Q103, hardware on-time limit (TLV7031 + RC, 124-220 ms)"
+note = """
+Load: R102 + R103 = 0.80 ohm (DEPARTURE from 0.82 ohm: 0.82 is not a catalogue value of a part with a published pulse rating; two in series halve the energy per part). At 8.4 V: 8.4 / 0.809 ohm (incl. FET, fuse, sense, FETs) = 10.4 A, 86 W, 43 W per resistor; 100 ms test = 4.3 J per resistor.
+Pulse rating: Bourns PWR263S-35 'Pulse Power Rating' graph reads about 8 J at 0.1 s (graph ends at 0.1 s) -> 4.3 J at 100 ms has 1.9x margin; the worst-case 220 ms hardware limit gives 9.5 J per resistor, beyond the graph [UNVERIFIED: VERIFY with Bourns; short-term overload 2 x Pr = 70 W per part is stated for R < 2 ohm, 43 W is below it]. Design target 25 J single pulse in total = 12.5 J per part: [UNVERIFIED].
+Time limit: BAT_LOAD_EN (100k pull-down R110, contract) is AC-coupled by C108 2.2 uF into R111 118 k (tau = 260 ms). The comparator U102 turns Q103 on while the node is above about half of 3V3_MAIN: on at the rising edge, off when the node decays below the threshold, off at once when BAT_LOAD_EN falls (node steps negative). R116 1 M adds hysteresis: threshold 1.73 V while on, 1.57 V while off (at 3.3 V).
+On-time = tau x ln(21/11) = 0.647 tau = 168 ms nominal; C 2.2 uF X7R x0.765..x1.265 (10 % tolerance, 15 % over temperature) and R 1 % -> tau 197-332 ms; threshold factor 0.631-0.662 (1 % divider, +/-8 mV offset) -> 124-220 ms. Firmware uses <= 100 ms (design §B1.3). Ratiometric to 3V3_MAIN, so supply tolerance cancels.
+R112 10 k limits the comparator input current when the node goes to -3.3 V at the falling edge: 0.33 mA << 10 mA abs max (TLV7031 SLVSE13J 5.1).
+Limitation (capture notes, doubt 3): repeated rising edges re-trigger the timer; a pin toggled at a high rate can hold the load on for up to about half the time. The limit covers a STUCK-HIGH line, not a toggling one.
+Unpowered: 3V3_MAIN off -> U102 unpowered -> R115 holds the gate low (load off). R11: an open or unpowered BAT_LOAD_EN reads 'load off'.
+Q103 CSD17573Q5B: 30 V, IDM 400 A, RDS(on) 1.45 mOhm max at VGS 4.5 V; at the comparator's ~3.2 V gate drive RDS(on) is only given by the curve [UNVERIFIED value, VGS(th) 1.1-1.8 V]; even 10 mOhm would dissipate 1 W for 0.2 s.
+"""
+
+[[group]]
+id = "tp"
+title = "Test points (design §15: every rail with GND beside it)"
+
+# ====================================================================== parts: pack
+[[part]]
+ref = "J101"
+group = "pack"
+lib_id = "Connector_Generic:Conn_02x04_Top_Bottom"
+value = "Mini-Fit Jr 2x4"
+footprint = "Connector_Molex:Molex_Mini-Fit_Jr_5566-08A_2x04_P4.20mm_Vertical"
+mpn = "39-28-1083"
+manufacturer = "Molex"
+datasheet = "https://www.molex.com/en-us/products/part-detail/39281083"
+description = "Pack connector, keyed 2x4 Mini-Fit Jr vertical header; pin numbering 1-4 row A, 5-8 row B as the KiCad footprint [Molex drawing not read: VERIFY MPN and numbering]"
+fields = { DocRef = "design §B1.1 'keyed connector'", Verify = "terminal current rating >= 10.5 A peak per contact; MPN 39-28-1083 = 5566-08A" }
+pins = """
+  1   Pin_1   BAT_TOP     # pack + (cell 2 positive)
+  2   Pin_2   BAT_TOP     # pack + (second contact)
+  3   Pin_3   BAT_MID     # mid-point (cell 1 positive / cell 2 negative)
+  4   Pin_4   NTC1        # cell 1 NTC
+  5   Pin_5   BAT_NEG     # pack - (cell 1 negative)
+  6   Pin_6   BAT_NEG     # pack - (second contact)
+  7   Pin_7   NTC2        # cell 2 NTC
+  8   Pin_8   BAT_NEG     # NTC common return
+"""
+
+# ====================================================================== parts: gauge
+[[part]]
+ref = "U101"
+group = "gauge"
+lib_id = "aed_power:MAX17320G20"
+value = "MAX17320G20+T"
+footprint = "Package_DFN_QFN:QFN-24-1EP_4x4mm_P0.5mm_EP2.7x2.7mm"
+mpn = "MAX17320G20+T"
+manufacturer = "Analog Devices (Maxim Integrated)"
+datasheet = "https://www.analog.com/media/en/technical-documentation/data-sheets/MAX17320.pdf"
+description = "2S protector + fuel gauge, I2C, TQFN-24; -40..+85 C (abs max table)"
+fields = { DocRef = "design §B1.1 'MAX17320'", Verify = "EP connection (pin 25) not in the pin table; footprint EP size for outline 21-0139 T2444+4C; fast comparator threshold accuracy (EC table not read)" }
+pins = """
+  1    IN       U101_IN      # 10 ohm from top of stack, 0.1 uF/25 V
+  2    CP       U101_CP      # 0.47 uF/25 V to IN
+  3    CHG      CHG_G        # CHG FET gate (Q101), drives between CP and IN
+  4    DIS      DIS_G        # DIS FET gate (Q102), drives between CP and PCKP
+  5    ZVC      NC           # zero-volt charge not used: leave open (pin table)
+  6    PCKP     U101_PCKP    # 1 k to VBAT_PACK (pin table)
+  7    ALRT     GAUGE_ALRT_N # open-drain alert, pulled up on 04
+  8    SCL/OD   I2C_M_SCL
+  9    SDA/DQ   I2C_M_SDA
+  10   TH1      NTC1         # cell 1 NTC (10k) to ground
+  11   PFAIL    U101_PFAIL   # unused: 1 k to GND (pin table)
+  12   AOLDO    U101_AOLDO   # unused: 10 k to GND (pin table)
+  13   REG3     U101_REG3    # 0.47 uF/10 V
+  14   CSN      GND          # Kelvin to load side of R101
+  15   CSP      BAT_NEG      # Kelvin to cell side of R101
+  16   TH2      NTC2         # cell 2 NTC
+  17   REG2     U101_REG2    # 0.47 uF/10 V
+  18   TH3      BAT_NEG      # unused: to ground (pin table)
+  19   TH4      BAT_NEG      # unused: to ground
+  20   GND      BAT_NEG      # device ground; separate trace from the CSP Kelvin trace (pin table)
+  21   CELL1    U101_CELL    # 2S: CELL1 = CELL2 = CELL3 = mid-point (Figure 23)
+  22   CELL2    U101_CELL
+  23   CELL3    U101_CELL
+  24   BATTS    U101_BATTS   # top of stack through RBAL
+  25   EP       BAT_NEG      # exposed pad [UNVERIFIED connection]
+"""
+
+[[part]]
+ref = "R101"
+group = "gauge"
+lib_id = "Device:R"
+value = "2m"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CSS2H-2512K-2L00F"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/Product-Datasheets/CSS2H-2512.pdf"
+description = "Current sense 2 mOhm 1 % 5 W (70 C terminal), -55..+170 C; cell side = BAT_NEG, load side = GND; Kelvin sense to CSP/CSN"
+fields = { Verify = "land pattern: Bourns CSS2H-2512 recommended pads differ from a generic 2512" }
+between = ["BAT_NEG", "GND"]
+
+[[part]]
+ref = "Q101"
+group = "gauge"
+lib_id = "Transistor_FET:CSD17573Q5B"
+value = "CSD17573Q5B"
+footprint = "Package_TO_SOT_SMD:TDSON-8-1"
+mpn = "CSD17573Q5B"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/csd17573q5b.pdf"
+description = "CHG protection FET, high side, source at the cell stack: 30 V, 1.0 mOhm max at VGS 10 V, IDM 400 A, TJ -55..150 C (SLPS492B)"
+fields = { DocRef = "design §B1.1 'protection MOSFETs'" }
+pins = """
+  1   S   BAT_TOP
+  2   S   BAT_TOP
+  3   S   BAT_TOP
+  4   G   CHG_G
+  5   D   PROT_D      # common drain with Q102 (pads 5-8 + slug)
+"""
+
+[[part]]
+ref = "Q102"
+group = "gauge"
+lib_id = "Transistor_FET:CSD17573Q5B"
+value = "CSD17573Q5B"
+footprint = "Package_TO_SOT_SMD:TDSON-8-1"
+mpn = "CSD17573Q5B"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/csd17573q5b.pdf"
+description = "DIS protection FET, high side, source at the pack terminal VBAT_PACK (common-drain pair with Q101)"
+fields = { DocRef = "design §B1.1 'protection MOSFETs'" }
+pins = """
+  1   S   VBAT_PACK
+  2   S   VBAT_PACK
+  3   S   VBAT_PACK
+  4   G   DIS_G
+  5   D   PROT_D
+"""
+
+[[part]]
+ref = "C103"
+group = "gauge"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "CHG FET gate-to-source 0.1 uF (pin table, CHG)"
+between = ["CHG_G", "BAT_TOP"]
+
+[[part]]
+ref = "R104"
+group = "gauge"
+lib_id = "Device:R"
+value = "10"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10R 1%"
+manufacturer = "any"
+description = "IN supply filter 10 ohm from the top of stack (pin table, IN)"
+new_row = true
+between = ["BAT_TOP", "U101_IN"]
+
+[[part]]
+ref = "C101"
+group = "gauge"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "IN bypass 0.1 uF/25 V to device ground (pin table, IN)"
+between = ["U101_IN", "BAT_NEG"]
+
+[[part]]
+ref = "C102"
+group = "gauge"
+lib_id = "Device:C"
+value = "470nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 470nF 25V"
+manufacturer = "any"
+description = "Charge-pump bypass CP to IN 0.47 uF/25 V (pin table, CP)"
+between = ["U101_CP", "U101_IN"]
+
+[[part]]
+ref = "C104"
+group = "gauge"
+lib_id = "Device:C"
+value = "470nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 470nF 10V"
+manufacturer = "any"
+description = "REG3 bypass 0.47 uF/10 V (pin table)"
+between = ["U101_REG3", "BAT_NEG"]
+
+[[part]]
+ref = "C105"
+group = "gauge"
+lib_id = "Device:C"
+value = "470nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 470nF 10V"
+manufacturer = "any"
+description = "REG2 bypass 0.47 uF/10 V (pin table)"
+between = ["U101_REG2", "BAT_NEG"]
+
+[[part]]
+ref = "R105"
+group = "gauge"
+lib_id = "Device:R"
+value = "100"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "generic 1206 100R 1% 0.25W"
+manufacturer = "any"
+description = "RBAL top of stack -> BATTS (Figure 23); 20 mA balancing max, 0.04 W"
+new_row = true
+between = ["BAT_TOP", "U101_BATTS"]
+
+[[part]]
+ref = "R106"
+group = "gauge"
+lib_id = "Device:R"
+value = "100"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "generic 1206 100R 1% 0.25W"
+manufacturer = "any"
+description = "RBAL mid-point -> CELL1/2/3 (2S, Figure 23); 39 mA balancing max, 0.15 W"
+between = ["BAT_MID", "U101_CELL"]
+
+[[part]]
+ref = "C106"
+group = "gauge"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "Cell sense filter across the top cell, pin side (Figure 23, 0.1 uF)"
+between = ["U101_BATTS", "U101_CELL"]
+
+[[part]]
+ref = "C107"
+group = "gauge"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "Cell sense filter across the bottom cell, pin side (Figure 23, 0.1 uF)"
+between = ["U101_CELL", "BAT_NEG"]
+
+[[part]]
+ref = "R107"
+group = "gauge"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 1k 1%"
+manufacturer = "any"
+description = "PCKP to pack terminal 1 k (pin table; <= 10 k for short-removal detection, SCTest note)"
+new_row = true
+between = ["VBAT_PACK", "U101_PCKP"]
+
+[[part]]
+ref = "R108"
+group = "gauge"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 1k 1%"
+manufacturer = "any"
+description = "PFAIL unused: 1 k to ground (pin table)"
+between = ["U101_PFAIL", "BAT_NEG"]
+
+[[part]]
+ref = "R109"
+group = "gauge"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 10k 1%"
+manufacturer = "any"
+description = "AOLDO unused: 10 k to ground (pin table); nPackCfg.AOCfg = 00 (disabled)"
+between = ["U101_AOLDO", "BAT_NEG"]
+
+# ====================================================================== parts: fuse
+[[part]]
+ref = "F101"
+group = "fuse"
+lib_id = "Device:Fuse"
+value = "25A"
+footprint = "aed_power:Fuse_Littelfuse_NANO2_456"
+footprint_todo = true
+mpn = "0456025.ER"
+manufacturer = "Littelfuse"
+datasheet = "https://www.littelfuse.com/products/fuses-overcurrent-protection/fuses/surface-mount-fuses/nano-2-fuses/456"
+description = "Main fuse 25 A very fast-acting NANO2, 125 V AC / 72 V DC, 1000 A @ 32 V DC interrupting, -55..+125 C with derating (456 series rev. 04/27/16)"
+fields = { DocRef = "design §B1.1 'F101'", Verify = "design asked for time-lag; nuisance-trip margin against the charger's input ripple" }
+between = ["VBAT_PACK", "VBAT_SYS"]
+
+[[part]]
+ref = "C110"
+group = "fuse"
+lib_id = "Device:C"
+value = "10uF"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "generic 1210 X7R 10uF 25V"
+manufacturer = "any"
+description = "VBAT_SYS local bulk at the load-test switch (fast current edge of the 10 A load)"
+between = ["VBAT_SYS", "GND"]
+
+# ====================================================================== parts: load test
+[[part]]
+ref = "R102"
+group = "load"
+lib_id = "aed_power:PWR263S-35"
+value = "0.40 35W"
+footprint = "Package_TO_SOT_SMD:TO-263-2"
+mpn = "PWR263S-35-R400F"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/Product-Datasheets/PWR263S-35.pdf"
+description = "Load resistor 0.40 ohm 1 % D2PAK, upper half of the 0.80 ohm battery load; tab isolated (2 kV AC), tied to GND copper for heat"
+fields = { DocRef = "design §B1.3 '0.82 ohm'", Verify = "pulse energy 4.3 J / 100 ms (graph ~8 J at 0.1 s), 9.5 J / 220 ms beyond the graph; 1 % tolerance availability at R400" }
+pins = """
+  1   T1    VBAT_SYS
+  3   T2    LOAD_MID
+  2   TAB   GND       # isolated tab, copper for heat only
+"""
+
+[[part]]
+ref = "R103"
+group = "load"
+lib_id = "aed_power:PWR263S-35"
+value = "0.40 35W"
+footprint = "Package_TO_SOT_SMD:TO-263-2"
+mpn = "PWR263S-35-R400F"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/Product-Datasheets/PWR263S-35.pdf"
+description = "Load resistor 0.40 ohm 1 % D2PAK, lower half"
+fields = { DocRef = "design §B1.3", Verify = "as R102" }
+pins = """
+  1   T1    LOAD_MID
+  3   T2    LOAD_D
+  2   TAB   GND
+"""
+
+[[part]]
+ref = "Q103"
+group = "load"
+lib_id = "Transistor_FET:CSD17573Q5B"
+value = "CSD17573Q5B"
+footprint = "Package_TO_SOT_SMD:TDSON-8-1"
+mpn = "CSD17573Q5B"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/csd17573q5b.pdf"
+description = "Load switch, low side; 10.4 A for <= 0.22 s"
+fields = { Verify = "RDS(on) at VGS = 3.0-3.3 V (curve only)" }
+pins = """
+  1   S   GND
+  2   S   GND
+  3   S   GND
+  4   G   LOAD_G
+  5   D   LOAD_D
+"""
+
+[[part]]
+ref = "R110"
+group = "load"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "BAT_LOAD_EN default pull-down (contract §5.2: 01, 100 kOhm to GND)"
+new_row = true
+between = ["BAT_LOAD_EN", "GND"]
+
+[[part]]
+ref = "C108"
+group = "load"
+lib_id = "Device:C"
+value = "2.2uF"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 2.2uF 25V 10%"
+manufacturer = "any"
+description = "Timer coupling capacitor (tau = 2.2 uF x 118 k = 260 ms)"
+between = ["BAT_LOAD_EN", "LT_NODE"]
+
+[[part]]
+ref = "R111"
+group = "load"
+lib_id = "Device:R"
+value = "118k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 118k 1%"
+manufacturer = "any"
+description = "Timer resistor to GND"
+between = ["LT_NODE", "GND"]
+
+[[part]]
+ref = "R112"
+group = "load"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 10k 1%"
+manufacturer = "any"
+description = "Comparator input current limit for the -3.3 V step at the falling edge (0.33 mA)"
+between = ["LT_NODE", "LT_IN"]
+
+[[part]]
+ref = "R113"
+group = "load"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "Threshold divider top (3V3_MAIN / 2)"
+new_row = true
+between = ["3V3_MAIN", "LT_VTH"]
+
+[[part]]
+ref = "R114"
+group = "load"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "Threshold divider bottom"
+between = ["LT_VTH", "GND"]
+
+[[part]]
+ref = "R116"
+group = "load"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 1M 1%"
+manufacturer = "any"
+description = "Hysteresis: threshold 1.73 V while on, 1.57 V while off (at 3.3 V)"
+between = ["LOAD_G", "LT_VTH"]
+
+[[part]]
+ref = "U102"
+group = "load"
+lib_id = "Comparator:TLV7031DBV"
+value = "TLV7031DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TLV7031DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv7031.pdf"
+description = "Nanopower push-pull comparator, 1.6-6.5 V, -40..+125 C (SLVSE13J); load on-time limit"
+pins = """
+  1   ~    LOAD_G     # OUT (push-pull) -> Q103 gate
+  2   V-   GND
+  3   +    LT_IN
+  4   -    LT_VTH
+  5   V+   3V3_MAIN
+"""
+
+[[part]]
+ref = "C109"
+group = "load"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0402_1005Metric"
+mpn = "generic 0402 X7R 100nF 16V"
+manufacturer = "any"
+description = "U102 supply bypass"
+between = ["3V3_MAIN", "GND"]
+
+[[part]]
+ref = "R115"
+group = "load"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 100k 1%"
+manufacturer = "any"
+description = "Q103 gate pull-down: load off with 3V3_MAIN off (R11)"
+between = ["LOAD_G", "GND"]
+
+# ====================================================================== parts: test points
+[[part]]
+ref = "TP101"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "VBAT_PACK"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad VBAT_PACK"
+pins = """
+  1   1   VBAT_PACK
+"""
+
+[[part]]
+ref = "TP102"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "VBAT_SYS"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad VBAT_SYS"
+pins = """
+  1   1   VBAT_SYS
+"""
+
+[[part]]
+ref = "TP103"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "GND"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "none (PCB pad)"
+manufacturer = "none"
+description = "Test pad GND beside the battery rails"
+pins = """
+  1   1   GND
+"""

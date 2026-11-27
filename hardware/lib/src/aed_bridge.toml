@@ -1,0 +1,161 @@
+# Custom symbols for WP-G, sheet 13_hv_bridge (output bridge power stage).
+# NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a). Source of truth for hardware/lib/aed_bridge.kicad_sym:
+# tools/build.sh regenerates that file from here. Capture notes: hardware/aed-main/capture-notes/WP-G.md.
+#
+# Pin table columns:  number  name  electrical-type  side-of-body
+# Every row was copied from the datasheet figure named in `pinout_source`. PinoutVerified reads
+# "NO - drafted from datasheet ..., needs human check" until a person has checked it against the PDF and added
+#   pinout_verified = "YES - <name>, <date>, checked against <doc rev>"
+# Made-to-order parts (T1301/T1302 gate transformers, L1301 series coil) have no datasheet: their "datasheet" is
+# the requirement in docs/HARDWARE_DESIGN.md §14 and their pins are defined by that requirement, not copied.
+
+[library]
+name = "aed_bridge"
+
+# Why custom: KiCad has no 3.3 kV SiC MOSFET in a 4-lead (Kelvin source) TO-247 with Microchip's terminal order.
+[[symbol]]
+name = "MSC080SMA330B4N"
+reference = "Q"
+value = "MSC080SMA330B4N"
+footprint = "aed_bridge:TO-247-4_Notch_Microchip"
+datasheet = "https://docs.rs-online.com/a067/A700000015733917.pdf"
+description = "N-channel SiC MOSFET 3300 V, 85 mOhm typ / 106 mOhm max (VGS 20 V, 25 C), IDM 107 A, Tj max 150 C, TO-247 notched 4-lead with source sense (Microchip DS00005914A, 2025; distributor-hosted copy, Microchip's server refused automated download)"
+mpn = "MSC080SMA330B4N"
+manufacturer = "Microchip Technology"
+pinout_source = "Microchip DS00005914A (2025), page 1 'Product Overview' drawing: DRAIN (TERMINAL 1, BACKSIDE), SOURCE (TERMINAL 2), SOURCE SENSE (TERMINAL 3), GATE (TERMINAL 4)"
+keywords = "SiC MOSFET 3300V Kelvin source TO-247-4"
+pins = """
+1 D  passive top
+2 S  passive bottom
+3 SS passive bottom
+4 G  input   left
+"""
+
+# Why custom: no UCC5350 in KiCad's stock libraries.
+[[symbol]]
+name = "UCC5350MCD"
+reference = "U"
+value = "UCC5350MCDR"
+footprint = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
+datasheet = "https://www.ti.com/lit/ds/symlink/ucc5350.pdf"
+description = "Single-channel isolated gate driver, 10 A/10 A, active Miller clamp, 12 V UVLO2, 3 kVrms (D package), SOIC-8 (TI SLLSER8J)"
+mpn = "UCC5350MCDR"
+manufacturer = "Texas Instruments"
+pinout_source = "TI SLLSER8J (revised August 2024), Figure 5-2 'UCC5310M and UCC5350M 8-Pin SOIC Top View' and Table 5-1 Pin Functions"
+keywords = "isolated gate driver Miller clamp UCC5350"
+pins = """
+1 VCC1  power_in left
+2 IN+   input    left
+3 IN-   input    left
+4 GND1  power_in left
+5 VCC2  power_in right
+6 OUT   output   right
+7 CLAMP passive  right
+8 VEE2  power_in right
+"""
+
+# Why custom: the stock INA240A1D symbol names pin 4 "GND"; the datasheet names it NC ("reserved, connect to ground
+# or leave floating") and calls the inputs IN-/IN+. The pin-name check must compare against the datasheet's names.
+[[symbol]]
+name = "INA240A1D"
+reference = "U"
+value = "INA240A1DR"
+footprint = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
+datasheet = "https://www.ti.com/lit/ds/symlink/ina240.pdf"
+description = "Current-sense amplifier, gain 20 V/V, -4 to 80 V common mode, 400 kHz, PWM rejection, SOIC-8 (TI SBOS662C)"
+mpn = "INA240A1DR"
+manufacturer = "Texas Instruments"
+pinout_source = "TI SBOS662C (revised December 2021), Figure 6-2 'INA240 D Package 8-Pin SOIC Top View' and Table 6-1 Pin Functions (D column)"
+keywords = "current sense amplifier INA240"
+pins = """
+1 IN-  input     left
+8 IN+  input     left
+2 GND  power_in  bottom
+3 REF2 input     bottom
+7 REF1 input     bottom
+4 NC   no_connect bottom
+6 VS   power_in  top
+5 OUT  output    right
+"""
+
+# Why custom: 3.3 kV SiC Schottky in TO-263-7 with the case (tab) as cathode, six anode leads and one unconnected lead.
+[[symbol]]
+name = "GC05MPS33J"
+reference = "D"
+value = "GC05MPS33J"
+footprint = "Package_TO_SOT_SMD:TO-263-7_TabPin8"
+datasheet = "https://www.genesicsemi.com/sic-schottky-mps/GC05MPS33J/GC05MPS33J.pdf"
+description = "SiC Schottky MPS diode 3300 V, IF 5 A (Tc 157 C), IF,MAX 250 A (10 us, non-repetitive), IFSM 50 A (10 ms half sine), Tj 175 C, TO-263-7 (GeneSiC/Navitas, Rev 22/Apr)"
+mpn = "GC05MPS33J"
+manufacturer = "GeneSiC Semiconductor (Navitas)"
+pinout_source = "GeneSiC GC05MPS33J Rev 22/Apr, page 1 package figure (K = case, A = leads) and page 6 'Package View' (Case (K); leads labelled NC and A). Lead NUMBERS are not printed in the datasheet: 1 = NC (leftmost) and 2-7 = A, tab = 8 follow KiCad's TO-263-7_TabPin8 footprint and are UNVERIFIED"
+keywords = "SiC Schottky diode 3300V freewheel"
+pins = """
+8 K  passive right
+2 A  passive left
+3 A  passive left
+4 A  passive left
+5 A  passive left
+6 A  passive left
+7 A  passive left
+1 NC no_connect bottom
+"""
+
+# Why custom: made-to-order part, no datasheet. Pins are fixed by the requirement in docs/HARDWARE_DESIGN.md §14
+# (centre-tapped push-pull primary at 5 V, one rectified secondary).
+[[symbol]]
+name = "GDT_PP_400K"
+reference = "T"
+value = "Gate transformer, made to order"
+footprint = "aed_bridge:GDT_made_to_order"
+datasheet = "docs/HARDWARE_DESIGN.md §14 (T1301, T1302 requirement); hardware/aed-main/capture-notes/WP-G.md"
+description = "High-side gate-drive transformer, MADE TO ORDER: centre-tapped primary at 5 V driven push-pull at 400 kHz (300-450 kHz with the oscillator tolerance), secondary rectified 18-20 V at >= 30 mA continuous and 200 mA for 50 us; >= 2200 V DC working 10 years (target 2750 V), >= 5 kV DC 60 s, PD inception >= 3.3 kV after humidity soak, <= 10 pF interwinding, -20..+85 C, <= 2 cm3"
+mpn = "MADE-TO-ORDER (to docs/HARDWARE_DESIGN.md §14 + WP-G capture notes)"
+manufacturer = "to be selected (made to order)"
+pinout_source = "requirement-defined (no datasheet): 1 = P1 primary half 1 start, 2 = PCT primary centre tap, 3 = P2 primary half 2 end, 4 = S1, 5 = S2 secondary. Barrier between pins 1-3 and 4-5"
+pinout_verified = "N/A - made-to-order part; pin numbers are defined by this requirement and must be written into the purchase specification"
+keywords = "transformer gate drive isolation push-pull"
+pins = """
+1 P1  passive left
+2 PCT passive left
+3 P2  passive left
+4 S1  passive right
+5 S2  passive right
+"""
+
+# Why custom: made-to-order series coil; the stock inductor symbol has no place for the requirement fields.
+[[symbol]]
+name = "L_LS_30UH"
+reference = "L"
+value = "30uH series coil, made to order"
+footprint = "aed_bridge:L_LS_made_to_order"
+datasheet = "docs/HARDWARE_DESIGN.md §B6.5 and §14 (L1301 requirement); hardware/aed-main/capture-notes/WP-G.md"
+description = "Series coil L_S, MADE TO ORDER: 30 uH, >= 450 A with <= 20 % inductance loss, <= 80 mOhm, 2200 V insulation to surroundings, turn-to-turn insulation for the full bus step across the winding (about 2 kV in < 1 us at each phase start), 65 A pulses of 3-12 ms repeated, -20..+85 C"
+mpn = "MADE-TO-ORDER (to docs/HARDWARE_DESIGN.md §14 + WP-G capture notes)"
+manufacturer = "to be selected (made to order)"
+pinout_source = "requirement-defined (no datasheet): two terminals, 1 = end towards R_S (HV_CAP_P side), 2 = end towards HV_BUS"
+pinout_verified = "N/A - made-to-order part; two terminals, no polarity in function"
+keywords = "inductor coil series pulse"
+pins = """
+1 1 passive left
+2 2 passive right
+"""
+
+# Why custom: no Cynergy3/Sensata D-HR symbol or footprint in KiCad's libraries.
+[[symbol]]
+name = "D-HR_1A_10KV"
+reference = "K"
+value = "DAR70510-HR"
+footprint = "aed_bridge:Relay_Cynergy3_D-HR_PCB"
+datasheet = "https://docs.rs-online.com/8c09/0900766b816395c1.pdf"
+description = "High-voltage reed relay, SPNO (Form A), rhodium contact, 10 kV across contacts, 17 kV contact/coil, 5 V coil 28 Ohm, carry 4 A, operating -20..+70 C (Sensata Cynergy3 D-HR series datasheet Rev 09/24/24, distributor-hosted copy)"
+mpn = "DAR70510-HR"
+manufacturer = "Sensata Cynergy3"
+pinout_source = "Sensata D-HR series datasheet Rev 09/24/24, page 3 'Circuit diagrams (all variants), Form A (NO)': contacts between pins 1 and 2, coil on pins 3 and 4 (pin 3 '-', pin 4 '+' marked; polarity matters for Form B only)"
+keywords = "reed relay high voltage 10kV"
+pins = """
+1 C1    passive left
+2 C2    passive right
+4 COIL+ passive top
+3 COIL- passive bottom
+"""

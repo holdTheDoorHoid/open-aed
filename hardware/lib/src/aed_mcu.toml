@@ -1,0 +1,125 @@
+# Custom symbols for work package WP-B (sheets 04_main_mcu and 05_supervisor_mcu).
+# NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a).
+# Source of truth for hardware/lib/aed_mcu.kicad_sym: tools/build.sh regenerates that file from here.
+#
+# Pin table columns:  number  name  electrical-type  side-of-body
+# Every pin row was copied from the datasheet table named in `pinout_source`.
+# PinoutVerified reads "NO - drafted from datasheet ..., needs human check" until a person has checked the
+# table against the PDF and added  pinout_verified = "YES - <name>, <date>, checked against <doc rev>".
+#
+# The main controller (STM32U585ZIT6) uses KiCad's stock symbol MCU_ST_STM32U5:STM32U585ZITx; its pin numbers
+# and names were cross-checked against DS13086 Rev 10 Table 27 (see capture-notes/WP-B.md). Only parts with no
+# correct stock symbol are defined here.
+
+[library]
+name = "aed_mcu"
+
+# NXP MCX A153 in LQFP64 (10 x 10 mm, 0.5 mm pitch, package drawing 98ASS23234W).
+# Pin names are the datasheet "Pin Name" column; for pins whose reset function is not a plain GPIO the reset
+# function is appended after a slash (RESET_B, crystal, SWD, ISP mode), so the drawn symbol shows it.
+# 52 GPIO-capable pins (incl. RESET_B, crystal and SWD pins), 4 x VDD, 4 x VSS, VDD_ANA, VDD_USB, USB0_DM, USB0_DP.
+# There is no separate VREFH/VREFL or VSS_ANA pin in this package (bonded internally; Table 42 says VREFH must
+# be at VDD_ANA potential and VSS_ANA at VSS). There is no core-regulator capacitor pin.
+[[symbol]]
+name = "MCXA153VLH"
+reference = "U"
+value = "MCXA153VLH"
+footprint = "Package_QFP:LQFP-64_10x10mm_P0.5mm"
+datasheet = "https://www.nxp.com/docs/en/data-sheet/MCXAP064M096F30.pdf"
+description = "NXP MCX A153 Arm Cortex-M33 96 MHz MCU, 128 KB flash, 32 KB SRAM, LQFP64; supervisor controller"
+mpn = "MCXA153VLH"
+manufacturer = "NXP Semiconductors"
+pinout_source = "NXP MCXAP064M096F30 Rev. 5.2 (26 May 2026), section 7.1 Table 41 'Pin Assignments', column MCXA14x15x LQFP64"
+keywords = "MCU NXP MCX A153 Cortex-M33 supervisor"
+package_pins = 64
+pins = """
+49 P0_0/SWDIO        bidirectional left
+50 P0_1/SWCLK        bidirectional left
+51 P0_2/SWO          bidirectional left
+52 P0_3              bidirectional left
+53 P0_6              bidirectional left
+54 P0_16             bidirectional left
+55 P0_17             bidirectional left
+56 P1_0              bidirectional left
+57 P1_1              bidirectional left
+58 P1_2              bidirectional left
+59 P1_3              bidirectional left
+62 P1_4              bidirectional left
+63 P1_5              bidirectional left
+64 P1_6              bidirectional left
+1  P1_7              bidirectional left
+2  P1_8              bidirectional left
+3  P1_9              bidirectional left
+4  P1_10             bidirectional left
+5  P1_11             bidirectional left
+6  P1_12             bidirectional left
+7  P1_13             bidirectional left
+8  P1_29/RESET_B     bidirectional left
+9  P1_30/XTAL48M     bidirectional left
+10 P1_31/EXTAL48M    bidirectional left
+14 P2_0              bidirectional right
+15 P2_1              bidirectional right
+16 P2_2              bidirectional right
+17 P2_3              bidirectional right
+18 P2_4              bidirectional right
+19 P2_5              bidirectional right
+20 P2_6              bidirectional right
+21 P2_7              bidirectional right
+22 P2_12             bidirectional right
+23 P2_13             bidirectional right
+24 P2_16             bidirectional right
+46 P3_0              bidirectional right
+45 P3_1              bidirectional right
+44 P3_6              bidirectional right
+43 P3_7              bidirectional right
+42 P3_8              bidirectional right
+41 P3_9              bidirectional right
+40 P3_10             bidirectional right
+39 P3_11             bidirectional right
+38 P3_12             bidirectional right
+37 P3_13             bidirectional right
+36 P3_14             bidirectional right
+35 P3_15             bidirectional right
+34 P3_27             bidirectional right
+33 P3_28             bidirectional right
+32 P3_29/ISPMODE_N   bidirectional right
+31 P3_30             bidirectional right
+30 P3_31             bidirectional right
+13 VDD               power_in top
+29 VDD               power_in top
+48 VDD               power_in top
+60 VDD               power_in top
+12 VDD_ANA           power_in top
+25 VDD_USB           power_in top
+11 VSS               power_in bottom
+28 VSS               power_in bottom
+47 VSS               power_in bottom
+61 VSS               power_in bottom
+26 USB0_DM           bidirectional bottom
+27 USB0_DP           bidirectional bottom
+"""
+
+# Infineon EXCELON LP 4-Mbit SPI F-RAM, 8-pin SOIC 208 mil (EIAJ). No stock KiCad symbol for the CY15B104Q family.
+# Pin 7 is DNU (do not use; "leave floating or tie to VDD"), not HOLD as on older F-RAMs.
+[[symbol]]
+name = "CY15B104QN-50SXI"
+reference = "U"
+value = "CY15B104QN-50SXI"
+footprint = "Package_SO:SOIC-8_5.3x5.3mm_P1.27mm"
+datasheet = "https://www.infineon.com/dgdl/Infineon-CY15B104QN_CY15V104QN_Excelon(TM)_LP_4-Mbit_(512K_X_8)_Serial_(SPI)_F-RAM-DataSheet-v12_00-EN.pdf"
+description = "Infineon CY15B104QN 4 Mbit (512K x 8) SPI F-RAM, 1.8-3.6 V, 50 MHz, -40..+85 C, 8-SOIC 208 mil"
+mpn = "CY15B104QN-50SXI"
+manufacturer = "Infineon Technologies"
+pinout_source = "Infineon 002-19436 Rev. *O (2023-06-05), Figure 2 '8-pin SOIC pinout' and Table 1 'Pin definitions'"
+keywords = "FRAM F-RAM SPI nonvolatile memory"
+package_pins = 8
+pins = """
+1 ~{CS}  input     left
+6 SCK    input     left
+5 SI     input     left
+3 ~{WP}  input     left
+2 SO     tri_state right
+7 DNU    no_connect right
+8 VDD    power_in  top
+4 VSS    power_in  bottom
+"""

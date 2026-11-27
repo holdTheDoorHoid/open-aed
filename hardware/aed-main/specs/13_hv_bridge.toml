@@ -1,0 +1,2466 @@
+# 13_hv_bridge — output bridge power stage (WP-G). HIGH VOLTAGE.
+# NOT FOR CONSTRUCTION — unreviewed design. Drawn with AI assistance; not reviewed by a qualified high-voltage or
+# medical-device engineer (SAFETY.md §2a). Nothing here is an instruction to build, power or test anything.
+# Source: docs/HARDWARE_DESIGN.md §B6, §B13.5, §B14, §13, §14; contract.md issue 2 (§2, §4, §5.5, §5.7, §8, §9).
+# Arithmetic, ratings against stresses, the per-part failure table and every unverified item:
+#   hardware/aed-main/capture-notes/WP-G.md
+# References 1301-1399 (contract §2). Contract-fixed: Q1301 QHA, Q1302 QLA, Q1303 QHB, Q1304 QLB, R1301 R_S,
+# L1301 L_S, D1301 D_FW, R1302 shunt, T1301/T1302, U1301/U1302 UCC5350MC, U1303 MGJ2, K1301, R1303.
+
+[sheet]
+name = "13_hv_bridge"
+title = "HIGH VOLTAGE: H-bridge (4 x 3.3 kV SiC), R_S + L_S with freewheel diodes, gated push-pull high-side drive, low-side drivers, current sense and comparators, bridge test load"
+source = "docs/HARDWARE_DESIGN.md §B6, §B13.5, §B14; contract.md issue 2; capture notes WP-G.md"
+date = "2026-11-27"
+comments = [
+  "Every turn-off is low side first (sheet 12 orders it); coil current freewheels through D1302+D1301; no switch is ever allowed to avalanche.",
+  "Every switch is held OFF by a gate-source resistor with all supplies absent. HV_*, HSA_*, HSB_* nets carry up to 2.2 kV: no test points on them (R9).",
+]
+
+[nets]
+power = ["GND", "HV_RTN", "BRIDGE_5V", "BRIDGE_3V3"]
+global = [
+  "HV_CAP_P",                         # capacitor + (driver 10, store 11)
+  "HV_OUT_A", "HV_OUT_B",             # bridge outputs -> 14 (patient relay)
+  "G_HA", "G_HB", "G_LA", "G_LB",     # gated enables from 12; 100k pull-downs here (contract §5.7)
+  "BTEST_EN",                         # test relay enable from 12; 100k pull-down here
+  "OC_DET_N", "IDLE_I_DET_N",         # push-pull comparator outputs -> 12 (pull-downs on 12)
+  "I_SHOCK",                          # 26.7 mV/A -> 04
+  "OUT_A_TAP", "OUT_B_TAP",           # 1:997 output taps, clamped to GND -> 07
+]
+
+# ---------------------------------------------------------------- ERC acceptances (other packages' rails / ends)
+# KiCad reports an undriven rail once per sheet, naming only the power symbol's reference. The generator numbers
+# power symbols in a fixed order (KiCad 10 ERC, build of 27 Nov 2026): #PWR13000 = HV_RTN, #PWR13001 = BRIDGE_3V3,
+# #PWR13002 = GND, #PWR13013 = BRIDGE_5V (checked in the generated 13_hv_bridge.kicad_sch). If parts are re-ordered
+# these numbers can move; the build then fails loudly and the numbers must be re-read.
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "^/13_hv_bridge/ .*Symbol #PWR13001 Pin 1"
+until_sheet = "12_bridge_logic"
+reason = "BRIDGE_3V3 is made on 12_bridge_logic (WP-D, placeholder on this branch). No package flags another package's rail (contract §4)."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "^/13_hv_bridge/ .*Symbol #PWR13013 Pin 1"
+until_sheet = "09_interlock"
+reason = "BRIDGE_5V is made on 09_interlock (SW1-SW5, WP-D, placeholder on this branch)."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "^/13_hv_bridge/ .*Symbol #PWR13002 Pin 1"
+until_sheet = "01_power_battery"
+reason = "GND is made on 01_power_battery (WP-A, placeholder on this branch)."
+
+[[erc_accepted]]
+type = "power_pin_not_driven"
+match = "^/13_hv_bridge/ .*Symbol #PWR13000 Pin 1"
+until_sheet = "11_hv_storage"
+reason = "HV_RTN is made on 11_hv_storage (NT1101 || NT1102, WP-F, placeholder on this branch)."
+
+# ================================================================= groups
+[[group]]
+id = "bridge"
+title = "H-bridge: four 3.3 kV SiC MOSFETs (Microchip MSC080SMA330B4N, TO-247-4 with source sense)"
+note = """
+Phase 1: QHA on beforehand (carrier), QLB times the pulse. Phase 2: QHB on beforehand, QLA times it (§B6.1). High sides switch at zero current; low sides switch the current. VDSS 3300 V against <= 2.2 kV (1.5x). Gate drive returns to each device's SOURCE SENSE pin (terminal 3), never to the power source.
+Thermal [CALC from DS00005914A Fig 1-5, 1-18; capture notes §4]: worst planned shock (65.7 A decaying, 25 Ohm, phase 1 = 3-12 ms) Tj 55 -> 102 C at VGS 20 V, -> 119 C if a high side only reaches VGS 17 V; fault 'low side frozen on to the 28.8 ms cap' 2,000 V, 25 Ohm: 124 C worst. Limit 150 C. Fault 18 (QLB shorted, QHA turning on slowly through its linear region) is NOT covered: 130-300 C estimated -> finding F-1.
+No avalanche and no short-circuit rating exist for this part: the design never lets it avalanche (freewheel D1301/D1302) and the OC latch trips at 82-98 A, but the current at the instant of turn-off (115-126 A) is above IDM 107 A -> finding F-2.
+"""
+
+[[group]]
+id = "series"
+title = "Series element R_S + L_S, freewheel diodes D1302 + D1301 (two in series), snubber C1301 + C1302 + R1304"
+note = """
+R1301 R_S 3.9 Ohm ceramic composition (Ohmite OY39GKE, 80 J single impulse): 23.6 J per adult shock at 25 Ohm, 3.3 J at 175 Ohm [CALC]; 254 V peak across it (400 V working). L1301 30 uH made to order (§14).
+Freewheel: anode at HV_BUS, cathode at HV_CAP_P (§B6.5). TWO 3.3 kV SiC Schottky diodes in series (departure: the contract lists one D1301): a single shorted freewheel diode would otherwise silently remove R_S and L_S from the circuit. Each GC05MPS33J: 3300 V, IF,MAX 250 A for 10 us; stress 24 A (phase end) to about 126 A (OC trip) decaying with tau = 7.6 us.
+Snubber HV_BUS-HV_RTN: two 10 nF 3 kV X7R MLCC in series (5 nF nominal, about 2.5-3.5 nF at 2 kV bias [EST]) + 10 Ohm OY. Two in series so that one cracked/shorted MLCC does not short the capacitor through R_S. Values are placeholders for simulation [SIM] (§B6.5).
+"""
+
+[[group]]
+id = "lsdrv_a"
+title = "QLA low-side drive: UCC5350MC (Miller clamp), +20/-5 V, Rg_on 220 Ohm, Rg_off 33 Ohm + diode"
+note = """
+IN+ = G_LA with the contract's 100 k pull-down at the input; IN- tied to GND1. Output side from the MGJ2 rails (+20 V / -5 V around LSD_0V). UVLO, unpowered input side, unbiased output: OUT held low (SLLSER8J Tables 8-2, 8-3, §8.3.4.2).
+Turn-on: (20-9 V)/(220+3.7 Ohm) = 49 mA through the 51 nC Miller charge -> 1.0 us, about 2 V/ns at the drain [CALC]. Turn-off: 33 Ohm via 1N4148W, about 0.36 A -> 0.14 us. CLAMP pin goes straight to the gate: below VEE2 + 2.1 V it ties the gate to -5 V with >= 5 A.
+R1318 10 k gate-source holds QLA off with every supply absent. D1308 (22 V) + D1309 (6.8 V) anti-series clamp: +21.5..+24 V / -7.1..-7.9 V against the absolute VGS +23/-10 V (+25/-12 V transient).
+"""
+
+[[group]]
+id = "lsdrv_b"
+title = "QLB low-side drive: same as QLA"
+note = "Identical to QLA's network. U1302 IN+ = G_LB (100 k pull-down here)."
+
+[[group]]
+id = "lssupply"
+title = "Low-side +20/-5 V supply: Murata MGJ2D052005SC on BRIDGE_5V, preloads, per-driver star resistors"
+note = """
+MGJ2 output 0 V (LSD_0V) joins each low side's SOURCE SENSE through its own 2.2 Ohm (R1320, R1325) so the two Kelvin loops are not joined directly through LS_SRC. Each driver has its own 1 uF from +20 V and to -5 V at its Kelvin source.
+PRELOADS (capture addition): the MGJ2 needs >= 10 % load or its output rises up to 1.25 x (20 V -> 25 V, above VGS max 23 V) (Murata KDC_MGJ2_F01 'Minimum load'). R1326 2.2 k on +20 V (9.1 mA >= 8 mA) and R1327 1.2 k on -5 V (4.2 mA >= 4 mA).
+Hold-up: 10 uF + 2 x 1 uF on each rail, preload tau about 26 ms: the drivers stay above UVLO2 (11 V max falling) for about 20 ms after BRIDGE_5V is lost, far longer than the low-side-first turn-off (about 1 us) needs. Start-up 5.4 ms typ (inside RAIL_READY 20 ms on 12).
+"""
+
+[[group]]
+id = "clock"
+title = "High-side carrier clock: TLC555 at about 805 kHz (15 % low time = dead time), /2 two-phase divider, whole-cycle gating flip-flops"
+note = """
+U1304 astable: RA 12.4 k, RB 2.74 k, C 100 pF C0G -> high 1.05 us, low 0.19 us, 805 kHz nominal [CALC; 650-900 kHz with parts and 555 delay EST]. U1305 inverts; U1306 toggles on OSC falling edges -> PH1/PH2 at about 400 kHz, exactly 50 % (equal volt-seconds in the transformer).
+U1307/U1308 (sync): G_HA/G_HB is sampled on the PH1 rising edge so the carrier always starts with a whole cycle (§B6.3 'gating on a clock edge'); /CLR = G_H* stops it at once (adds <= 2.5 us to turn-on, nothing to turn-off).
+Drive = PHx AND OSC AND EN (U1309-U1312): each FET conducts about 1.05 us per 2.5 us period, with 0.19 us dead time at every phase change (no cross-conduction in the centre-tapped primary). Everything runs whenever BRIDGE_3V3 is up; the gate pull-downs and the 100 k on G_H* make every input low when 12 is unpowered.
+"""
+
+[[group]]
+id = "hsprim_a"
+title = "QHA carrier: DMN3042L push-pull into T1301 (centre tap on BRIDGE_5V)"
+note = """
+Each primary half sees 5 V; drains swing to 2 x 5 V. 30 V FETs, 22 V zener on each drain absorbs the leakage-inductance spike. Peak primary current about 0.8 A while the gate charges (190 mA secondary x turns ratio about 4) [EST]. 100 k gate pull-downs: FETs off with the logic unpowered.
+"""
+
+[[group]]
+id = "hsprim_b"
+title = "QHB carrier: same as QHA"
+note = "Identical to QHA's primary stage, driven by U1311/U1312 and T1302."
+
+[[group]]
+id = "hssec_a"
+title = "QHA floating gate circuit (HSA island, floats 0-2.2 kV with HV_OUT_A)"
+note = """
+T1301 secondary -> 1N4148W bridge -> HSA_RECT (1 nF, 2.2 k bleed, 20 V zener clamp) -> diode -> 100 Ohm -> gate. 2 x 47 nF C0G gate-source (one open still leaves 47 nF) + Cgs about 3.46 nF = 97.5 nF.
+Turn-on [CALC]: tau = (100 + about 5) Ohm x about 103 nF effective (incl. the MOSFET's own charge to 15 V) = 10.8 us; 0 -> 15 V from an 18.3 V source in 18.5 us nominal; worst (17.3 V source, +20 Ohm source resistance, C +5 %): 26.4 us + 2.5 us sync + 1.3 us = <= 30 us (spec <= 40 us).
+Turn-off [CALC]: carrier stops -> HSA_RECT collapses (tau 2.2 us; PNP starts after about 0.2 us) -> BC807-40 pulls the gate through 22 Ohm, base drive via 470 Ohm + 2.2 k: tau 2.8 us nominal, 4.0 us worst -> below 2 V in 7.1 us nominal / <= 10.3 us worst; below 1 V in <= 15.4 us worst (spec about 10 us, <= 20 us). PNP failed open: 10 k bleed, tau 0.98 ms.
+Off state: the PNP also clamps any Miller-coupled rise to about 0.6-1.5 V. dv/dt coupling 51 nC / 97.5 nF = 0.52 V (one 47 nF open: 1.0 V, PNP clamp about 1.4 V) against VGS(th) minimum 1.9 V at 25 C, about 1.48 V at 150 C [EST from Fig 1-16 scaling] (capture notes §5).
+D1319 22 V gate clamp (backup to the 20 V clamp on HSA_RECT). R1332 10 k holds the gate off with no carrier.
+"""
+
+[[group]]
+id = "hssec_b"
+title = "QHB floating gate circuit (HSB island, floats with HV_OUT_B): same as QHA"
+note = "Identical to the HSA island."
+
+[[group]]
+id = "isense"
+title = "Current sense: 2 mOhm 4-terminal shunt LS_SRC -> HV_RTN, bypass diode, 90 A fast comparator, INA240A1 -> I_SHOCK, 5 A idle comparator"
+note = """
+Over-current: shunt Kelvin -> 100 Ohm / 1 nF (tau 100 ns) -> TLV3501 (4.5 ns). Threshold 3.3 V x 10.0 k / 184 k = 179.3 mV, referred to the shunt's own HV_RTN Kelvin terminal -> 89.7 A nominal; band 82-98 A with reference +-2.9 %, offset +-6.5 mV, shunt +-1 % and TCR [CALC]. Response <= 0.2 us to the comparator output, plus 12's latch and the UCC5350 (<= 100 ns).
+Waveform: INA240A1 (gain 20) on BRIDGE_5V, 10 Ohm input resistors, 2:3 divider -> I_SHOCK = 26.67 mV/A, 3.2 V at 120 A (output swing VS - 0.2 V max) (§B6.6).
+Idle current: I_SHOCK -> 1 k / 100 pF -> TLV3501, threshold 3.3 V x 10.0 k / 247 k = 133.6 mV -> 5.0 A; band about 4.5-5.5 A. It depends on the INA240: a dead INA240 reads 0 A, which the self-test catches (no current in the test sequence) -> capture notes.
+D1303 (capture addition): S3D across the shunt. If the 2 mOhm shunt ever opens, LS_SRC would otherwise rise to kilovolts and destroy both low-side drivers, the MGJ2 and the INA240; with D1303 it stays below about 1 V and the OC comparator trips at once (fail safe, detected).
+BAT54S clamps the OC comparator input to GND/BRIDGE_3V3. Outputs are push-pull on BRIDGE_3V3; the 100 k pull-downs are on 12: unpowered or open = 'fault' (R11).
+"""
+
+[[group]]
+id = "osense"
+title = "Output dividers and rest pull-downs: 4 x 249 k (KOA HV73, 2512, 3 kV working) + 1.00 k -> OUT_x_TAP (1:997), 3.6 V clamp to GND"
+note = """
+Each divider (997 kOhm) is also the output's rest pull-down. Idle: off-state leakage of the high side (<= 35 uA at 3.3 kV, 25 C) x 997 k <= 35 V on the output, <= 35 mV on the tap; a shorted high side reads the capacitor voltage / 997 (<= 2.2 V).
+Per resistor: 550 V at 2.2 kV (one shorted: 733 V) against 3000 V working; 1.2 W only while the output is at full voltage (ms in a shock; seconds in the 'high side shorted' fault) against 1 W rated and 2.5 x rated voltage for 5 s overload.
+Taps clamped to GND at the tap (BZX84C3V6, R-21), not to a reader's rail.
+"""
+
+[[group]]
+id = "btest"
+title = "Bridge test load: reed relay K1301 (10 kV, 5 V coil) + 200 Ohm R1303 across the outputs; only in test mode (§B14)"
+note = """
+BTEST_EN (100 k pull-down here) -> DMN3042L -> coil from BRIDGE_5V (28 Ohm, 178 mA at 5 V), 1N4148W flyback. Cold switched: sheet 12 closes it >= 2 ms before any low side and only with TEST_MODE.
+At <= 60 V: 0.29 A, 17.6 W peak, <= 0.18 J. A welded K1301 during a real shock would put about 190 J into R1303 (80 J rating): it would fail; the self-test finds a welded contact (§B14.3) and the firmware refuses to shock (fault 31, open item).
+Relay operating range is -20..+70 C (narrower than the rest of the sheet) -> capture notes.
+"""
+
+[[group]]
+id = "tp"
+title = "Test points (§15): low-voltage nets only"
+note = "OUT_A_TAP, OUT_B_TAP, I_SHOCK, OC_DET_N, IDLE_I_DET_N. None on HV_*, HSA_*, HSB_* (R9)."
+
+# ================================================================= bridge switches
+[[part]]
+ref = "Q1301"
+group = "bridge"
+lib_id = "aed_bridge:MSC080SMA330B4N"
+value = "MSC080SMA330B4N"
+footprint = "aed_bridge:TO-247-4_Notch_Microchip"
+footprint_todo = true
+mpn = "MSC080SMA330B4N"
+manufacturer = "Microchip Technology"
+datasheet = "https://docs.rs-online.com/a067/A700000015733917.pdf"
+description = "QHA high side leg A, 3300 V SiC"
+fields = { DocRef = "QHA", Verify = "lifecycle status (R-25); no avalanche/SC/RBSOA rating; linear-mode SOA below 10 us (finding F-1, F-2)" }
+pins = """
+1 D  HV_BUS
+2 S  HV_OUT_A
+3 SS HSA_KS
+4 G  HSA_G
+"""
+
+[[part]]
+ref = "Q1302"
+group = "bridge"
+lib_id = "aed_bridge:MSC080SMA330B4N"
+value = "MSC080SMA330B4N"
+footprint = "aed_bridge:TO-247-4_Notch_Microchip"
+footprint_todo = true
+mpn = "MSC080SMA330B4N"
+manufacturer = "Microchip Technology"
+datasheet = "https://docs.rs-online.com/a067/A700000015733917.pdf"
+description = "QLA low side leg A (times phase 2)"
+fields = { DocRef = "QLA", Verify = "turn-off at 115-126 A (OC trip) is above IDM 107 A; no RBSOA published (finding F-2)" }
+pins = """
+1 D  HV_OUT_A
+2 S  LS_SRC
+3 SS QLA_KS
+4 G  QLA_G
+"""
+
+[[part]]
+ref = "Q1303"
+group = "bridge"
+lib_id = "aed_bridge:MSC080SMA330B4N"
+value = "MSC080SMA330B4N"
+footprint = "aed_bridge:TO-247-4_Notch_Microchip"
+footprint_todo = true
+mpn = "MSC080SMA330B4N"
+manufacturer = "Microchip Technology"
+datasheet = "https://docs.rs-online.com/a067/A700000015733917.pdf"
+description = "QHB high side leg B"
+fields = { DocRef = "QHB", Verify = "as Q1301" }
+pins = """
+1 D  HV_BUS
+2 S  HV_OUT_B
+3 SS HSB_KS
+4 G  HSB_G
+"""
+
+[[part]]
+ref = "Q1304"
+group = "bridge"
+lib_id = "aed_bridge:MSC080SMA330B4N"
+value = "MSC080SMA330B4N"
+footprint = "aed_bridge:TO-247-4_Notch_Microchip"
+footprint_todo = true
+mpn = "MSC080SMA330B4N"
+manufacturer = "Microchip Technology"
+datasheet = "https://docs.rs-online.com/a067/A700000015733917.pdf"
+description = "QLB low side leg B (times phase 1)"
+fields = { DocRef = "QLB", Verify = "as Q1302" }
+pins = """
+1 D  HV_OUT_B
+2 S  LS_SRC
+3 SS QLB_KS
+4 G  QLB_G
+"""
+
+# ================================================================= series element, freewheel, snubber
+[[part]]
+ref = "R1301"
+group = "series"
+lib_id = "Device:R"
+value = "3.9R OY 2W"
+footprint = "Resistor_THT:R_Axial_DIN0922_L20.0mm_D9.0mm_P25.40mm_Horizontal"
+mpn = "OY39GKE"
+manufacturer = "Ohmite"
+datasheet = "https://mm.digikey.com/Volume0/opasdata/d220001/medias/docus/7182/ow-ox-oy-series.pdf"
+description = "R_S series resistor, ceramic composition 3.9 Ohm +-10 %, 2 W, 80 J single impulse, 400 V working, 20 kV pulse"
+fields = { DocRef = "R_S", Verify = "footprint (OY body 19 x 7 mm, 0.8 mm leads); repetitive-pulse rating at 23.6 J per shock; TCR -1300 ppm/C shifts R_S by about -2.6 % per shock" }
+between = ["HV_CAP_P", "HV_BUS_RS"]
+
+[[part]]
+ref = "L1301"
+group = "series"
+lib_id = "aed_bridge:L_LS_30UH"
+value = "30uH made to order"
+footprint = "aed_bridge:L_LS_made_to_order"
+footprint_todo = true
+mpn = "MADE-TO-ORDER (§14)"
+manufacturer = "to be selected (made to order)"
+datasheet = "docs/HARDWARE_DESIGN.md §14"
+description = "L_S series coil 30 uH, >= 450 A, <= 80 mOhm"
+fields = { DocRef = "L_S", Verify = "made-to-order: inductance at 65 A and 450 A, resistance, insulation, turn-to-turn voltage" }
+pins = """
+1 1 HV_BUS_RS
+2 2 HV_BUS
+"""
+
+[[part]]
+ref = "D1302"
+group = "series"
+lib_id = "aed_bridge:GC05MPS33J"
+value = "GC05MPS33J"
+footprint = "Package_TO_SOT_SMD:TO-263-7_TabPin8"
+mpn = "GC05MPS33J"
+manufacturer = "GeneSiC Semiconductor (Navitas)"
+datasheet = "https://www.genesicsemi.com/sic-schottky-mps/GC05MPS33J/GC05MPS33J.pdf"
+description = "Freewheel diode, lower of two in series (capture addition: single-fault tolerance of the freewheel path)"
+fields = { DocRef = "D_FW (2 of 2)", Verify = "lead numbering (datasheet labels only NC/A/case K); lifecycle; repetitive peak rating at 24-126 A for about 8 us not stated (IF,MAX 250 A is non-repetitive 10 us)" }
+pins = """
+2 A  HV_BUS
+3 A  HV_BUS
+4 A  HV_BUS
+5 A  HV_BUS
+6 A  HV_BUS
+7 A  HV_BUS
+8 K  HV_BUS_FW
+1 NC NC
+"""
+
+[[part]]
+ref = "D1301"
+group = "series"
+lib_id = "aed_bridge:GC05MPS33J"
+value = "GC05MPS33J"
+footprint = "Package_TO_SOT_SMD:TO-263-7_TabPin8"
+mpn = "GC05MPS33J"
+manufacturer = "GeneSiC Semiconductor (Navitas)"
+datasheet = "https://www.genesicsemi.com/sic-schottky-mps/GC05MPS33J/GC05MPS33J.pdf"
+description = "Freewheel diode D_FW (contract D1301), cathode at HV_CAP_P"
+fields = { DocRef = "D_FW (1 of 2)", Verify = "as D1302" }
+pins = """
+2 A  HV_BUS_FW
+3 A  HV_BUS_FW
+4 A  HV_BUS_FW
+5 A  HV_BUS_FW
+6 A  HV_BUS_FW
+7 A  HV_BUS_FW
+8 K  HV_CAP_P
+1 NC NC
+"""
+
+[[part]]
+ref = "C1301"
+group = "series"
+lib_id = "Device:C"
+value = "10nF 3kV X7R"
+footprint = "Capacitor_SMD:C_2225_5664Metric"
+mpn = "2225HC103KAT2A"
+manufacturer = "KYOCERA AVX"
+datasheet = "https://www.farnell.com/datasheets/36581.pdf"
+description = "Snubber capacitor, upper of two in series, 10 nF 3000 V X7R 2225"
+fields = { DocRef = "snubber C", Verify = "capacitance at 1.1-2.2 kV bias (X7R: large loss, EST 30-50 %); dv/dt and pulse-current rating not stated; surface arcing needs coating at 3 kV; value by simulation [SIM]" }
+between = ["HV_BUS", "HV_BUS_SNC"]
+
+[[part]]
+ref = "C1302"
+group = "series"
+lib_id = "Device:C"
+value = "10nF 3kV X7R"
+footprint = "Capacitor_SMD:C_2225_5664Metric"
+mpn = "2225HC103KAT2A"
+manufacturer = "KYOCERA AVX"
+datasheet = "https://www.farnell.com/datasheets/36581.pdf"
+description = "Snubber capacitor, lower of two in series"
+fields = { DocRef = "snubber C", Verify = "as C1301" }
+between = ["HV_BUS_SNC", "HV_BUS_SNR"]
+
+[[part]]
+ref = "R1304"
+group = "series"
+lib_id = "Device:R"
+value = "10R OY 2W"
+footprint = "Resistor_THT:R_Axial_DIN0922_L20.0mm_D9.0mm_P25.40mm_Horizontal"
+mpn = "OY100KE"
+manufacturer = "Ohmite"
+datasheet = "https://mm.digikey.com/Volume0/opasdata/d220001/medias/docus/7182/ow-ox-oy-series.pdf"
+description = "Snubber resistor 10 Ohm ceramic composition, 80 J single impulse, 20 kV pulse"
+fields = { DocRef = "snubber R", Verify = "value by simulation [SIM]; footprint" }
+between = ["HV_BUS_SNR", "HV_RTN"]
+
+# ================================================================= low-side drive A (QLA)
+[[part]]
+ref = "U1301"
+group = "lsdrv_a"
+lib_id = "aed_bridge:UCC5350MCD"
+value = "UCC5350MCDR"
+footprint = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
+mpn = "UCC5350MCDR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/ucc5350.pdf"
+description = "QLA isolated gate driver with Miller clamp"
+fields = { DocRef = "QLA driver" }
+pins = """
+1 VCC1  BRIDGE_3V3
+2 IN+   G_LA
+3 IN-   GND
+4 GND1  GND
+5 VCC2  LSD_P20V
+6 OUT   QLA_DRV
+7 CLAMP QLA_G
+8 VEE2  LSD_N5V
+"""
+
+[[part]]
+ref = "R1319"
+group = "lsdrv_a"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 1%"
+manufacturer = "any"
+description = "G_LA default pull-down at the UCC5350 input (contract §5.7)"
+between = ["G_LA", "GND"]
+
+[[part]]
+ref = "C1303"
+group = "lsdrv_a"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "VCC1 decoupling (SLLSER8J: 0.1 uF VCC1-GND1)"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "C1304"
+group = "lsdrv_a"
+lib_id = "Device:C"
+value = "1uF 50V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 1uF 50V"
+manufacturer = "any"
+description = "VCC2-VEE2 decoupling at the driver (25 V across it)"
+between = ["LSD_P20V", "LSD_N5V"]
+
+[[part]]
+ref = "C1305"
+group = "lsdrv_a"
+lib_id = "Device:C"
+value = "1uF 50V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 1uF 50V"
+manufacturer = "any"
+description = "+20 V to QLA source sense: local turn-on current loop"
+between = ["LSD_P20V", "QLA_KS"]
+
+[[part]]
+ref = "C1306"
+group = "lsdrv_a"
+lib_id = "Device:C"
+value = "1uF 25V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 1uF 25V"
+manufacturer = "any"
+description = "QLA source sense to -5 V: local turn-off current loop"
+between = ["QLA_KS", "LSD_N5V"]
+
+[[part]]
+ref = "R1316"
+group = "lsdrv_a"
+lib_id = "Device:R"
+value = "220R"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "generic 1206 220R 1% pulse-tolerant"
+manufacturer = "any"
+description = "QLA Rg_on: about 1 us Miller transition, about 2 V/ns"
+between = ["QLA_DRV", "QLA_G"]
+
+[[part]]
+ref = "R1317"
+group = "lsdrv_a"
+lib_id = "Device:R"
+value = "33R"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "generic 1206 33R 1% pulse-tolerant"
+manufacturer = "any"
+description = "QLA Rg_off (with D1307): fast turn-off, limits the switching energy at the OC trip"
+between = ["QLA_G", "QLA_GOFF"]
+
+[[part]]
+ref = "D1307"
+group = "lsdrv_a"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "QLA turn-off steering diode (gate -> OUT)"
+pins = """
+1 K QLA_DRV
+2 A QLA_GOFF
+"""
+
+[[part]]
+ref = "R1318"
+group = "lsdrv_a"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10k 1%"
+manufacturer = "any"
+description = "QLA gate-source hold-off with all supplies absent"
+between = ["QLA_G", "QLA_KS"]
+
+[[part]]
+ref = "D1308"
+group = "lsdrv_a"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C22"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C22LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "QLA gate clamp, positive (22 V, 20.8-23.3 V) in anti-series with D1309"
+pins = """
+3 K  QLA_G
+1 A  QLA_GZ
+2 NC NC
+"""
+
+[[part]]
+ref = "D1309"
+group = "lsdrv_a"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C6V8"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C6V8LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "QLA gate clamp, negative (6.8 V, 6.4-7.2 V)"
+pins = """
+1 A  QLA_GZ
+3 K  QLA_KS
+2 NC NC
+"""
+
+[[part]]
+ref = "R1320"
+group = "lsdrv_a"
+lib_id = "Device:R"
+value = "2.2R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 2.2R 1%"
+manufacturer = "any"
+description = "Star resistor MGJ2 0 V -> QLA source sense (breaks the loop between the two Kelvin connections)"
+between = ["LSD_0V", "QLA_KS"]
+
+# ================================================================= low-side drive B (QLB)
+[[part]]
+ref = "U1302"
+group = "lsdrv_b"
+lib_id = "aed_bridge:UCC5350MCD"
+value = "UCC5350MCDR"
+footprint = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
+mpn = "UCC5350MCDR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/ucc5350.pdf"
+description = "QLB isolated gate driver with Miller clamp"
+fields = { DocRef = "QLB driver" }
+pins = """
+1 VCC1  BRIDGE_3V3
+2 IN+   G_LB
+3 IN-   GND
+4 GND1  GND
+5 VCC2  LSD_P20V
+6 OUT   QLB_DRV
+7 CLAMP QLB_G
+8 VEE2  LSD_N5V
+"""
+
+[[part]]
+ref = "R1324"
+group = "lsdrv_b"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 1%"
+manufacturer = "any"
+description = "G_LB default pull-down at the UCC5350 input (contract §5.7)"
+between = ["G_LB", "GND"]
+
+[[part]]
+ref = "C1307"
+group = "lsdrv_b"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "VCC1 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "C1308"
+group = "lsdrv_b"
+lib_id = "Device:C"
+value = "1uF 50V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 1uF 50V"
+manufacturer = "any"
+description = "VCC2-VEE2 decoupling"
+between = ["LSD_P20V", "LSD_N5V"]
+
+[[part]]
+ref = "C1309"
+group = "lsdrv_b"
+lib_id = "Device:C"
+value = "1uF 50V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 1uF 50V"
+manufacturer = "any"
+description = "+20 V to QLB source sense"
+between = ["LSD_P20V", "QLB_KS"]
+
+[[part]]
+ref = "C1310"
+group = "lsdrv_b"
+lib_id = "Device:C"
+value = "1uF 25V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 1uF 25V"
+manufacturer = "any"
+description = "QLB source sense to -5 V"
+between = ["QLB_KS", "LSD_N5V"]
+
+[[part]]
+ref = "R1321"
+group = "lsdrv_b"
+lib_id = "Device:R"
+value = "220R"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "generic 1206 220R 1% pulse-tolerant"
+manufacturer = "any"
+description = "QLB Rg_on"
+between = ["QLB_DRV", "QLB_G"]
+
+[[part]]
+ref = "R1322"
+group = "lsdrv_b"
+lib_id = "Device:R"
+value = "33R"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "generic 1206 33R 1% pulse-tolerant"
+manufacturer = "any"
+description = "QLB Rg_off (with D1310)"
+between = ["QLB_G", "QLB_GOFF"]
+
+[[part]]
+ref = "D1310"
+group = "lsdrv_b"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "QLB turn-off steering diode"
+pins = """
+1 K QLB_DRV
+2 A QLB_GOFF
+"""
+
+[[part]]
+ref = "R1323"
+group = "lsdrv_b"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10k 1%"
+manufacturer = "any"
+description = "QLB gate-source hold-off"
+between = ["QLB_G", "QLB_KS"]
+
+[[part]]
+ref = "D1311"
+group = "lsdrv_b"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C22"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C22LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "QLB gate clamp, positive"
+pins = """
+3 K  QLB_G
+1 A  QLB_GZ
+2 NC NC
+"""
+
+[[part]]
+ref = "D1312"
+group = "lsdrv_b"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C6V8"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C6V8LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "QLB gate clamp, negative"
+pins = """
+1 A  QLB_GZ
+3 K  QLB_KS
+2 NC NC
+"""
+
+[[part]]
+ref = "R1325"
+group = "lsdrv_b"
+lib_id = "Device:R"
+value = "2.2R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 2.2R 1%"
+manufacturer = "any"
+description = "Star resistor MGJ2 0 V -> QLB source sense"
+between = ["LSD_0V", "QLB_KS"]
+
+# ================================================================= low-side supply
+[[part]]
+ref = "U1303"
+group = "lssupply"
+lib_id = "Converter_DCDC_Isolated:MGJ2D052005SC"
+value = "MGJ2D052005SC"
+footprint = "Converter_DCDC:Converter_DCDC_Murata_MGJ2DxxxxxxSC_THT"
+mpn = "MGJ2D052005SC"
+manufacturer = "Murata Power Solutions"
+datasheet = "https://datasheet.chipsmall.com/MGJ2D122005SC/484428.pdf"
+description = "Isolated DC/DC 5 V -> +20 V / -5 V, 2 W, 5.2 kV DC test (Murata KDC_MGJ2_F01; distributor-hosted copy, Murata's server refused automated download)"
+fields = { DocRef = "low-side supply", Verify = "current datasheet revision from Murata; output with < 5 % load (preloads added)" }
+pins = """
+1 +VIN  BRIDGE_5V
+2 -VIN  GND
+7 +VOUT LSD_P20V
+6 0V    LSD_0V
+5 -VOUT LSD_N5V
+"""
+
+[[part]]
+ref = "C1311"
+group = "lssupply"
+lib_id = "Device:C"
+value = "4.7uF 16V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 4.7uF 16V"
+manufacturer = "any"
+description = "MGJ2 input capacitor"
+between = ["BRIDGE_5V", "GND"]
+
+[[part]]
+ref = "C1312"
+group = "lssupply"
+lib_id = "Device:C"
+value = "10uF 50V"
+footprint = "Capacitor_SMD:C_1210_3225Metric"
+mpn = "generic 1210 X7R 10uF 50V"
+manufacturer = "any"
+description = "+20 V bulk / hold-up (Murata start-up figures use 10 uF)"
+between = ["LSD_P20V", "LSD_0V"]
+
+[[part]]
+ref = "C1313"
+group = "lssupply"
+lib_id = "Device:C"
+value = "10uF 16V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 10uF 16V"
+manufacturer = "any"
+description = "-5 V bulk / hold-up"
+between = ["LSD_0V", "LSD_N5V"]
+
+[[part]]
+ref = "R1326"
+group = "lssupply"
+lib_id = "Device:R"
+value = "2.2k"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "generic 1206 2.2k 1% 0.25W"
+manufacturer = "any"
+description = "+20 V preload 9.1 mA (>= 10 % of 80 mA), stops the output rising towards 25 V at light load"
+between = ["LSD_P20V", "LSD_0V"]
+
+[[part]]
+ref = "R1327"
+group = "lssupply"
+lib_id = "Device:R"
+value = "1.2k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 1.2k 1%"
+manufacturer = "any"
+description = "-5 V preload 4.2 mA (>= 10 % of 40 mA)"
+between = ["LSD_0V", "LSD_N5V"]
+
+# ================================================================= carrier clock and gating
+[[part]]
+ref = "U1304"
+group = "clock"
+lib_id = "Timer:TLC555xD"
+value = "TLC555IDR"
+footprint = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
+mpn = "TLC555IDR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlc555.pdf"
+description = "Carrier oscillator, about 805 kHz, 15 % low time (TLC555I: 3-15 V, -40..85 C)"
+fields = { SymbolNote = "stock symbol names VCC / ~{RST}; TI SLFS043K names them VDD / RESET (same pins 8 / 4)" }
+pins = """
+8 VCC    BRIDGE_3V3
+1 GND    GND
+4 ~{RST} BRIDGE_3V3
+2 TRIG   OSC_TH
+6 THRES  OSC_TH
+7 DISCH  OSC_DIS
+5 CONT   OSC_CV
+3 OUT    OSC
+"""
+
+[[part]]
+ref = "R1346"
+group = "clock"
+lib_id = "Device:R"
+value = "12.4k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 12.4k 1%"
+manufacturer = "any"
+description = "RA (sets the high time with RB)"
+between = ["BRIDGE_3V3", "OSC_DIS"]
+
+[[part]]
+ref = "R1347"
+group = "clock"
+lib_id = "Device:R"
+value = "2.74k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 2.74k 1%"
+manufacturer = "any"
+description = "RB (sets the low time = dead time 0.19 us)"
+between = ["OSC_DIS", "OSC_TH"]
+
+[[part]]
+ref = "C1323"
+group = "clock"
+lib_id = "Device:C"
+value = "100pF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 C0G 100pF 50V 5%"
+manufacturer = "any"
+description = "Timing capacitor"
+between = ["OSC_TH", "GND"]
+
+[[part]]
+ref = "C1324"
+group = "clock"
+lib_id = "Device:C"
+value = "10nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 10nF 25V"
+manufacturer = "any"
+description = "CONT pin decoupling"
+between = ["OSC_CV", "GND"]
+
+[[part]]
+ref = "C1325"
+group = "clock"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1304 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "U1305"
+group = "clock"
+lib_id = "74xGxx:74LVC1G04"
+value = "SN74LVC1G04DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G04DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g04.pdf"
+description = "OSC inverter: divider clocks on the start of each dead time"
+new_row = true
+pins = """
+1 NC  NC
+2 ~   OSC
+4 ~   OSC_N
+3 GND GND
+5 VCC BRIDGE_3V3
+"""
+
+[[part]]
+ref = "C1326"
+group = "clock"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1305 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "U1306"
+group = "clock"
+lib_id = "74xGxx:74AUC1G74"
+value = "SN74LVC1G74DCUR"
+footprint = "Package_SO:VSSOP-8_2.3x2mm_P0.5mm"
+mpn = "SN74LVC1G74DCUR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g74.pdf"
+description = "/2 divider -> PH1 (Q) / PH2 (/Q), exactly 50 %"
+fields = { SymbolNote = "stock 74AUC1G74 symbol; pins 1 CLK, 2 D, 3 /Q, 4 GND, 5 Q, 6 /CLR, 7 /PRE, 8 VCC identical to TI SCES794G Pin Functions for SN74LVC1G74 (DCU)" }
+pins = """
+1 C      OSC_N
+2 D      PH2
+5 Q      PH1
+3 ~{Q}   PH2
+6 ~{CLR} BRIDGE_3V3
+7 ~{PRE} BRIDGE_3V3
+4 GND    GND
+8 VCC    BRIDGE_3V3
+"""
+
+[[part]]
+ref = "C1327"
+group = "clock"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1306 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R1348"
+group = "clock"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 1%"
+manufacturer = "any"
+description = "G_HA default pull-down (contract §5.7): carrier off when 12 is unpowered"
+new_row = true
+between = ["G_HA", "GND"]
+
+[[part]]
+ref = "U1307"
+group = "clock"
+lib_id = "74xGxx:74AUC1G74"
+value = "SN74LVC1G74DCUR"
+footprint = "Package_SO:VSSOP-8_2.3x2mm_P0.5mm"
+mpn = "SN74LVC1G74DCUR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g74.pdf"
+description = "QHA carrier gate: starts on a PH1 edge (whole cycles), cleared at once by G_HA low"
+fields = { SymbolNote = "stock 74AUC1G74 symbol, pins identical to SN74LVC1G74 DCU" }
+pins = """
+1 C      PH1
+2 D      BRIDGE_3V3
+5 Q      ENA
+3 ~{Q}   NC
+6 ~{CLR} G_HA
+7 ~{PRE} BRIDGE_3V3
+4 GND    GND
+8 VCC    BRIDGE_3V3
+"""
+
+[[part]]
+ref = "C1328"
+group = "clock"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1307 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R1349"
+group = "clock"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 1%"
+manufacturer = "any"
+description = "G_HB default pull-down (contract §5.7)"
+between = ["G_HB", "GND"]
+
+[[part]]
+ref = "U1308"
+group = "clock"
+lib_id = "74xGxx:74AUC1G74"
+value = "SN74LVC1G74DCUR"
+footprint = "Package_SO:VSSOP-8_2.3x2mm_P0.5mm"
+mpn = "SN74LVC1G74DCUR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g74.pdf"
+description = "QHB carrier gate"
+fields = { SymbolNote = "stock 74AUC1G74 symbol, pins identical to SN74LVC1G74 DCU" }
+pins = """
+1 C      PH1
+2 D      BRIDGE_3V3
+5 Q      ENB
+3 ~{Q}   NC
+6 ~{CLR} G_HB
+7 ~{PRE} BRIDGE_3V3
+4 GND    GND
+8 VCC    BRIDGE_3V3
+"""
+
+[[part]]
+ref = "C1329"
+group = "clock"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1308 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "U1309"
+group = "clock"
+lib_id = "74xGxx:74LVC1G11"
+value = "SN74LVC1G11DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC1G11DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g11.pdf"
+description = "QHA drive 1 = PH1 AND OSC AND ENA"
+new_row = true
+pins = """
+1 ~   PH1
+3 ~   OSC
+6 ~   ENA
+4 ~   TA_DRV1
+2 GND GND
+5 VCC BRIDGE_3V3
+"""
+
+[[part]]
+ref = "U1310"
+group = "clock"
+lib_id = "74xGxx:74LVC1G11"
+value = "SN74LVC1G11DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC1G11DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g11.pdf"
+description = "QHA drive 2 = PH2 AND OSC AND ENA"
+pins = """
+1 ~   PH2
+3 ~   OSC
+6 ~   ENA
+4 ~   TA_DRV2
+2 GND GND
+5 VCC BRIDGE_3V3
+"""
+
+[[part]]
+ref = "U1311"
+group = "clock"
+lib_id = "74xGxx:74LVC1G11"
+value = "SN74LVC1G11DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC1G11DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g11.pdf"
+description = "QHB drive 1 = PH1 AND OSC AND ENB"
+pins = """
+1 ~   PH1
+3 ~   OSC
+6 ~   ENB
+4 ~   TB_DRV1
+2 GND GND
+5 VCC BRIDGE_3V3
+"""
+
+[[part]]
+ref = "U1312"
+group = "clock"
+lib_id = "74xGxx:74LVC1G11"
+value = "SN74LVC1G11DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC1G11DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g11.pdf"
+description = "QHB drive 2 = PH2 AND OSC AND ENB"
+pins = """
+1 ~   PH2
+3 ~   OSC
+6 ~   ENB
+4 ~   TB_DRV2
+2 GND GND
+5 VCC BRIDGE_3V3
+"""
+
+[[part]]
+ref = "C1330"
+group = "clock"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1309 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "C1331"
+group = "clock"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1310 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "C1332"
+group = "clock"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1311 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "C1333"
+group = "clock"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1312 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+# ================================================================= QHA primary
+[[part]]
+ref = "R1338"
+group = "hsprim_a"
+lib_id = "Device:R"
+value = "10R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10R 1%"
+manufacturer = "any"
+description = "Gate resistor, push-pull FET 1"
+between = ["TA_DRV1", "TA_G1"]
+
+[[part]]
+ref = "R1340"
+group = "hsprim_a"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 1%"
+manufacturer = "any"
+description = "FET 1 gate pull-down"
+between = ["TA_G1", "GND"]
+
+[[part]]
+ref = "Q1308"
+group = "hsprim_a"
+lib_id = "Transistor_FET:DMN3042L"
+value = "DMN3042L"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "DMN3042L-7"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/DMN3042L.pdf"
+description = "Push-pull switch, primary half 1 (30 V, 48 mOhm max at VGS 2.5 V)"
+fields = { Verify = "SOT23 pin numbers (G1 S2 D3) read from the standard top-view drawing, numbers not printed (DS37539 Rev 4-2)" }
+pins = """
+1 G TA_G1
+2 S GND
+3 D TA_D1
+"""
+
+[[part]]
+ref = "D1327"
+group = "hsprim_a"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C22"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C22LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Drain clamp, leakage-inductance spike"
+pins = """
+3 K  TA_D1
+1 A  GND
+2 NC NC
+"""
+
+[[part]]
+ref = "R1339"
+group = "hsprim_a"
+lib_id = "Device:R"
+value = "10R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10R 1%"
+manufacturer = "any"
+description = "Gate resistor, push-pull FET 2"
+new_row = true
+between = ["TA_DRV2", "TA_G2"]
+
+[[part]]
+ref = "R1341"
+group = "hsprim_a"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 1%"
+manufacturer = "any"
+description = "FET 2 gate pull-down"
+between = ["TA_G2", "GND"]
+
+[[part]]
+ref = "Q1309"
+group = "hsprim_a"
+lib_id = "Transistor_FET:DMN3042L"
+value = "DMN3042L"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "DMN3042L-7"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/DMN3042L.pdf"
+description = "Push-pull switch, primary half 2"
+fields = { Verify = "SOT23 pin numbers as Q1308" }
+pins = """
+1 G TA_G2
+2 S GND
+3 D TA_D2
+"""
+
+[[part]]
+ref = "D1328"
+group = "hsprim_a"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C22"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C22LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Drain clamp, half 2"
+pins = """
+3 K  TA_D2
+1 A  GND
+2 NC NC
+"""
+
+[[part]]
+ref = "T1301"
+group = "hsprim_a"
+lib_id = "aed_bridge:GDT_PP_400K"
+value = "GDT made to order"
+footprint = "aed_bridge:GDT_made_to_order"
+footprint_todo = true
+mpn = "MADE-TO-ORDER (§14)"
+manufacturer = "to be selected (made to order)"
+datasheet = "docs/HARDWARE_DESIGN.md §14"
+description = "QHA gate transformer: 2.2 kV working barrier between pins 1-3 and 4-5"
+fields = { DocRef = "T1301", Verify = "made-to-order: 2,200 V working for 10 years, partial discharge, 300-450 kHz, peak 200 mA secondary" }
+new_row = true
+pins = """
+1 P1  TA_D1
+2 PCT BRIDGE_5V
+3 P2  TA_D2
+4 S1  HSA_S1
+5 S2  HSA_S2
+"""
+
+[[part]]
+ref = "C1319"
+group = "hsprim_a"
+lib_id = "Device:C"
+value = "10uF 16V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 10uF 16V"
+manufacturer = "any"
+description = "Centre-tap reservoir, T1301"
+between = ["BRIDGE_5V", "GND"]
+
+[[part]]
+ref = "C1320"
+group = "hsprim_a"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "Centre-tap HF decoupling, T1301"
+between = ["BRIDGE_5V", "GND"]
+
+# ================================================================= QHB primary
+[[part]]
+ref = "R1342"
+group = "hsprim_b"
+lib_id = "Device:R"
+value = "10R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10R 1%"
+manufacturer = "any"
+description = "Gate resistor, push-pull FET 1 (B)"
+between = ["TB_DRV1", "TB_G1"]
+
+[[part]]
+ref = "R1344"
+group = "hsprim_b"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 1%"
+manufacturer = "any"
+description = "FET 1 gate pull-down (B)"
+between = ["TB_G1", "GND"]
+
+[[part]]
+ref = "Q1310"
+group = "hsprim_b"
+lib_id = "Transistor_FET:DMN3042L"
+value = "DMN3042L"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "DMN3042L-7"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/DMN3042L.pdf"
+description = "Push-pull switch, primary half 1 (B)"
+fields = { Verify = "SOT23 pin numbers as Q1308" }
+pins = """
+1 G TB_G1
+2 S GND
+3 D TB_D1
+"""
+
+[[part]]
+ref = "D1329"
+group = "hsprim_b"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C22"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C22LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Drain clamp (B half 1)"
+pins = """
+3 K  TB_D1
+1 A  GND
+2 NC NC
+"""
+
+[[part]]
+ref = "R1343"
+group = "hsprim_b"
+lib_id = "Device:R"
+value = "10R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10R 1%"
+manufacturer = "any"
+description = "Gate resistor, push-pull FET 2 (B)"
+new_row = true
+between = ["TB_DRV2", "TB_G2"]
+
+[[part]]
+ref = "R1345"
+group = "hsprim_b"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 1%"
+manufacturer = "any"
+description = "FET 2 gate pull-down (B)"
+between = ["TB_G2", "GND"]
+
+[[part]]
+ref = "Q1311"
+group = "hsprim_b"
+lib_id = "Transistor_FET:DMN3042L"
+value = "DMN3042L"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "DMN3042L-7"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/DMN3042L.pdf"
+description = "Push-pull switch, primary half 2 (B)"
+fields = { Verify = "SOT23 pin numbers as Q1308" }
+pins = """
+1 G TB_G2
+2 S GND
+3 D TB_D2
+"""
+
+[[part]]
+ref = "D1330"
+group = "hsprim_b"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C22"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C22LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Drain clamp (B half 2)"
+pins = """
+3 K  TB_D2
+1 A  GND
+2 NC NC
+"""
+
+[[part]]
+ref = "T1302"
+group = "hsprim_b"
+lib_id = "aed_bridge:GDT_PP_400K"
+value = "GDT made to order"
+footprint = "aed_bridge:GDT_made_to_order"
+footprint_todo = true
+mpn = "MADE-TO-ORDER (§14)"
+manufacturer = "to be selected (made to order)"
+datasheet = "docs/HARDWARE_DESIGN.md §14"
+description = "QHB gate transformer"
+fields = { DocRef = "T1302", Verify = "as T1301" }
+new_row = true
+pins = """
+1 P1  TB_D1
+2 PCT BRIDGE_5V
+3 P2  TB_D2
+4 S1  HSB_S1
+5 S2  HSB_S2
+"""
+
+[[part]]
+ref = "C1321"
+group = "hsprim_b"
+lib_id = "Device:C"
+value = "10uF 16V"
+footprint = "Capacitor_SMD:C_0805_2012Metric"
+mpn = "generic 0805 X7R 10uF 16V"
+manufacturer = "any"
+description = "Centre-tap reservoir, T1302"
+between = ["BRIDGE_5V", "GND"]
+
+[[part]]
+ref = "C1322"
+group = "hsprim_b"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "Centre-tap HF decoupling, T1302"
+between = ["BRIDGE_5V", "GND"]
+
+# ================================================================= QHA floating gate circuit (HSA island)
+[[part]]
+ref = "D1313"
+group = "hssec_a"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Secondary bridge, S1 low"
+pins = """
+1 K HSA_S1
+2 A HSA_KS
+"""
+
+[[part]]
+ref = "D1314"
+group = "hssec_a"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Secondary bridge, S1 high"
+pins = """
+1 K HSA_RECT
+2 A HSA_S1
+"""
+
+[[part]]
+ref = "D1315"
+group = "hssec_a"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Secondary bridge, S2 low"
+pins = """
+1 K HSA_S2
+2 A HSA_KS
+"""
+
+[[part]]
+ref = "D1316"
+group = "hssec_a"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Secondary bridge, S2 high"
+pins = """
+1 K HSA_RECT
+2 A HSA_S2
+"""
+
+[[part]]
+ref = "C1315"
+group = "hssec_a"
+lib_id = "Device:C"
+value = "1nF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 C0G 1nF 50V"
+manufacturer = "any"
+description = "Rectified-node smoothing across the 0.19 us dead time (small, so the node collapses fast)"
+new_row = true
+between = ["HSA_RECT", "HSA_KS"]
+
+[[part]]
+ref = "R1328"
+group = "hssec_a"
+lib_id = "Device:R"
+value = "2.2k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 2.2k 1%"
+manufacturer = "any"
+description = "Rectified-node bleed: collapses HSA_RECT in about 2.2 us when the carrier stops, returns the PNP base current"
+between = ["HSA_RECT", "HSA_KS"]
+
+[[part]]
+ref = "D1317"
+group = "hssec_a"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C20"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C20LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Rectified-node clamp 20 V (18.8-21.2 V): departure from the 18 V of §B6.3, see capture notes"
+pins = """
+3 K  HSA_RECT
+1 A  HSA_KS
+2 NC NC
+"""
+
+[[part]]
+ref = "D1318"
+group = "hssec_a"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Gate charge diode: lets HSA_RECT fall below the gate so the PNP can turn on"
+new_row = true
+pins = """
+1 K HSA_GR
+2 A HSA_RECT
+"""
+
+[[part]]
+ref = "R1329"
+group = "hssec_a"
+lib_id = "Device:R"
+value = "100R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100R 1%"
+manufacturer = "any"
+description = "Gate charge resistor (§B6.3)"
+between = ["HSA_GR", "HSA_G"]
+
+[[part]]
+ref = "R1330"
+group = "hssec_a"
+lib_id = "Device:R"
+value = "470R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 470R 1%"
+manufacturer = "any"
+description = "PNP base resistor to HSA_RECT"
+between = ["HSA_B", "HSA_RECT"]
+
+[[part]]
+ref = "Q1306"
+group = "hssec_a"
+lib_id = "Transistor_BJT:BC807"
+value = "BC807-40"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BC807-40LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bc807-16lt1-d.pdf"
+description = "Active turn-off PNP (45 V, 500 mA, hFE 250-600 at 100 mA)"
+pins = """
+1 B HSA_B
+2 E HSA_E
+3 C HSA_KS
+"""
+
+[[part]]
+ref = "R1331"
+group = "hssec_a"
+lib_id = "Device:R"
+value = "22R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 22R 1%"
+manufacturer = "any"
+description = "PNP emitter resistor: limits the discharge peak to about 0.8 A (BC807 ICM 1 A)"
+between = ["HSA_G", "HSA_E"]
+
+[[part]]
+ref = "C1316"
+group = "hssec_a"
+lib_id = "Device:C"
+value = "47nF C0G 50V"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "C3216C0G1H473J160AA"
+manufacturer = "TDK"
+description = "Added gate-source capacitance, 1 of 2 x 47 nF (§B6.3 asks 100 nF): two parts so one open capacitor still leaves 47 nF; C0G keeps its value with bias and temperature"
+fields = { Verify = "C0G 47 nF 50 V 1206 orderable code (TDK C3216C0G1H473J160AA) not checked against a TDK datasheet" }
+new_row = true
+between = ["HSA_G", "HSA_KS"]
+
+[[part]]
+ref = "C1341"
+group = "hssec_a"
+lib_id = "Device:C"
+value = "47nF C0G 50V"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "C3216C0G1H473J160AA"
+manufacturer = "TDK"
+description = "Added gate-source capacitance, 2 of 2 x 47 nF (HSA island)"
+fields = { Verify = "as C1316" }
+between = ["HSA_G", "HSA_KS"]
+
+[[part]]
+ref = "R1332"
+group = "hssec_a"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10k 1%"
+manufacturer = "any"
+description = "Gate-source bleed (R-23 backup): tau 0.98 ms if the PNP fails open; holds the gate off with no carrier"
+between = ["HSA_G", "HSA_KS"]
+
+[[part]]
+ref = "D1319"
+group = "hssec_a"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C22"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C22LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Gate-source clamp 22 V / -0.9 V (backup)"
+pins = """
+3 K  HSA_G
+1 A  HSA_KS
+2 NC NC
+"""
+
+# ================================================================= QHB floating gate circuit (HSB island)
+[[part]]
+ref = "D1320"
+group = "hssec_b"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Secondary bridge, S1 low (B)"
+pins = """
+1 K HSB_S1
+2 A HSB_KS
+"""
+
+[[part]]
+ref = "D1321"
+group = "hssec_b"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Secondary bridge, S1 high (B)"
+pins = """
+1 K HSB_RECT
+2 A HSB_S1
+"""
+
+[[part]]
+ref = "D1322"
+group = "hssec_b"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Secondary bridge, S2 low (B)"
+pins = """
+1 K HSB_S2
+2 A HSB_KS
+"""
+
+[[part]]
+ref = "D1323"
+group = "hssec_b"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Secondary bridge, S2 high (B)"
+pins = """
+1 K HSB_RECT
+2 A HSB_S2
+"""
+
+[[part]]
+ref = "C1317"
+group = "hssec_b"
+lib_id = "Device:C"
+value = "1nF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 C0G 1nF 50V"
+manufacturer = "any"
+description = "Rectified-node smoothing (B)"
+new_row = true
+between = ["HSB_RECT", "HSB_KS"]
+
+[[part]]
+ref = "R1333"
+group = "hssec_b"
+lib_id = "Device:R"
+value = "2.2k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 2.2k 1%"
+manufacturer = "any"
+description = "Rectified-node bleed (B)"
+between = ["HSB_RECT", "HSB_KS"]
+
+[[part]]
+ref = "D1324"
+group = "hssec_b"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C20"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C20LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Rectified-node clamp 20 V (B)"
+pins = """
+3 K  HSB_RECT
+1 A  HSB_KS
+2 NC NC
+"""
+
+[[part]]
+ref = "D1325"
+group = "hssec_b"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "Gate charge diode (B)"
+new_row = true
+pins = """
+1 K HSB_GR
+2 A HSB_RECT
+"""
+
+[[part]]
+ref = "R1334"
+group = "hssec_b"
+lib_id = "Device:R"
+value = "100R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100R 1%"
+manufacturer = "any"
+description = "Gate charge resistor (B)"
+between = ["HSB_GR", "HSB_G"]
+
+[[part]]
+ref = "R1335"
+group = "hssec_b"
+lib_id = "Device:R"
+value = "470R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 470R 1%"
+manufacturer = "any"
+description = "PNP base resistor (B)"
+between = ["HSB_B", "HSB_RECT"]
+
+[[part]]
+ref = "Q1307"
+group = "hssec_b"
+lib_id = "Transistor_BJT:BC807"
+value = "BC807-40"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BC807-40LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bc807-16lt1-d.pdf"
+description = "Active turn-off PNP (B)"
+pins = """
+1 B HSB_B
+2 E HSB_E
+3 C HSB_KS
+"""
+
+[[part]]
+ref = "R1336"
+group = "hssec_b"
+lib_id = "Device:R"
+value = "22R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 22R 1%"
+manufacturer = "any"
+description = "PNP emitter resistor (B)"
+between = ["HSB_G", "HSB_E"]
+
+[[part]]
+ref = "C1318"
+group = "hssec_b"
+lib_id = "Device:C"
+value = "47nF C0G 50V"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "C3216C0G1H473J160AA"
+manufacturer = "TDK"
+description = "Added gate-source capacitance (B), 1 of 2 x 47 nF"
+fields = { Verify = "as C1316" }
+new_row = true
+between = ["HSB_G", "HSB_KS"]
+
+[[part]]
+ref = "C1342"
+group = "hssec_b"
+lib_id = "Device:C"
+value = "47nF C0G 50V"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "C3216C0G1H473J160AA"
+manufacturer = "TDK"
+description = "Added gate-source capacitance, 2 of 2 x 47 nF (HSB island)"
+fields = { Verify = "as C1316" }
+between = ["HSB_G", "HSB_KS"]
+
+[[part]]
+ref = "R1337"
+group = "hssec_b"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10k 1%"
+manufacturer = "any"
+description = "Gate-source bleed (B)"
+between = ["HSB_G", "HSB_KS"]
+
+[[part]]
+ref = "D1326"
+group = "hssec_b"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C22"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C22LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Gate-source clamp (B)"
+pins = """
+3 K  HSB_G
+1 A  HSB_KS
+2 NC NC
+"""
+
+# ================================================================= current sense
+[[part]]
+ref = "R1302"
+group = "isense"
+lib_id = "Device:R_Shunt"
+value = "2mR WSK2512"
+footprint = "Resistor_SMD:R_Shunt_Vishay_WSK2512_6332Metric_T2.66mm"
+mpn = "WSK2512R0020FEA"
+manufacturer = "Vishay Dale"
+datasheet = "https://www.vishay.com/docs/30108/wsk2512.pdf"
+description = "Shunt 2 mOhm 1 % 1 W, 4-terminal (I1/I2 current, E1/E2 sense)"
+fields = { DocRef = "shunt", Verify = "pulse rating (Vishay refers to its JouleWizard; 12 mJ per shock, about 0.5 J in a 465 A fault); pad numbering I1/E1/E2/I2 vs footprint 1-4 and T dimension for 2 mOhm" }
+pins = """
+1 ~ LS_SRC      # I1, current in
+4 ~ HV_RTN      # I2, current out
+2 ~ SHUNT_KP    # E1, sense at the LS_SRC end
+3 ~ SHUNT_KN    # E2, sense at the HV_RTN end
+"""
+
+[[part]]
+ref = "D1303"
+group = "isense"
+lib_id = "Device:D"
+value = "S3D"
+footprint = "Diode_SMD:D_SMC"
+mpn = "S3D-E3/57T"
+manufacturer = "Vishay General Semiconductor"
+datasheet = "https://www.vishay.com/docs/88713/s3a.pdf"
+description = "Shunt bypass (capture addition): carries the current at < 1 V if the shunt opens, so LS_SRC cannot rise to kV; IFSM 100 A"
+pins = """
+1 K HV_RTN
+2 A LS_SRC
+"""
+
+[[part]]
+ref = "R1350"
+group = "isense"
+lib_id = "Device:R"
+value = "100R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100R 1%"
+manufacturer = "any"
+description = "OC filter / input protection"
+new_row = true
+between = ["SHUNT_KP", "OC_SNS"]
+
+[[part]]
+ref = "C1334"
+group = "isense"
+lib_id = "Device:C"
+value = "1nF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 C0G 1nF 50V"
+manufacturer = "any"
+description = "OC filter, tau 100 ns, returned to the shunt's own Kelvin terminal"
+between = ["OC_SNS", "SHUNT_KN"]
+
+[[part]]
+ref = "D1331"
+group = "isense"
+lib_id = "Diode:BAT54S"
+value = "BAT54S"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54SLT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bat54slt1-d.pdf"
+description = "OC comparator input clamp to GND / BRIDGE_3V3"
+pins = """
+1 A   GND
+2 K   BRIDGE_3V3
+3 COM OC_SNS
+"""
+
+[[part]]
+ref = "R1351"
+group = "isense"
+lib_id = "Device:R"
+value = "174k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 174k 1%"
+manufacturer = "any"
+description = "OC threshold divider, top"
+between = ["BRIDGE_3V3", "OC_REF"]
+
+[[part]]
+ref = "R1352"
+group = "isense"
+lib_id = "Device:R"
+value = "10.0k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10.0k 1%"
+manufacturer = "any"
+description = "OC threshold divider, bottom, to the shunt's HV_RTN Kelvin: 179.3 mV = 89.7 A"
+between = ["OC_REF", "SHUNT_KN"]
+
+[[part]]
+ref = "C1335"
+group = "isense"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "OC threshold filter (tau 0.95 ms; settles within RAIL_READY 20 ms)"
+between = ["OC_REF", "SHUNT_KN"]
+
+[[part]]
+ref = "U1313"
+group = "isense"
+lib_id = "Comparator:TLV3501AIDBV"
+value = "TLV3501AIDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TLV3501AIDBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv3501.pdf"
+description = "Over-current comparator, 4.5 ns, push-pull on BRIDGE_3V3: OC_DET_N low at >= 90 A"
+pins = """
+1 -    OC_SNS
+3 +    OC_REF
+4 V+   BRIDGE_3V3
+2 V-   GND
+5 ~    OC_DET_N
+6 SHDN GND
+"""
+
+[[part]]
+ref = "C1336"
+group = "isense"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1313 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R1353"
+group = "isense"
+lib_id = "Device:R"
+value = "10R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10R 1%"
+manufacturer = "any"
+description = "INA240 IN+ series (datasheet: <= 10 Ohm keeps gain error small)"
+new_row = true
+between = ["SHUNT_KP", "INA_INP"]
+
+[[part]]
+ref = "R1354"
+group = "isense"
+lib_id = "Device:R"
+value = "10R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10R 1%"
+manufacturer = "any"
+description = "INA240 IN- series"
+between = ["SHUNT_KN", "INA_INN"]
+
+[[part]]
+ref = "U1314"
+group = "isense"
+lib_id = "aed_bridge:INA240A1D"
+value = "INA240A1DR"
+footprint = "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
+mpn = "INA240A1DR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/ina240.pdf"
+description = "Shock-current amplifier, gain 20, on BRIDGE_5V (R-24), unidirectional (REF1 = REF2 = GND)"
+pins = """
+8 IN+  INA_INP
+1 IN-  INA_INN
+2 GND  GND
+3 REF2 GND
+7 REF1 GND
+4 NC   NC
+6 VS   BRIDGE_5V
+5 OUT  INA_OUT
+"""
+
+[[part]]
+ref = "C1337"
+group = "isense"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1314 decoupling"
+between = ["BRIDGE_5V", "GND"]
+
+[[part]]
+ref = "R1355"
+group = "isense"
+lib_id = "Device:R"
+value = "10.0k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10.0k 0.1%"
+manufacturer = "any"
+description = "2:3 divider top -> I_SHOCK 26.67 mV/A"
+between = ["INA_OUT", "I_SHOCK"]
+
+[[part]]
+ref = "R1356"
+group = "isense"
+lib_id = "Device:R"
+value = "20.0k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 20.0k 0.1%"
+manufacturer = "any"
+description = "2:3 divider bottom"
+between = ["I_SHOCK", "GND"]
+
+[[part]]
+ref = "R1357"
+group = "isense"
+lib_id = "Device:R"
+value = "1.00k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 1.00k 1%"
+manufacturer = "any"
+description = "Idle comparator input filter"
+new_row = true
+between = ["I_SHOCK", "IDLE_SNS"]
+
+[[part]]
+ref = "C1338"
+group = "isense"
+lib_id = "Device:C"
+value = "100pF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 C0G 100pF 50V"
+manufacturer = "any"
+description = "Idle comparator input filter (tau 100 ns)"
+between = ["IDLE_SNS", "GND"]
+
+[[part]]
+ref = "R1358"
+group = "isense"
+lib_id = "Device:R"
+value = "237k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 237k 1%"
+manufacturer = "any"
+description = "Idle threshold divider top"
+between = ["BRIDGE_3V3", "IDLE_REF"]
+
+[[part]]
+ref = "R1359"
+group = "isense"
+lib_id = "Device:R"
+value = "10.0k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10.0k 1%"
+manufacturer = "any"
+description = "Idle threshold divider bottom: 133.6 mV = 5.0 A on I_SHOCK"
+between = ["IDLE_REF", "GND"]
+
+[[part]]
+ref = "C1339"
+group = "isense"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "Idle threshold filter"
+between = ["IDLE_REF", "GND"]
+
+[[part]]
+ref = "U1315"
+group = "isense"
+lib_id = "Comparator:TLV3501AIDBV"
+value = "TLV3501AIDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TLV3501AIDBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv3501.pdf"
+description = "Idle-current comparator: IDLE_I_DET_N low at >= 5 A (sheet 12 qualifies it with 'no low side enabled')"
+pins = """
+1 -    IDLE_SNS
+3 +    IDLE_REF
+4 V+   BRIDGE_3V3
+2 V-   GND
+5 ~    IDLE_I_DET_N
+6 SHDN GND
+"""
+
+[[part]]
+ref = "C1340"
+group = "isense"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1315 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+# ================================================================= output dividers and rest pull-downs
+[[part]]
+ref = "R1305"
+group = "osense"
+lib_id = "Device:R"
+value = "249k HV"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HV733ATTE2493F"
+manufacturer = "KOA Speer"
+datasheet = "https://www.koaspeer.com/pdfs/HV73.pdf"
+description = "Output A divider 1 of 4: 3000 V working, 1 W, 249 k 1 %"
+fields = { Verify = "MPN composed from the HV73 ordering code (3A = 2512, T, TE, 2493, F)" }
+between = ["HV_OUT_A", "HV_DIVA_1"]
+
+[[part]]
+ref = "R1306"
+group = "osense"
+lib_id = "Device:R"
+value = "249k HV"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HV733ATTE2493F"
+manufacturer = "KOA Speer"
+datasheet = "https://www.koaspeer.com/pdfs/HV73.pdf"
+description = "Output A divider 2 of 4"
+between = ["HV_DIVA_1", "HV_DIVA_2"]
+
+[[part]]
+ref = "R1307"
+group = "osense"
+lib_id = "Device:R"
+value = "249k HV"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HV733ATTE2493F"
+manufacturer = "KOA Speer"
+datasheet = "https://www.koaspeer.com/pdfs/HV73.pdf"
+description = "Output A divider 3 of 4"
+between = ["HV_DIVA_2", "HV_DIVA_3"]
+
+[[part]]
+ref = "R1308"
+group = "osense"
+lib_id = "Device:R"
+value = "249k HV"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HV733ATTE2493F"
+manufacturer = "KOA Speer"
+datasheet = "https://www.koaspeer.com/pdfs/HV73.pdf"
+description = "Output A divider 4 of 4"
+between = ["HV_DIVA_3", "OUT_A_TAP"]
+
+[[part]]
+ref = "R1309"
+group = "osense"
+lib_id = "Device:R"
+value = "1.00k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 1.00k 0.1% 25ppm thin film"
+manufacturer = "any"
+description = "Output A divider bottom leg (ratio 1:997)"
+between = ["OUT_A_TAP", "GND"]
+
+[[part]]
+ref = "D1304"
+group = "osense"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C3V6"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C3V6LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "OUT_A_TAP clamp to GND (R-21); leakage <= 5 uA at 1 V"
+pins = """
+3 K  OUT_A_TAP
+1 A  GND
+2 NC NC
+"""
+
+[[part]]
+ref = "R1310"
+group = "osense"
+lib_id = "Device:R"
+value = "249k HV"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HV733ATTE2493F"
+manufacturer = "KOA Speer"
+datasheet = "https://www.koaspeer.com/pdfs/HV73.pdf"
+description = "Output B divider 1 of 4"
+new_row = true
+between = ["HV_OUT_B", "HV_DIVB_1"]
+
+[[part]]
+ref = "R1311"
+group = "osense"
+lib_id = "Device:R"
+value = "249k HV"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HV733ATTE2493F"
+manufacturer = "KOA Speer"
+datasheet = "https://www.koaspeer.com/pdfs/HV73.pdf"
+description = "Output B divider 2 of 4"
+between = ["HV_DIVB_1", "HV_DIVB_2"]
+
+[[part]]
+ref = "R1312"
+group = "osense"
+lib_id = "Device:R"
+value = "249k HV"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HV733ATTE2493F"
+manufacturer = "KOA Speer"
+datasheet = "https://www.koaspeer.com/pdfs/HV73.pdf"
+description = "Output B divider 3 of 4"
+between = ["HV_DIVB_2", "HV_DIVB_3"]
+
+[[part]]
+ref = "R1313"
+group = "osense"
+lib_id = "Device:R"
+value = "249k HV"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HV733ATTE2493F"
+manufacturer = "KOA Speer"
+datasheet = "https://www.koaspeer.com/pdfs/HV73.pdf"
+description = "Output B divider 4 of 4"
+between = ["HV_DIVB_3", "OUT_B_TAP"]
+
+[[part]]
+ref = "R1314"
+group = "osense"
+lib_id = "Device:R"
+value = "1.00k 0.1%"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 1.00k 0.1% 25ppm thin film"
+manufacturer = "any"
+description = "Output B divider bottom leg"
+between = ["OUT_B_TAP", "GND"]
+
+[[part]]
+ref = "D1305"
+group = "osense"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C3V6"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C3V6LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "OUT_B_TAP clamp to GND"
+pins = """
+3 K  OUT_B_TAP
+1 A  GND
+2 NC NC
+"""
+
+# ================================================================= bridge test load
+[[part]]
+ref = "K1301"
+group = "btest"
+lib_id = "aed_bridge:D-HR_1A_10KV"
+value = "DAR70510-HR"
+footprint = "aed_bridge:Relay_Cynergy3_D-HR_PCB"
+footprint_todo = true
+mpn = "DAR70510-HR"
+manufacturer = "Sensata Cynergy3"
+datasheet = "https://docs.rs-online.com/8c09/0900766b816395c1.pdf"
+description = "Bridge test relay, SPNO 10 kV reed, 5 V 28 Ohm coil, cold switched"
+fields = { DocRef = "K1301", Verify = "MPN composed from the D-HR ordering code (D A R 7 05 10 -HR); operating range -20..+70 C; must-operate 3.7 V at 20 C rises 0.4 %/C (4.4 V at 70 C)" }
+pins = """
+1 C1    HV_OUT_A
+2 C2    HV_BTEST_MID
+4 COIL+ BRIDGE_5V
+3 COIL- K1_COIL
+"""
+
+[[part]]
+ref = "R1303"
+group = "btest"
+lib_id = "Device:R"
+value = "200R OY 2W"
+footprint = "Resistor_THT:R_Axial_DIN0922_L20.0mm_D9.0mm_P25.40mm_Horizontal"
+mpn = "OY201KE"
+manufacturer = "Ohmite"
+datasheet = "https://mm.digikey.com/Volume0/opasdata/d220001/medias/docus/7182/ow-ox-oy-series.pdf"
+description = "Bridge test load 200 Ohm ceramic composition (<= 60 V: 0.29 A, 0.18 J)"
+fields = { DocRef = "test load", Verify = "footprint" }
+between = ["HV_BTEST_MID", "HV_OUT_B"]
+
+[[part]]
+ref = "Q1305"
+group = "btest"
+lib_id = "Transistor_FET:DMN3042L"
+value = "DMN3042L"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "DMN3042L-7"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/DMN3042L.pdf"
+description = "K1301 coil switch (178 mA; 48 mOhm at VGS 2.5 V)"
+fields = { Verify = "SOT23 pin numbers as Q1308" }
+new_row = true
+pins = """
+1 G BTEST_EN
+2 S GND
+3 D K1_COIL
+"""
+
+[[part]]
+ref = "R1315"
+group = "btest"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 1%"
+manufacturer = "any"
+description = "BTEST_EN default pull-down (contract §5.7)"
+between = ["BTEST_EN", "GND"]
+
+[[part]]
+ref = "D1306"
+group = "btest"
+lib_id = "Diode:1N4148W"
+value = "1N4148W"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "1N4148W-7-F"
+manufacturer = "Diodes Incorporated"
+datasheet = "https://www.diodes.com/assets/Datasheets/ds30086.pdf"
+description = "K1301 coil flyback (release 2 ms with diode, D-HR datasheet)"
+pins = """
+1 K BRIDGE_5V
+2 A K1_COIL
+"""
+
+# ================================================================= test points
+[[part]]
+ref = "TP1301"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "OUT_A_TAP"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "test pad"
+manufacturer = "n/a"
+description = "Output A tap"
+pins = """
+1 1 OUT_A_TAP
+"""
+
+[[part]]
+ref = "TP1302"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "OUT_B_TAP"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "test pad"
+manufacturer = "n/a"
+description = "Output B tap"
+pins = """
+1 1 OUT_B_TAP
+"""
+
+[[part]]
+ref = "TP1303"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "I_SHOCK"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "test pad"
+manufacturer = "n/a"
+description = "Shock current 26.67 mV/A"
+pins = """
+1 1 I_SHOCK
+"""
+
+[[part]]
+ref = "TP1304"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "OC_DET_N"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "test pad"
+manufacturer = "n/a"
+description = "Over-current detector"
+pins = """
+1 1 OC_DET_N
+"""
+
+[[part]]
+ref = "TP1305"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "IDLE_I_DET_N"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "test pad"
+manufacturer = "n/a"
+description = "Idle-current detector"
+pins = """
+1 1 IDLE_I_DET_N
+"""
