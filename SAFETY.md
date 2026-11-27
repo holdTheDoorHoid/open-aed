@@ -27,6 +27,14 @@ The lab safety policy must cover, at minimum:
 - Shocks delivered only into a rated test load, never into anything else.
 - What to do in an emergency, including where the nearest real AED is.
 
+## 2a. Published circuit designs are not build instructions
+
+The circuit diagrams in `hardware/` are published so that they can be reviewed, criticised and improved. They were drawn with AI assistance and **have not been reviewed by a qualified high-voltage or medical-device engineer.** They may contain errors that would make a built circuit dangerous or useless.
+
+- Every circuit file is marked **NOT FOR CONSTRUCTION**.
+- Nobody builds from them until a qualified engineer has reviewed them, the lab safety policy exists, and a patent attorney has looked at freedom to operate.
+- The project does not publish assembly steps or bring-up procedures, and does not supply boards or kits (D-12).
+
 ## 3. Order of work
 
 The hazard-free work comes first on purpose:

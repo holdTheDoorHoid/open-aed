@@ -21,7 +21,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-10 | **No circuit above 50 volts** is built or powered until a reviewed lab safety policy exists. | Provisional | The stored energy can kill the builder. See SAFETY.md. |
 | D-11 | Measures that predict shock success are **recorded but never used** to decide a shock. | Provisional | The one human trial showed no benefit. |
 | D-12 | The project does **not distribute assembled units, boards or kits**. | Provisional | Doing so may make the project a "manufacturer" in law and invites use on people. Needs a lawyer before it could change. |
-| D-13 | **The repository is public** as of 27 November 2026, after the licence was added and the owner had read the plan and safety rules. Buildable high-voltage design files still wait for the patent review. | **Confirmed by owner, 27 Nov 2026** | Publishing early is one of the things that separated open medical projects that succeeded from those that stalled; data holders must be able to inspect the work. |
+| D-13 | **The repository is public, and circuit designs are published as they are drawn, including the high-voltage side.** Every circuit file is marked "not for construction" until it has been reviewed by a qualified engineer. | **Confirmed by owner, 27 Nov 2026** (changed: the earlier rule held high-voltage design files back until a patent review) | Owner decision: fully open from the start. The patent review is still needed before anyone builds or sells anything; publishing first means accepting that a patent holder may object to something already public. |
 
 | D-14 | First version includes **compression rate, pause timing and a metronome** measured through the pads; compression-depth sensing is deferred. | Provisional | The first three need no extra hardware. Depth needs an added sensor and the survival evidence for it is mixed. |
 | D-15 | **Self-test: full energy once a week, a low-voltage check every day**, both into the internal test load, with the battery tested under load. | **Confirmed by owner, 27 Nov 2026** (frequency set) | Battery, pad and charging faults account for most recorded fatal AED failures; twice-daily full-energy tests would wear out the capacitor in about three years. |
@@ -67,6 +67,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-55 | **The device never charges during CPR.** After an overheated device cools, it charges at the next analysis. | **Confirmed by owner, 27 Nov 2026** | A charged capacitor under compressing hands has had no stand-clear warning, and a charge held through CPR would exceed the time limits. |
 | D-56 | **Temperature sensing: six points, one read only by the supervisor.** Untrusted readings make the device "not ready" when idle. In a rescue, an unknown temperature does not block a shock. | **Confirmed by owner, 27 Nov 2026** | Fail safe when idle; never let a broken sensor deny a shock. |
 | D-57 | **The pad connector reports which pad set is fitted**, and the device keeps its heat history and counters in memory that survives battery removal. | **Confirmed by owner, 27 Nov 2026** | Needed to track pad heat per pad set and to keep the heat record honest. |
+| D-58 | **Circuit diagrams are generated from reviewable pin tables** with the generator from the owner's wildlife-station project, copied into `tools/`, and checked by KiCad's own rule check and a connection round trip on every build. | **Confirmed by owner, 27 Nov 2026** | A reviewer can check a pin table against a datasheet line by line. |
 
 ## Owner questions
 
@@ -154,7 +155,7 @@ Answered on 27 November 2026.
 - **Q-39** (after bench tests): two larger battery cells if cold-weather tests show too little margin.
 
 - **Q-47** (owner): how records come off by cable. Either the dock is the reader (one extra contact on the device), or the device speaks USB itself through the dock (two extra contacts).
-- **Q-48** (owner, with a lawyer): may the specification sheets for made-to-order parts be published now, or held for the patent review? They state what a part must do, not how to build anything, and are currently in the public parts study.
+- **Q-48**: *answered 27 Nov 2026 by D-13: everything is published.*
 - **For the hardware engineer:** how to hold the voltage sensors to 1% + 7 V over the device's life (recalibrate at service, or costlier low-drift parts); the temperature range of the candidate pad-resistance chip.
 
 - **Q-49** (owner): D-54 to D-57 were confirmed on 27 Nov 2026. Three smaller judgment calls in the heat rules remain assumptions the owner has not been asked about one by one: a device that was once above 70 °C but has cooled still shocks if its switch-on self-test passes; "service soon" appears at 90% of capacitor life; time with the battery removed is not counted as pad heat.
