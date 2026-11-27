@@ -161,3 +161,98 @@ cargo run --release -p aed-eval --bin aed-tune -- --data <data/physionet> --reco
 ```
 
 The data are not in the repository; see `README.md` for where to get them, their licences and the citations they ask for.
+
+---
+
+## 8. External test on real out-of-hospital cardiac arrests: the Cardially dataset (27 November 2026)
+
+*Hand-written summary, added 27 November 2026. Sections 1–7 above are unchanged. Every figure below is from the generated report `reports/cardially_untuned.md` (program `aed-cardially`, commit `ec5564a`, analyser settings exactly as frozen in `TUNING_LOG.md`), except where a PhysioNet figure is quoted from `reports/held_out.md`.*
+
+### What was tested, and why it is a clean test
+
+The frozen analyser was run, **with no change and no tuning**, on the only openly downloadable set of real out-of-hospital cardiac-arrest ECGs the project has found (research note `ohca_data_sources.md`): "Cardially" (University of Brescia, Mendeley Data, DOI 10.17632/wpr5nzyn2z.1). Nothing in the analyser was chosen with these recordings in view, so this is an independent test of how it detects real out-of-hospital VF. **It remains one only as long as nothing is ever tuned on it.**
+
+What the dataset is, in short (details and evidence in the crate README):
+
+- **251 different recordings** of adults in Brescia, 2006–2009 (260 reports, of which 9 repeat another report's ECG exactly). How many patients is not known.
+- Each is a printed report from the defibrillator's review software covering 60 s around the **first shock**: about 10 s of VF before it (during the device's own analysis and charging, so no CPR) and about 50 s after it.
+- The reports are vector drawings, not scans, so the ECG could be read back exactly: 200 points per second, with a printed scale of 10 mm per mV. That scale is the software's statement, not a verified calibration; the software also **clips the trace at ±2 mV**, and its filtering is unknown.
+- Labels: three cardiologists' verdict on whether the shock worked (`ROEA` 51, `noROEA` 191, `indeterminable` 9 distinct recordings). They are not rhythm annotations.
+- **Licence:** the data page says CC BY 4.0; the companion article is CC BY-NC-ND 4.0. Unresolved, written confirmation from the authors pending. This evaluation does not redistribute or tune on the data, which either licence allows for non-commercial research, and nothing from the dataset is in the repository.
+
+**What it cannot show:** anything about wrong shocks (every recording is VF); the last 3 s of a 12 s analysis or a full countdown (only about 10 s before the shock); CPR artefact before the shock; children. And it is VF that the recording defibrillator itself had already called shockable, which probably makes it easier than VF in general.
+
+### Main result: VF before the first shock
+
+Treated as one device analysis: a fresh analyser fed the 9 s ending 0.5 s before the shock mark, the outcome being its first final answer.
+
+| Measure | Result (n = 251 recordings) | Lower 90 % limit |
+|---|---|---|
+| **VF called "shock" within 9 s** | **61.4 %** (154) | 57.2 % |
+| VF of at least 200 µV ("coarse", the AHA class) | 63.7 % (151 of 237) | 59.4 % |
+| Answered "no shock" | 15.5 % (39) | |
+| No answer within the 9 s ("unable to analyse") | 23.1 % (58) | |
+| Shocks that worked (`ROEA`) / did not (`noROEA`) | 78.4 % (40 of 51) / 57.6 % (110 of 191) | 69.3 % / 52.7 % |
+| All the signal before the shock (9.5–10.5 s) | 60.6 % (152) | 56.4 % |
+| The dataset's own digitised version of the same 9 s | 59.4 % (148 of 249) | 55.2 % |
+| AHA goal for coarse VF | 90 % | 87 % |
+
+**The 90 % goal is far from met on real out-of-hospital VF.** The figure sits where the PhysioNet held-out figures did for similar analysis lengths (58.0 % at 8 s, 71.1 % at 12 s, channel 0, section 3), so the out-of-hospital recordings tell the same story as finding F-10 rather than a worse one. VF in shocks that later worked was caught more often; that VF was also larger (median 840 µV against 548 µV, from the per-recording CSV).
+
+**Is 9 s enough?** No. The analyser throws away the first second, needs a full 4 s window, and then three shockable windows, so the earliest possible "shock" is 7 s after it starts. In 9 s it sees only five windows and can decide at 7, 8 or 9 s (it did so 108, 31 and 15 times). The device is allowed 12 s (D-27), so this is an analysis cut short by three windows; some of the 58 "no answer" recordings would probably have been decided in the remaining time, in either direction. An *artificial* check (the 9 s played twice to make 12 s, which puts a jump in the signal at the join and re-uses the same VF) gave 66.5 %. That is not a result; it only suggests that the missing 3 s are worth roughly 5 points, not the 30 needed.
+
+**Window by window**, before the confirmation rule: 60.6 % of the 1,255 windows were shockable, 33.4 % "not sure" (24.1 % because the two method families disagreed, 8.8 % from the compression rule) and 6.0 % "not shockable". 91 recordings had all five windows shockable; 46 had none.
+
+**Amplitude.** Changing the scale barely matters except when the signal is made much smaller: x 0.5 gives 57.8 %, x 2 gives 62.2 %, x 4 gives 61.8 %, each recording normalised to 1 mV peak-to-peak gives 62.2 %; only x 0.25 falls sharply (38.6 %), because the "fine VF" and flatline rules then start to act. So the uncertain calibration does not change the conclusion, unless the printed scale overstates the true size by a factor of about three or more. As printed, the median VF size (one-second peak-to-peak) is 606 µV, and 14 recordings are below 200 µV.
+
+### Why real out-of-hospital VF is missed: same story as F-10, slower
+
+Among the 494 windows that were not shockable, the rules that failed were:
+
+| Rule | windows failing it | the only failure |
+|---|---|---|
+| strongest frequency at or below 2.4 Hz | 57.7 % | 8.1 % |
+| band-pass count | 44.7 % | 22.9 % |
+| VF-filter leakage | 43.5 % | 8.7 % |
+| spectral concentration | 24.1 % | 1.2 % |
+| compression ("low-band") rule | 22.3 % | 0.4 % |
+| fine VF (< 200 µV) | 3.0 % | 1.4 % |
+
+These are the same rules that rejected PhysioNet VF (section 3: band-pass count 48 %, frequency at or below 2.4 Hz 45 %, leakage 41 %, low band 28 %), in a slightly different order. **Out-of-hospital VF is slower**: its strongest frequency has a median of 3.5 Hz against 4.0 Hz on held-out PhysioNet VF, a quarter of windows are at or below 2.5 Hz, and only 77.2 % of windows are above the 2.4 Hz floor (83.7 % on PhysioNet). Its low-band share is about twice PhysioNet's (median 0.141 against 0.074). The band-pass count behaves just as on PhysioNet (median 0.204 against 0.202; 82.4 % of windows over the threshold). Size, noise, flatline and clipping rules hardly ever act before the shock.
+
+The 2.4 Hz floor is there to keep chest compressions out (section 6 and finding F-12). These recordings show that the price is paid on real arrests, where the VF has had time to slow down. As section 6 already concluded, it cannot be relaxed safely without a compression signal such as pad impedance.
+
+### The countdown (finding F-11)
+
+The segments are too short to see a whole 3 s countdown after a 9 s analysis. Using all the signal before the shock, 55 shock decisions came early enough to see the whole countdown, and **17 of them (30.9 %) would have been abandoned** by a single doubtful second. With only part of the countdown visible, at least 33 of 150 would have been. The artificial looped version gives 60 of 167 (36 %). All three agree with F-11: about a third of correct shock decisions on real VF would be lost in the countdown under today's rule.
+
+### After the first shock (description, not a score)
+
+The labels say whether the shock worked, not what the rhythm was second by second. `noROEA` includes asystole and slow rhythms as well as continuing VF, and the device began a CPR pause about 3 s after the shock in 70 recordings, so much of this signal contains compressions.
+
+- **The analyser behaves in the expected direction.** After a shock that worked, 1–12 % of windows were shockable; after one that did not, 9–28 %, rising over the minute as VF returned or persisted. Over the whole post-shock part the analyser confirmed "shockable" at least once in 57.1 % of `noROEA` recordings and 23.5 % (12 of 51) of `ROEA` ones.
+- **The 12 `ROEA` recordings with a confirmed "shockable"** need a cardiologist's look. In 4 of them the recording defibrillator itself also advised or delivered another shock (VF returned). The other 8 are recordings in which the device started a CPR pause or said "no shock advised" after the shock: either VF came back briefly, or compressions were read as VF (finding F-12). This cannot be decided from these labels.
+- **Against the recording defibrillator's own decisions** inside the window: when it said "no shock advised" (150 times), this analyser's window at the same moment said "not shockable" 103 times, "not sure" 46 times and "shockable" once; when it said "shock advised" (64 times), "shockable" 34, "not sure" 25, "not shockable" 5. Broad agreement, with the same leaning towards "not sure".
+- **The shock transient.** For about 1.2 s after each shock the trace sits at the report's ±2 mV clipping limit (median 23.7 % of the first 5 s). The first window after the shock was mostly "not sure" from the compression rule (183 of 251), because the recovering baseline puts most of the power below 2.4 Hz; the flat-top clipping check fired in 19 first windows (22 post-shock windows in all), and the size and saturation rules never. So the transient ends in "not sure", not in a wrong answer. The analyser's flat-top check does not see the report's clipping elsewhere, because converting to 250 samples per second makes the clipped tops no longer exactly flat; a real device's own clipping would not be resampled.
+
+### What could make these numbers untrustworthy
+
+- **The signal is a printed report read back,** not the device's file. Unknown filtering; the 10 mm/mV scale is the software's statement; clipping at ±2 mV (negligible before the shock, large just after it). Whether 200 samples per second is the device's rate is unknown.
+- **Selection:** VF that the recording defibrillator had already advised shocking, from one city and one device type in 2006–2009.
+- **9 s analyses,** not the device's 12 s. The direction of the bias is towards fewer shocks.
+- **Recordings, not patients:** 9 exact duplicates were found and removed; others from the same patient cannot be ruled out. The confidence limits treat recordings as independent.
+- **The segment's end was chosen here** (0.5 s before the shock mark, to keep the shock moment out); the dataset's own 9 s end about 0.3 s before it. The result is the same with all the signal before the shock (60.6 %).
+- **Data errors found in the dataset itself:** the nine duplicates; four of the authors' text files at about half the PDF's amplitude; one text file that does not match its PDF; two mismatched file names; the description says "scanned" but the PDFs are vector drawings; the article and the reports name the device differently. None affects the PDF-based results above except the duplicates, which were removed.
+
+### Bugs found
+
+None in the analyser. The data problems above were all in the dataset.
+
+### What this suggests (recommendations, nothing implemented)
+
+1. **Keep Cardially untouched by tuning.** It is the project's only independent out-of-hospital test. Any future setting chosen while looking at it must be recorded, and it then stops being a clean test.
+2. **The 2.4 Hz frequency floor is the main loss on real arrests.** Freeing it needs the compression reference (pad impedance) already recommended in section 7; this is the strongest evidence for that so far.
+3. **The two-family "disagree means not sure" rule** made a quarter of real VF windows doubtful. A combined, explainable score is worth revisiting, but only with many more patients (section 7, point 3).
+4. **F-11 is confirmed on real out-of-hospital VF:** about a third of correct decisions would be lost in the countdown. The owner and clinician decision (Q-21) now has a second, independent piece of evidence.
+5. **Ask the authors** for the device's own files with longer pre-shock signal (so that a full 12 s analysis and countdown can be tested), the device model, the true amplitude calibration and filtering, an explanation of the duplicates and of the patient count, and written confirmation of the data licence.
+6. **Have a cardiologist look at the 12 `ROEA` recordings** where the analyser confirmed "shockable" after a successful shock (from the CSV, which is not committed).
