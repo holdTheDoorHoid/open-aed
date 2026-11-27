@@ -190,3 +190,46 @@ All 31 held-out false shocks: vfdb 418 "NSR" (5 on channel 0, 18 on channel 1), 
 ### Changes after the held-out run (none to behaviour)
 
 After the run, only documentation comments and test code (`#[cfg(test)]` unit tests in `aed-rhythm/src/analyzer.rs`; the updated expectation in `aed-eval/tests/findings.rs`) were added, so the analyser's source hashes changed. To show the behaviour did not: the development-half report regenerated afterwards is identical to `reports/development.md` (apart from the commit line), and the replay check still finds 0 of 107,703 windows different. The held-out half was not run again.
+
+## D-47 timing change: regression checks (27 November 2026) — not new clean tests
+
+Decision D-47 (owner, 27 Nov 2026): once compression sensing confirms the chest is still, the analysis no longer spends its first second letting the filters settle. The filters now run through CPR (`RhythmAnalyzer::track`) and the window starts at the hands-off moment after a 0.25 s guard (`RhythmAnalyzer::restart_window`, `FRESH_WINDOW_GUARD_SAMPLES` = 62 samples). **No setting of the analyser was changed or re-chosen.** The guard was fixed beforehand from made-up compression artifact (`aed-rhythm/tests/fresh_window.rs`), not from these recordings, and was not changed after any run below. The evaluation tool gained `--warm-start` (the device's new start: the 2 s of recording before each analysis pass through the filters first, then the 0.25 s guard) and, for measurement only, `--warm-guard-ms N`.
+
+These runs are **regression checks of a timing change**. The held-out half and Cardially were each run **once**, at the end, with the analyser frozen (source SHA-256 at the time: `analyzer.rs` 43ffa5e0…, `features.rs` f5168f8f… (unchanged), `settings.rs` 6afccb07…, `filter.rs` 597e8cb3… (unchanged), `synth.rs` 10629034… (unchanged)). They are not new clean tests: both had been scored before, and only the start of each analysis differs.
+
+### Development half (allowed; nothing chosen from it)
+
+| Run (UTC) | Start | Coarse VF ch 0 / ch 1, 12 s | False shocks, all non-shockable, both channels |
+|---|---|---|---|
+| 2026-11-27T15:41:13Z | cold (as before) | 71.3 % / 87.5 % | 8 |
+| 2026-11-27T15:42:50Z | warm, 1,000 ms guard | 71.3 % / 87.5 % | 8 |
+| 2026-11-27T15:43:07Z | warm, no guard | 71.8 % / 87.5 % | 9 |
+| 2026-11-27T15:41:30Z | **warm, 250 ms guard (the device)** | **72.4 % / 84.1 %** | **12** |
+| 2026-11-27T15:43:53Z | warm, 500 ms guard | 73.5 % / 86.4 % | 11 |
+| 2026-11-27T15:44:10Z | warm, 750 ms guard | 72.4 % / 88.6 % | 10 |
+
+- The cold run is identical to `reports/development.md` (apart from the title line): the cold path did not change.
+- A warm start with a full second's guard is identical to a cold start: running the filters beforehand changes nothing. Every difference between warm and cold therefore comes from **where the 4-second windows fall**: a warm window starts 0.75 s earlier in the signal. Within a 12 s analysis the number of windows is the same (eight), so the result at a fixed analysis length should be the same within that alignment noise.
+- Across guards of 0 to 1,000 ms the figures move by up to 2 points (channel 0) and 4.5 points (channel 1, 88 segments from 2 patients), and false shocks between 8 and 12, without a trend. The device's 250 ms guard sits at the unfavourable end for false shocks (12 against 8): one more on normal rhythm in each channel (vfdb 419 at 3.1 s, the first segment of that record, and vfdb 419 at 1,339.5 s), and one more on asystole in each channel (vfdb 424 at 1,564.5 s, labelled asystole at 802 µV, and the known doubtful stretch of vfdb 607). This is reported, not tuned away.
+- Time to decision: the median "shock" on coarse VF is 6 s instead of 7 s (decisions now fall at 4.25, 5.25, … s), and normal rhythm is answered at 4 s instead of 5 s.
+
+### Held-out half (once; regression check)
+
+- **When:** 2026-11-27T15:53:51Z. **Command:** `aed-eval --data ../data/physionet --records crates/aed-eval/splits/held_out.txt --warm-start` (list SHA-256 `3e5c7031…44d26601`). Full output kept outside the repository.
+
+| Class, 12 s analysis | channel | before (cold, 2026-11-27T13:38:41Z) | now (warm, the device's new start) |
+|---|---|---|---|
+| Coarse VF | 0 | 71.1 % (LCL 66.8 %) | 72.0 % (LCL 67.8 %) |
+| Coarse VF | 1 | 80.9 % (LCL 74.5 %) | 83.1 % (LCL 76.9 %) |
+| Normal sinus rhythm | 0 | 99.8 %, 5 false shocks | 99.6 % (LCL 99.4 %), 11 false shocks |
+| Normal sinus rhythm | 1 | 99.4 %, 18 false shocks | 99.5 % (LCL 99.3 %), 15 false shocks |
+| Other non-shockable | 0 | 99.5 %, 6 false shocks | 99.8 %, 3 false shocks |
+| Other non-shockable | 1 | 99.8 %, 2 false shocks | 99.8 %, 2 false shocks |
+
+All 31 held-out false shocks (31 before as well) are in the same three records as before: vfdb 418 (26), cudb cu09 (2), vfdb 426 (3). Coarse-VF shocks cancelled in the countdown, channel 0: 51 of 157 (before 53 of 155). The 90 % goal is still not met.
+
+### Cardially (once; regression check)
+
+- **When:** 2026-11-27T15:54:06Z. **Command:** `aed-cardially --warm-start` (zip SHA-256 `a3bce9bd…ca735`). The reports rarely hold 2 s before the 9 s segment, so where less than 1 s is available the segment's own first 2 s, played backwards, are the pre-roll (a mirror; the signal is continuous where the analysis starts).
+- **9 s before the first shock:** "shock" 60.6 % (152 of 251; lower 90 % limit 56.4 %), against **61.4 %** (154 of 251) cold. "No shock" 16.3 % (15.5 % before), inconclusive 23.1 % (23.1 %).
+- **Consequence, not an improvement:** a 9 s recording now allows "shock" at 6.25 s instead of 7 s, but still holds five windows (at 4.25 to 8.25 s instead of 5 to 9 s), so it gives the analyser no more chances than before. A recording a little shorter than 9 s would now fit one more window.

@@ -16,6 +16,8 @@
 //! * [`interlock`]: the hardware gate (the third check), written down as a
 //!   pure function for the simulator to model.
 //! * [`selftest`]: the self-test sequence.
+//! * [`schedule`]: the periodic self-tests while the device is off
+//!   (decision D-15): when to run them, the record, and the ready indicator.
 //! * [`prompts`]: every spoken or displayed message.
 //! * [`events`]: the fixed-size event record.
 //! * [`link`]: the two messages the controllers exchange.
@@ -31,6 +33,7 @@ pub mod interlock;
 pub mod link;
 pub mod prompts;
 pub mod rescue;
+pub mod schedule;
 pub mod selftest;
 pub mod supervisor;
 
@@ -40,7 +43,11 @@ pub use hal::{BatteryStatus, MainHardware, PadCartridge, ShockStatus, Supervisor
 pub use link::{MainStatus, SupervisorFault, SupervisorReport};
 pub use prompts::Prompt;
 pub use rescue::{AbortReason, Counters, FaultKind, Rescue, RescueState, ShockOutcome};
-pub use selftest::{SelfTest, SelfTestFailure, SelfTestProgress};
+pub use schedule::{
+    Deferral, NotReadyReason, PeriodicOutcome, PeriodicTest, PeriodicTestRun, Readiness,
+    TestCounters, TestSchedule, WakeDecision, WakeInputs,
+};
+pub use selftest::{SelfTest, SelfTestFailure, SelfTestPass, SelfTestProgress};
 pub use supervisor::{PermitRefusal, ReleaseReason, Supervisor};
 
 #[cfg(test)]

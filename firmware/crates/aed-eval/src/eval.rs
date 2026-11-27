@@ -196,6 +196,40 @@ pub fn run_segment(samples: &[i16]) -> AnalysisRun {
     run_segment_with(samples, &[], Settings::DEFAULT)
 }
 
+/// How each analysis starts (decision D-47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// A fresh analyser: the first second of each analysis settles the
+    /// filters and is not analysed. What the device did before D-47, and
+    /// still does after the pads go on, after a shock, and whenever
+    /// compression sensing does not confirm the chest still.
+    Cold,
+    /// The filters have been running on the signal before the analysis
+    /// ([`WARM_PRE_ROLL_S`] seconds of it are passed through them first),
+    /// and the window starts at the analysis start after only the short
+    /// guard. What the device now does after CPR once compression sensing
+    /// confirms the chest still, with the device's guard
+    /// ([`Start::DEVICE_WARM`]); other guards are for measurement only.
+    Warm {
+        /// Samples discarded after the window restart (the device uses
+        /// `aed_rhythm::settings::FRESH_WINDOW_GUARD_SAMPLES`).
+        guard_samples: usize,
+    },
+}
+
+impl Start {
+    /// A warm start exactly as the device does it.
+    pub const DEVICE_WARM: Start = Start::Warm {
+        guard_samples: aed_rhythm::settings::FRESH_WINDOW_GUARD_SAMPLES,
+    };
+}
+
+/// Seconds of signal before each analysis that a [`Start::Warm`] analysis
+/// passes through the filters first. 2 s: twice the analyser's own full
+/// settling time. Where the recording has less before the analysis, the
+/// analyser itself waits for whatever is left of its settling.
+pub const WARM_PRE_ROLL_S: f64 = 2.0;
+
 /// Feed a fresh analyser with `settings` the analysis `samples` and apply
 /// the device's rule. If it ends in a shock, keep feeding (the rest of
 /// `samples`, then `after`, the signal that follows the analysis) for the
@@ -203,7 +237,25 @@ pub fn run_segment(samples: &[i16]) -> AnalysisRun {
 /// would have cancelled the shock.
 #[must_use]
 pub fn run_segment_with(samples: &[i16], after: &[i16], settings: Settings) -> AnalysisRun {
+    run_segment_from(&[], Start::Cold, samples, after, settings)
+}
+
+/// As [`run_segment_with`], but for a [`Start::Warm`] start with a
+/// non-empty `pre`, `pre` is first passed through the analyser's filters
+/// only (`RhythmAnalyzer::track`) and the analysis window is then started
+/// afresh with the start's guard (decision D-47). A cold start, or an empty
+/// `pre`, is exactly [`run_segment_with`].
+#[must_use]
+pub fn run_segment_from(pre: &[i16], start: Start, samples: &[i16], after: &[i16], settings: Settings) -> AnalysisRun {
     let mut a = Analyzer::with_settings(settings);
+    if let Start::Warm { guard_samples } = start {
+        if !pre.is_empty() {
+            for s in pre {
+                a.track(*s);
+            }
+            a.restart_window_with_guard(guard_samples);
+        }
+    }
     let mut windows: Vec<WindowReport> = Vec::new();
     let mut seen = 0_u32;
     for (i, s) in samples.iter().enumerate() {
@@ -360,9 +412,18 @@ pub struct RecordOutput {
 }
 
 /// Run everything for one prepared record, with the analyser's `settings`
-/// (the device uses `Settings::DEFAULT`).
+/// (the device uses `Settings::DEFAULT`). Every analysis starts cold.
 #[must_use]
 pub fn evaluate_record(p: &Prepared, settings: Settings) -> RecordOutput {
+    evaluate_record_with(p, settings, Start::Cold)
+}
+
+/// As [`evaluate_record`], with each analysis started as `start` says.
+/// For [`Start::Warm`] the pre-roll is the [`WARM_PRE_ROLL_S`] seconds of
+/// the recording just before the analysis, whatever they contain (on the
+/// device it would be CPR); the streaming run is the same either way.
+#[must_use]
+pub fn evaluate_record_with(p: &Prepared, settings: Settings, start_mode: Start) -> RecordOutput {
     let mut segments = Vec::new();
     let mut streams = Vec::new();
     let mut all_runs = Vec::new();
@@ -402,7 +463,12 @@ pub fn evaluate_record(p: &Prepared, settings: Settings) -> RecordOutput {
                                 None
                             },
                             railed_fraction: railed as f64 / s.len().max(1) as f64,
-                            run: run_segment_with(
+                            run: run_segment_from(
+                                match start_mode {
+                                    Start::Cold => &[],
+                                    Start::Warm { .. } => slice_s(&chan.samples, start - WARM_PRE_ROLL_S, start),
+                                },
+                                start_mode,
                                 s,
                                 slice_s(&chan.samples, start + len, (start + len + COUNTDOWN_S).min(run.end)),
                                 settings,
@@ -484,6 +550,20 @@ mod tests {
         let r = run_segment(&sine(5.0, 500.0, 12.0));
         assert_eq!(r.outcome, Outcome::Shock, "{:?}", r.windows.last());
         assert_eq!(r.decided_at_s, Some(7.0));
+    }
+
+    #[test]
+    fn a_warm_start_decides_three_quarters_of_a_second_sooner_and_without_pre_roll_is_a_cold_start() {
+        let pre = sine(5.0, 500.0, 2.0);
+        let seg = sine(5.0, 500.0, 12.0);
+        let warm = run_segment_from(&pre, Start::DEVICE_WARM, &seg, &[], Settings::DEFAULT);
+        assert_eq!(warm.outcome, Outcome::Shock);
+        assert_eq!(warm.decided_at_s, Some(6.248), "62 samples of guard, not 250");
+        let no_pre = run_segment_from(&[], Start::DEVICE_WARM, &seg, &[], Settings::DEFAULT);
+        assert_eq!(no_pre.decided_at_s, Some(7.0));
+        // A warm start with a full second's guard is a cold start.
+        let slow = run_segment_from(&pre, Start::Warm { guard_samples: FS }, &seg, &[], Settings::DEFAULT);
+        assert_eq!(slow.decided_at_s, Some(7.0));
     }
 
     #[test]

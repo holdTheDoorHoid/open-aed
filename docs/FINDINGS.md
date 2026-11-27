@@ -19,7 +19,7 @@
 | F-11 | **About a third of correct shock decisions on real fibrillation would be cancelled during the 3-second countdown.** The rescue sequence abandons a shock on any single "not shockable" or "not sure" answer while armed, and real fibrillation flickers between answers. On the held-back half only 46.8% of fibrillation analyses would end in a delivered shock. Relaxing the rule (ignoring one doubtful second) was tried and rejected because it made finding F-4 worse: a shock 2.5 s after the heart had recovered. | **High** | Open (owner and clinician decision, Q-21) |
 | F-12 | **Very fast chest compressions over a flatline are read as a shockable rhythm.** Made-up compressions at 150 a minute with no heart rhythm underneath were called shockable 20 times out of 20 (never at 140 a minute or slower). They look like rapid ventricular tachycardia. The heart signal alone cannot tell them apart; a separate signal that senses compressions, such as the resistance between the pads, is needed. | **Closed in simulation, not for real patients (27 Nov 2026).** With pad-resistance sensing on, fast compressions over a flatline or a normal rhythm are never shocked in simulation. See F-13 for what remains. |
 | F-13 | **Shallow compressions can go unseen.** The compression detector needs the pad resistance to swing by at least 0.3 ohm. On held-back real recordings one patient's compressions moved it only 0.15–0.25 ohm, and the detector said "hands off" for 13.7 seconds while compressions continued. Lowering the threshold risks reading a strong heartbeat as compressions. For such patients the F-12 risk remains, and the older heart-signal rule is kept as a second line of defence. | **High** | Open (needs labelled recordings with both heart signal and pad resistance) |
-| F-14 | **Compression sensing lengthens the pause and narrows the margin for a late stop.** Hands-off time before a shock rose from 9.3 to 11.1 s in simulation, because the analysis now restarts once the chest is still. A responder who stops compressing 4 s late now gets "unable to analyse" where 6 s was tolerated before. | Medium | Open (owner decision, Q-32) |
+| F-14 | **Compression sensing lengthens the pause and narrows the margin for a late stop.** Hands-off time before a shock rose from 9.3 to 11.1 s in simulation, because the analysis restarts once the chest is still. | Medium | **Partly recovered 27 Nov 2026 (D-47):** now 10.3 s, and a stop up to 4 s late still gets a shock. 0.8 s of the 1.8 s was recovered; a further 0.25 s is available if the guard is removed (Q-41). |
 
 A side effect of the F-1 fix: when the signal never becomes clean (very weak fibrillation, interference, a responder who never stops compressing), each analysis now lasts the full 12 seconds before the device says "Unable to analyse. No shock. Start CPR."
 
@@ -135,3 +135,22 @@ What it does not mean:
 - These are hospital and monitor recordings from a few dozen patients, not out-of-hospital cardiac arrests through defibrillator pads. They contain no CPR movement and no children. Even a pass here would say little about a real device.
 - This was a clean test only because nothing was tuned on these recordings. Any tuning on them from here on must hold whole patients back for testing.
 - The American Heart Association target figures are from the research notes and have not been checked against the original paper.
+
+## Skipping the settling second (27 November 2026)
+
+Once the compression sensor confirms the chest is still, the rhythm analysis now starts after a quarter-second guard instead of a full second, keeping its filters running through CPR (D-47).
+
+| Measure, in simulation with compression sensing | Before | After |
+|---|---|---|
+| Hands off before the first shock | 11.1 s | 10.3 s |
+| Pads on to first shock | 12.0 s | 11.2 s |
+| Latest compression stop that still gets a shock | 3.5 s | 4.0 s |
+
+- **Safety check on made-up signals:** across 13,200 runs where compression movement stopped at the very instant the analysis began, over normal rhythms and flatline, none reached "shockable".
+- **On real recordings the picture is less clean.** On the development half, starting the analysis this way gave 12 wrong shock decisions against 8 before. The filters are not the cause: the difference comes from where the 4-second windows now fall, and other guard lengths gave anywhere from 8 to 12 with no pattern. The extra four are in recordings already known to have doubtful labels. On the held-back half the total was unchanged at 31, in the same three recordings. These were regression checks of a timing change on data already used, not new clean tests.
+- **Side effect on finding F-4:** a change to flatline is now missed if it happens up to 3.5 seconds before the shock (3.25 before).
+- **Interaction with finding F-13:** for a patient whose compressions the sensor cannot see, the analysis now starts a second sooner with movement still going on. The older heart-signal rule remains the backstop.
+
+## Self-test schedule (27 November 2026)
+
+The weekly full-energy test and daily light check (D-15) are implemented as schedule logic and tested over simulated weeks. In an eight-week quiet run: 8 full-energy tests and 48 daily checks, each ending with the capacitor confirmed empty. An ageing charger fails the weekly test while passing the daily one, which is exactly the fault the weekly test exists to catch. Choices made that need confirming are in Q-42.

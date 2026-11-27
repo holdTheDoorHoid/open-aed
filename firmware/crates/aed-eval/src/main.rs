@@ -12,12 +12,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use aed_eval::report::{build_report, episodes_csv, segments_csv, Meta};
-use aed_eval::run_all;
+use aed_eval::run_all_with;
 use aed_eval::split::{list_text, make_split, parse_list, sha256_hex, survey};
 use aed_eval::truth::Db;
 
 fn usage() {
-    eprintln!("Usage: aed-eval --data <dir with cudb/ vfdb/ mitdb/> [--db cudb|vfdb|mitdb]... [--records <list file>] [--untuned] [--kind <text>] [--csv <out dir>] [--out <report.md>] [--threads N]");
+    eprintln!("Usage: aed-eval --data <dir with cudb/ vfdb/ mitdb/> [--db cudb|vfdb|mitdb]... [--records <list file>] [--untuned] [--warm-start] [--warm-guard-ms N] [--kind <text>] [--csv <out dir>] [--out <report.md>] [--threads N]");
     eprintln!("       aed-eval --data <dir> --make-split <out dir>   (writes development.txt and held_out.txt)");
 }
 
@@ -96,6 +96,15 @@ fn commit_text() -> String {
     format!("`{hash}` ({rhythm_note}; {others} uncommitted path(s) elsewhere in the repository)")
 }
 
+/// Printed under the title of a `--warm-start` report.
+fn warm_note(guard_ms: Option<usize>) -> String {
+    let guard = guard_ms.map_or_else(
+        || "the device's 0.25 s guard".to_string(),
+        |ms| format!("a {ms} ms guard (MEASUREMENT ONLY: not the device's guard)"),
+    );
+    format!("**Warm start (decision D-47):** before each analysis the 2 s of recording just before it were passed through the analyser's filters, and the analysis window started after {guard} instead of the 1 s settling of a cold start.")
+}
+
 fn main() -> ExitCode {
     let mut data: Option<PathBuf> = None;
     let mut csv: Option<PathBuf> = None;
@@ -103,6 +112,8 @@ fn main() -> ExitCode {
     let mut records: Option<PathBuf> = None;
     let mut make_split_dir: Option<PathBuf> = None;
     let mut untuned = false;
+    let mut warm = false;
+    let mut warm_guard_ms: Option<usize> = None;
     let mut kind: Option<String> = None;
     let mut dbs: Vec<Db> = Vec::new();
     let mut threads = std::thread::available_parallelism().map_or(4, |n| n.get());
@@ -115,6 +126,18 @@ fn main() -> ExitCode {
             "--records" => records = args.next().map(PathBuf::from),
             "--make-split" => make_split_dir = args.next().map(PathBuf::from),
             "--untuned" => untuned = true,
+            "--warm-start" => warm = true,
+            // Measurement only: a warm start with another guard than the device's.
+            "--warm-guard-ms" => match args.next().and_then(|t| t.parse().ok()) {
+                Some(ms) => {
+                    warm = true;
+                    warm_guard_ms = Some(ms);
+                }
+                None => {
+                    usage();
+                    return ExitCode::FAILURE;
+                }
+            },
             "--kind" => kind = args.next(),
             "--threads" => match args.next().and_then(|t| t.parse().ok()) {
                 Some(t) => threads = t,
@@ -171,7 +194,12 @@ fn main() -> ExitCode {
     }
     eprintln!("aed-eval: development tool, not a medical device. Evaluating {dbs:?} from {} ...", data.display());
     let settings = if untuned { aed_eval::tune::UNTUNED } else { aed_rhythm::Settings::DEFAULT };
-    let (outputs, failed) = run_all(&data, &dbs, threads, only.as_ref().map(|(l, _, _)| l.as_slice()), settings);
+    let start = match (warm, warm_guard_ms) {
+        (false, _) => aed_eval::eval::Start::Cold,
+        (true, None) => aed_eval::eval::Start::DEVICE_WARM,
+        (true, Some(ms)) => aed_eval::eval::Start::Warm { guard_samples: ms * aed_eval::eval::FS / 1000 },
+    };
+    let (outputs, failed) = run_all_with(&data, &dbs, threads, only.as_ref().map(|(l, _, _)| l.as_slice()), settings, start);
     if outputs.is_empty() {
         eprintln!("No records could be loaded.");
         for (db, r, e) in &failed {
@@ -185,8 +213,10 @@ fn main() -> ExitCode {
         data_dir: "data/physionet".into(),
         failed,
         records: only.as_ref().map(|(l, p, h)| format!("{} records listed in `{p}` (SHA-256 `{h}`)", l.len())),
-        kind: kind.unwrap_or_else(|| {
-            if untuned {
+        kind: kind.map(|k| if warm { format!("{k} {}", warm_note(warm_guard_ms)) } else { k }).unwrap_or_else(|| {
+            if warm {
+                format!("**Analyser with its current settings** (`Settings::DEFAULT`). {}", warm_note(warm_guard_ms))
+            } else if untuned {
                 "**Untuned analyser** (thresholds as at commit 9cf11b6, set on made-up signals only; the clipping and flatline checks added later are switched off).".into()
             } else {
                 "**Analyser with its current settings** (`Settings::DEFAULT`).".into()

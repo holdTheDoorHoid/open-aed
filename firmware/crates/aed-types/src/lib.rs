@@ -176,7 +176,42 @@ pub trait RhythmAnalyzer {
     fn push(&mut self, sample: EcgSample) -> Option<RhythmDecision>;
 
     /// Forget everything seen so far (for example after a shock, or when pads are reattached).
+    ///
+    /// This is the **full** reset: the signal-cleaning filters start again
+    /// from nothing and must settle before any signal is analysed.
     fn reset(&mut self);
+
+    /// Pass one sample through the signal-cleaning filters **without
+    /// analysing it**, so that the filters are already settled when a fresh
+    /// analysis window is started with [`RhythmAnalyzer::restart_window`]
+    /// (decision D-47). The rescue sequence calls this, with the pads on,
+    /// for every sample it does not pass to [`RhythmAnalyzer::push`]: during
+    /// CPR and while compressions hold an analysis back.
+    ///
+    /// The default does nothing, which is always safe: an analyser that
+    /// does not track keeps the default `restart_window`, which is a full
+    /// reset.
+    fn track(&mut self, sample: EcgSample) {
+        let _ = sample;
+    }
+
+    /// Start a fresh analysis window **now**, keeping the signal-cleaning
+    /// filters' state (decision D-47). Everything about the previous window
+    /// (signal, measurements, confirmation history) is forgotten, exactly
+    /// as after [`RhythmAnalyzer::reset`]; only the filters carry on. An
+    /// implementation must still wait for whatever settling its filters
+    /// need since the last full reset, plus any guard it needs against the
+    /// tail of what came before.
+    ///
+    /// The rescue sequence calls this only when compression sensing
+    /// confirms the chest is still (a good impedance signal and
+    /// `HandsOff`); in every other case it calls `reset`.
+    ///
+    /// The default falls back to [`RhythmAnalyzer::reset`], so an analyser
+    /// that does not implement it behaves exactly as before.
+    fn restart_window(&mut self) {
+        self.reset();
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -5,8 +5,8 @@
 use crate::features::{classify_with, measure, Features, Reason, WindowVerdict};
 use crate::filter::Preprocessor;
 use crate::settings::{
-    Settings, CLIP_MIN_SPAN_UV, CLIP_RUN_SAMPLES, SATURATION_UV, STEPS_PER_WINDOW, STEP_SAMPLES,
-    WARMUP_SAMPLES, WINDOW_SAMPLES,
+    Settings, CLIP_MIN_SPAN_UV, CLIP_RUN_SAMPLES, FRESH_WINDOW_GUARD_SAMPLES, SATURATION_UV,
+    STEPS_PER_WINDOW, STEP_SAMPLES, WARMUP_SAMPLES, WINDOW_SAMPLES,
 };
 use aed_types::{EcgSample, RhythmAnalyzer, RhythmDecision};
 
@@ -184,6 +184,21 @@ impl Analyzer {
         }
     }
 
+    /// Start a fresh analysis window now, keeping the filters' state, and
+    /// discard the next `guard_samples` samples (or whatever is left of the
+    /// settling after the last full reset, if that is longer) before the
+    /// window starts filling. The device uses
+    /// [`RhythmAnalyzer::restart_window`], which uses
+    /// [`FRESH_WINDOW_GUARD_SAMPLES`]; this form exists so the measurement
+    /// tests can show what other guards would do.
+    pub fn restart_window_with_guard(&mut self, guard_samples: usize) {
+        let warmup_left = self.warmup_left.max(guard_samples);
+        let pre = self.pre;
+        *self = Self::with_settings(self.settings);
+        self.pre = pre;
+        self.warmup_left = warmup_left;
+    }
+
     /// The settings in use.
     #[must_use]
     pub fn settings(&self) -> &Settings {
@@ -277,6 +292,18 @@ impl RhythmAnalyzer for Analyzer {
 
     fn reset(&mut self) {
         *self = Self::with_settings(self.settings);
+    }
+
+    fn track(&mut self, sample: EcgSample) {
+        // The filters run exactly as they do inside `push`; the cleaned
+        // sample is thrown away. Samples tracked count toward the settling
+        // needed after a full reset.
+        let _ = self.pre.process(f32::from(sample));
+        self.warmup_left = self.warmup_left.saturating_sub(1);
+    }
+
+    fn restart_window(&mut self) {
+        self.restart_window_with_guard(FRESH_WINDOW_GUARD_SAMPLES);
     }
 }
 

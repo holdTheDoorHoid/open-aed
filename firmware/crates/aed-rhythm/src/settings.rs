@@ -46,6 +46,36 @@ pub const STEPS_PER_WINDOW: usize = WINDOW_SECONDS / STEP_SECONDS;
 /// Samples thrown away after start or reset while the filters settle (1 s). Own choice.
 pub const WARMUP_SAMPLES: usize = SAMPLES_PER_SECOND;
 
+/// Samples thrown away when a fresh analysis window is started on filters
+/// that are already running (decision D-47, `RhythmAnalyzer::restart_window`):
+/// 62 samples, about a quarter of a second. Own choice, from measurement.
+///
+/// Why the full [`WARMUP_SAMPLES`] second is not needed then: the warm-up
+/// exists for the filters to settle after they start from nothing (the
+/// 1 Hz high-pass is already primed on its first sample, so that is mostly
+/// the notches and the low-pass, and any electrode offset step). When the
+/// rescue sequence keeps the filters running through CPR, they are already
+/// settled; what is left is the tail of the compression artifact in the
+/// filters. Measured on made-up artifact (3 shapes, 60-180 per minute,
+/// stopped abruptly at 8 points of a compression;
+/// `tests/fresh_window.rs`): the leftover falls below 10 % of the
+/// artifact's size after 0.45 s, 3 % after 0.74 s and 1 % after 0.87 s;
+/// its largest peak to peak in a window starting at the stop is about the
+/// artifact's own size, and about 14 % of it in a window starting 0.25 s
+/// later. Over 13,200 runs of normal rhythm (40-180/min) and flatline with
+/// artifacts of 0.5 to 20 mV ending exactly as the window starts, no
+/// window sequence ever reached "shockable", with this guard or with none;
+/// VF and rapid VT were still detected in every run. The quarter second is
+/// therefore a margin, not a measured necessity: it keeps the abrupt end of
+/// the artifact (its sharpest, most broadband part) out of the first
+/// window, at a cost of 0.25 s. In the device the chest sensor's own quiet
+/// period (1 s without a compression, `aed-cpr`) comes on top.
+///
+/// After a full reset the remaining warm-up still applies in full: a fresh
+/// window waits for whichever is longer, this guard or what is left of the
+/// one-second warm-up.
+pub const FRESH_WINDOW_GUARD_SAMPLES: usize = SAMPLES_PER_SECOND / 4;
+
 /// Confirmation: "shockable" is reported once the current window is
 /// shockable and at least this many of the last [`CONFIRM_SPAN`] windows
 /// (including the current one) were. With 1 s steps the earliest

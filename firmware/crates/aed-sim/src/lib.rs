@@ -20,6 +20,8 @@
 //!   records a timeline.
 //! * [`report`]: readable timelines, summaries and timing tables.
 //! * [`campaign`]: the seeded random campaign.
+//! * [`standby`]: the device between rescues: weeks of periodic self-tests
+//!   (decision D-15), skipping the time between wakes.
 
 pub mod campaign;
 pub mod hw;
@@ -27,6 +29,7 @@ pub mod plant;
 pub mod report;
 pub mod runner;
 pub mod scenario;
+pub mod standby;
 
 pub use plant::{Fault, Plant, PlantConfig, SensorModel, ShockRecord};
 pub use runner::{run, Rule, RunResult, ShockTiming, Simulation, Violation};

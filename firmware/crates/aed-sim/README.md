@@ -98,7 +98,7 @@ Injectable faults (each can be switched on at any time or a set time after the d
 
 Rule 1 cannot hold for a rhythm change in the last few seconds before the shock: the analysis looks at a 4-second window. The random campaign counts those cases separately (see "Known problems").
 
-Other tests check that the modelled shock energy is within ±15 % of the target at 25, 50, 80, 125 and 175 Ω in both modes, measure the delivered energy at the edges of the voltage window the checks allow (`tests/voltage_sensors.rs`; known problem 9, now closed), report the battery and heat cost of charging during analysis per rescue against the earlier design (`tests/energy_and_timing.rs`), check that a frozen main controller in charging, countdown or delivering leaves the capacitor empty, the charger off and the supervisor's alarm on (`tests/frozen_main.rs`), sweep how late compressions may stop (`tests/late_hands_off.rs`), and run a seeded random campaign of 300 scenarios (random rhythm, changes, resistance including just out of range, mode, responder, clocks, and one random fault at a random time in about half of them).
+Other tests check that the modelled shock energy is within ±15 % of the target at 25, 50, 80, 125 and 175 Ω in both modes, measure the delivered energy at the edges of the voltage window the checks allow (`tests/voltage_sensors.rs`; known problem 9, now closed), report the battery and heat cost of charging during analysis per rescue against the earlier design (`tests/energy_and_timing.rs`), check that a frozen main controller in charging, countdown or delivering leaves the capacitor empty, the charger off and the supervisor's alarm on (`tests/frozen_main.rs`), sweep how late compressions may stop (`tests/late_hands_off.rs`), check the D-47 fresh analysis window (`tests/fresh_window.rs`), run the periodic self-test over simulated weeks (`tests/standby.rs`), and run a seeded random campaign of 300 scenarios (random rhythm, changes, resistance including just out of range, mode, responder, clocks, and one random fault at a random time in about half of them).
 
 ## Timings (simulated, provisional settings)
 
@@ -115,9 +115,28 @@ With charging during analysis (D-29) and the 3 s countdown (D-30):
 | Countdown | 3.0 s | 3.0 s | 5.0 s / 5.0 s |
 | Hands off the chest before the shock | 9.3 s | 9.3 s | 17.3 s / 13.3 s |
 
+The table above is the device **without** compression sensing (`chest_sensing: false`), which is unchanged. With compression sensing (D-36) the analysis waits for the chest to be still, which lengthened the pause (finding F-14); decision D-47 then removed most of the settling second the restarted analysis paid (the analysis window now starts on filters that ran through CPR, after a 0.25 s guard):
+
+| Adult and child VF, with compression sensing | Before D-47 | With D-47 |
+|---|---:|---:|
+| Pads on to first shock | 12.0 s | 11.2 s |
+| Analysis ("Analysing" to "shock advised") | 8.8 s | 8.0 s |
+| Hands off the chest before the shock | 11.1 s | 10.3 s |
+| Hands off before the second shock (`adult-vf-two-shocks`) | 10.9 s | 10.1 s |
+| Latest compression stop after "Analysing" that still gets a shock from the first analysis (`tests/late_hands_off.rs`, 400-1,500 µV VF) | 3.5 s | 4.0 s |
+| Flatline, compressions stopping 0.5 s / 2 s / 4 s late: "Start CPR" after | 7.0 / 8.0 / 10.1 s | 6.3 / 7.2 / 9.3 s |
+
+(Without sensing: 9.3 s, as before.) D-47 recovers 0.8 s of the 1.8 s that compression sensing added. Two side effects, measured: the rhythm-change blind spot of finding F-4 for a change to flatline grew from 3.25 to 3.5 s before the shock (the windows now fall 0.75 s earlier relative to the countdown; a change to normal rhythm is unchanged at 1.75 s); and in the 2,000-run campaign (seed 1) VF/VT runs shocked went from 433 to 437 of 581 (extended: 417 to 418 of 582), shocks within 4 s of VF/VT ending from 7 to 8 (extended: 9 to 8), shocks with hands on the chest unchanged at 7 in the extended campaign (the same seeds), and no new rule violation. `tests/fresh_window.rs` checks that compressions ending just before the window (normal rhythm 40-180/min and flatline, artifact 0.5-10 mV, 60-180/min, stopping at 250 ms steps) never lead to a shock, that VF is still shocked, and that nothing changes without sensing.
+
 For context only (from the project's research notes): trained EMTs reach about 51 s from recognition to shock, and each extra 5 s of pause before a shock is associated with lower survival. The pause is now the 7 s analysis (1 s settling, a 4 s window, then 3 agreeing windows) plus the 3 s countdown; the charge is hidden inside the analysis. A charger weaker than about 27 W in this model (184 J to reach the charged reading, in under 7 s) would no longer finish within the analysis and part of the wait would come back. The same pause repeats before every later shock.
 
 The cost (simulated, model energies, `tests/energy_and_timing.rs`): every analysis that ends without a shock burns a charge off inside the device, about 150 J when "no shock" comes at 5 s into the charge and 190 J for a full adult charge. A 170 s rescue with a normal rhythm now burns about 307 J (before: 8 J, the self-test only); a one-shock adult VF rescue about 188 J (before: 39 J). In the 5,000-run campaign: 0.7 charges burned per run, 108 J per run on average.
+
+## Between rescues: the periodic self-test (D-15)
+
+`src/standby.rs` runs the device over simulated weeks in about a second: time between wakes is skipped, not simulated. The real `aed_core::TestSchedule` decides at each wake; each test it asks for runs millisecond by millisecond on a fresh simulated device (the same plant as the rescues) with the real `PeriodicTestRun` and the real supervisor. The surroundings are scripted: in use, on the dock, temperature, battery, a charger that weakens, a plant fault, the timer restarting. Not modelled: anything that happens while asleep (self-discharge, ageing, the dock's power path).
+
+`tests/standby.rs` (simulated): eight quiet weeks give 8 full-energy tests (each charging to about 1,950 V) and 48 daily checks (400 V), one a day, all ending with the capacitor truly empty; a charger that drops to 12 W fails the weekly test (it reaches about 1,650 V in the time limit) but not the daily check, the device shows "not ready", the test is retried daily (7 more charges, each counted) and a repair clears it; the same weak charger in a rescue passes the switch-on test, faults at the first charge and keeps guiding CPR, and once repaired the rescue shocks; a hot spell puts the weekly test off, counts it missed and shows "not ready" from the grace day on; a test due while in use runs as soon as the device is switched off; a stuck discharge path found by the daily check sounds the alarm and stops further tests; a timer restart makes both tests due at once.
 
 ## Known problems found (integration findings)
 

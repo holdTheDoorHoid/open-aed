@@ -268,6 +268,9 @@ pub struct Counters {
     pub hands_on_aborts: u16,
     /// "Continue CPR." prompts for lack of compressions.
     pub continue_cpr_prompts: u16,
+    /// Analysis windows started on already-settled filters because
+    /// compression sensing confirmed the chest still (D-47).
+    pub fresh_windows: u16,
 }
 
 /// What compression sensing measured during the current CPR period.
@@ -560,6 +563,21 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         &self.compression_log
     }
 
+    /// Write the periodic self-test record (D-15) into the event record, at
+    /// switch-on. The board passes what [`crate::TestSchedule`] reports.
+    /// Recorded only: a device that was "not ready" still runs the rescue
+    /// (its own switch-on self-test decides whether it can shock).
+    pub fn record_standby(&mut self, now: Millis, readiness: crate::Readiness, counters: crate::TestCounters) {
+        self.events.push(
+            now,
+            Event::StandbyRecord {
+                readiness,
+                full_energy_cycles: counters.full_energy_cycles,
+                rescue_charges: counters.rescue_charges,
+            },
+        );
+    }
+
     /// True if compression sensing is fitted, switched on and has not failed:
     /// the device is using it now.
     #[must_use]
@@ -666,6 +684,15 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         let was_still = self.chest_seen.is_none_or(|s| s == ChestState::HandsOff);
         self.chest_seen = current;
         let still = current.is_none_or(|s| s == ChestState::HandsOff);
+        if !was_still && still && self.state.is_analysing() {
+            // Hands are off again. The analysis was reset when they went on
+            // and has been fed nothing since (only the filters have run).
+            // With the chest confirmed still, start the window now on the
+            // settled filters (D-47); otherwise (sensing failed or switched
+            // off meanwhile, or the signal is not good) start from a full
+            // reset, exactly as before D-47.
+            self.start_analysis_window(now);
+        }
         if was_still && !still && self.state.is_analysing() {
             // Everything the analysis has seen may include the start of the
             // movement: forget it, and feed nothing until hands are off.
@@ -676,6 +703,28 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             if let Some(s) = current {
                 self.events.push(now, Event::AnalysisHeld(s));
             }
+        }
+    }
+
+    /// True when compression sensing confirms the chest is still: sensing in
+    /// use, the impedance signal good, and the state `HandsOff`. Only then
+    /// may an analysis window start on filters that are already running,
+    /// without the full settling second (decision D-47).
+    fn chest_confirmed_still(&self, now: Millis) -> bool {
+        self.chest_state(now) == Some(ChestState::HandsOff)
+            && self.chest_signal(now) == ImpedanceSignal::Good
+    }
+
+    /// Start a fresh analysis window: on the running filters if the chest
+    /// is confirmed still (D-47, recorded), otherwise with a full reset of
+    /// the analysis (the behaviour before D-47).
+    fn start_analysis_window(&mut self, now: Millis) {
+        if self.chest_confirmed_still(now) {
+            self.analyzer.restart_window();
+            self.counters.fresh_windows = self.counters.fresh_windows.saturating_add(1);
+            self.events.push(now, Event::FreshAnalysisWindow);
+        } else {
+            self.analyzer.reset();
         }
     }
 
@@ -719,10 +768,19 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
                 RescueState::Charging | RescueState::Countdown | RescueState::Delivering
             );
         if !analysing {
+            if self.state == RescueState::Cpr && self.pads.on {
+                // Keep the analysis filters running through CPR, so that the
+                // next analysis can start without waiting for them to settle
+                // (D-47). Nothing is analysed.
+                self.analyzer.track(sample);
+            }
             return;
         }
         self.refresh_chest(now);
         if !self.chest_still(now) {
+            // Held back by compressions: the filters keep running, nothing
+            // is analysed.
+            self.analyzer.track(sample);
             return;
         }
         let Some(decision) = self.analyzer.push(sample) else {
@@ -1478,7 +1536,16 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
                 }
             }
             RescueState::Analysing | RescueState::AnalysingCharging => {
-                self.analyzer.reset();
+                // After CPR, with the chest confirmed still, the window
+                // starts now on the filters that ran through CPR (D-47).
+                // In every other case (pads just attached, analysing again
+                // after movement held a shock back, no compression sensing,
+                // or the chest not confirmed still) a full reset, as before.
+                if from == RescueState::Cpr {
+                    self.start_analysis_window(now);
+                } else {
+                    self.analyzer.reset();
+                }
                 self.analysis_result = None;
                 self.not_sure_seen = false;
                 // With compression sensing the reminder follows the chest

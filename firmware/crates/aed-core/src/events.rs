@@ -7,6 +7,7 @@
 
 use crate::link::SupervisorFault;
 use crate::rescue::{AbortReason, FaultKind, RescueState, ShockOutcome};
+use crate::schedule::Readiness;
 use crate::selftest::SelfTestFailure;
 use crate::supervisor::{PermitRefusal, ReleaseReason};
 use aed_types::{
@@ -104,6 +105,10 @@ pub enum Event {
     /// still (this state). The rhythm analysis was reset and fed nothing
     /// until hands were off again.
     AnalysisHeld(ChestState),
+    /// Compression sensing confirmed the chest still (good signal, hands
+    /// off), so the rhythm analysis started a fresh window on its
+    /// already-running filters, without the full settling second (D-47).
+    FreshAnalysisWindow,
     /// The compression-sensing channel has had this problem, with the pads
     /// on, for longer than [`crate::Config::chest_channel_fail_ms`]: the
     /// device now works from the heart signal alone, as without
@@ -129,6 +134,17 @@ pub enum Event {
     /// "Continue CPR." was said because no compressions were sensed for
     /// [`crate::Config::no_compression_prompt_ms`].
     NoCompressionsPrompt,
+    /// At switch-on: what the periodic self-tests (D-15) said before this
+    /// use, and the capacitor's wear count. Recorded only; it does not stop
+    /// the rescue (see [`crate::schedule`]).
+    StandbyRecord {
+        /// The ready indicator's state before switch-on.
+        readiness: Readiness,
+        /// Full-energy charges by periodic tests so far.
+        full_energy_cycles: u32,
+        /// Charges during earlier rescues so far.
+        rescue_charges: u32,
+    },
 }
 
 /// How many compressions the compression record keeps (the newest).

@@ -266,6 +266,9 @@ pub struct RunResult {
     pub compressions_counted: u32,
     /// Times the firmware held a shock back because the chest was not still.
     pub hands_on_aborts: u16,
+    /// Analysis windows started on already-settled filters because the
+    /// chest was confirmed still (D-47).
+    pub fresh_windows: u16,
 }
 
 impl RunResult {
@@ -930,6 +933,12 @@ impl Simulation {
                     _ => "not still (cannot tell)",
                 }
             ),
+            Event::StandbyRecord { readiness, full_energy_cycles, rescue_charges } => format!(
+                "Periodic self-test record: {readiness:?}; {full_energy_cycles} full-energy test charges, {rescue_charges} rescue charges so far"
+            ),
+            Event::FreshAnalysisWindow => {
+                "Chest confirmed still: analysis window starts now, filters already settled (D-47)".to_string()
+            }
             Event::ChestSensingFailed(s) => {
                 format!("Compression sensing FAILED ({s:?}): heart signal only from now on")
             }
@@ -1324,6 +1333,7 @@ impl Simulation {
             hands_on_at_fire: self.hands_on_at_fire,
             compressions_counted: self.rescue.counters().compressions,
             hands_on_aborts: self.rescue.counters().hands_on_aborts,
+            fresh_windows: self.rescue.counters().fresh_windows,
         }
     }
 }

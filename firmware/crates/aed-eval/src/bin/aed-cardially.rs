@@ -3,7 +3,7 @@
 //! cardiac-arrest recordings (see `crates/aed-eval/README.md`).
 //!
 //! ```text
-//! cargo run --release -p aed-eval --bin aed-cardially -- [--data <dir>] [--out <report.md>] [--csv <records.csv>] [--threads N] [--survey]
+//! cargo run --release -p aed-eval --bin aed-cardially -- [--data <dir>] [--out <report.md>] [--csv <records.csv>] [--threads N] [--survey] [--warm-start]
 //! ```
 //!
 //! `--data` defaults to `data/mendeley/cardially` at the repository root.
@@ -16,13 +16,14 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use aed_eval::cardially::eval::{build_report, evaluate, records_csv, Meta};
+use aed_eval::cardially::eval::{build_report, evaluate_with, records_csv, Meta};
+use aed_eval::eval::Start;
 use aed_eval::cardially::{dataset_dir, load, unpaired};
 use aed_eval::split::sha256_hex;
 use aed_rhythm::Settings;
 
 fn usage() {
-    eprintln!("Usage: aed-cardially [--data <dir>] [--out <report.md>] [--csv <records.csv>] [--threads N] [--survey]");
+    eprintln!("Usage: aed-cardially [--data <dir>] [--out <report.md>] [--csv <records.csv>] [--threads N] [--survey] [--warm-start]");
 }
 
 fn git(args: &[&str]) -> Option<String> {
@@ -64,6 +65,7 @@ fn main() -> ExitCode {
     let mut csv: Option<PathBuf> = None;
     let mut threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
     let mut survey = false;
+    let mut warm = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -78,6 +80,7 @@ fn main() -> ExitCode {
                 None => return bad(),
             },
             "--survey" => survey = true,
+            "--warm-start" => warm = true,
             _ => return bad(),
         }
     }
@@ -123,7 +126,8 @@ fn main() -> ExitCode {
                 s.spawn(|| loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(it) = items.get(i) else { break };
-                    let r = evaluate(it, Settings::DEFAULT);
+                    let start = if warm { Start::DEVICE_WARM } else { Start::Cold };
+                    let r = evaluate_with(it, Settings::DEFAULT, start);
                     if let Ok(mut v) = slots.lock() {
                         v.push((i, r));
                     }
@@ -142,6 +146,11 @@ fn main() -> ExitCode {
         zip_sha256: std::fs::read(&zip).ok().map(|b| sha256_hex(&b)),
     };
     let report = build_report(&items, &results, &unpaired(&data), &meta);
+    let report = if warm {
+        format!("> **Warm start (decision D-47):** before each analysis the analyser's filters were run on up to 2 s of signal (the 2 s before the segment where the report has at least 1 s of it, otherwise the segment's first 2 s played backwards), and the analysis window started after a 0.25 s guard instead of the 1 s settling of a cold start. A regression check of a timing change, not a new clean test.\n\n{report}")
+    } else {
+        report
+    };
     print!("{report}");
     if let Some(p) = out {
         if let Err(e) = std::fs::write(&p, &report) {

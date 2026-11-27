@@ -35,7 +35,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use eval::{evaluate_record, prepare, RecordOutput};
+use eval::{evaluate_record_with, prepare, RecordOutput};
 use truth::Db;
 
 /// Records that could not be loaded: database, record, error text.
@@ -56,6 +56,21 @@ pub fn run_all(
     threads: usize,
     only: Option<&[(Db, String)]>,
     settings: aed_rhythm::Settings,
+) -> (Vec<RecordOutput>, Failures) {
+    run_all_with(data_dir, dbs, threads, only, settings, eval::Start::Cold)
+}
+
+/// As [`run_all`], with every analysis started as `start` says (decision
+/// D-47: [`eval::Start::Warm`] is what the device does after CPR once the
+/// chest is confirmed still).
+#[must_use]
+pub fn run_all_with(
+    data_dir: &Path,
+    dbs: &[Db],
+    threads: usize,
+    only: Option<&[(Db, String)]>,
+    settings: aed_rhythm::Settings,
+    start: eval::Start,
 ) -> (Vec<RecordOutput>, Failures) {
     let mut jobs: Vec<(Db, String)> = Vec::new();
     let mut failed: Failures = Vec::new();
@@ -86,7 +101,7 @@ pub fn run_all(
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some((db, name)) = jobs.get(i) else { break };
                 let r = prepare(*db, &data_dir.join(db.name()), name)
-                    .map(|p| evaluate_record(&p, settings))
+                    .map(|p| evaluate_record_with(&p, settings, start))
                     .map_err(|e| e.to_string());
                 if let Ok(mut v) = results.lock() {
                     v.push((i, r));

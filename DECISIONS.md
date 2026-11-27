@@ -56,8 +56,10 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-44 | **Two battery cells.** | **Confirmed by owner, 27 Nov 2026** | Full-speed charging at −20 °C; about 20 g heavier. |
 | D-45 | **Bluetooth is a separate pre-certified module** with its own processor. | **Confirmed by owner, 27 Nov 2026** | Keeps radio code off the processor that decides to shock (D-24). |
 | D-46 | **Charging is through sealed contacts and a dock**, not a USB socket. | **Confirmed by owner, 27 Nov 2026** | Sealing to IP65. |
-| D-47 | **Once the chest is confirmed still, the rhythm analysis skips its settling second.** | **Confirmed by owner, 27 Nov 2026**; to be implemented and re-tested | Recovers about a second of the pause added by compression sensing (finding F-14). |
+| D-47 | **Once the chest is confirmed still, the rhythm analysis starts after a quarter-second guard** instead of a full settling second; its filters keep running through CPR. | **Confirmed by owner, 27 Nov 2026**; implemented | Recovers 0.8 s of the pause added by compression sensing (finding F-14). |
 | D-48 | **Ruggedness goal: carried all day, and left in a vehicle for short periods.** Not designed to live on a dashboard. The device measures and records its own temperature; after overheating it reports "not ready" until it has cooled and passed a self-test. The exact limits (provisionally up to about 70 °C for a few hours) are set from the capacitor, battery and pad datasheets. | **Confirmed by owner, 27 Nov 2026** (limits provisional) | Owner decision. Ruggedness is traded to protect the weight target, not the other way round. |
+| D-49 | **Self-test schedule details:** tests run on the charging dock; only the full-energy test waits for cold, heat or a low battery; a test missed by more than a day shows "not ready"; a failed daily check is retried after an hour and a failed weekly test after a day; if the capacitor cannot be confirmed empty after a test the device alarms and runs no more automatic tests until serviced. | Provisional (Q-42) | Chosen conservatively by Claude while implementing D-15. |
+| D-50 | **A device showing "not ready" still attempts a rescue.** Its switch-on self-test decides: if that passes it shocks with every usual check; if not it guides CPR. | Provisional (Q-42) | A responder holding a "not ready" device must still get whatever help it can safely give. |
 
 ## Owner questions
 
@@ -138,6 +140,12 @@ Answered on 27 November 2026, except where marked.
 **Q-39. If cold-weather tests show too little margin,** move from two smaller cells to two larger ones (about 50 g more)?
 
 **Q-40. The Bluetooth modules that came with ready-made firmware have been discontinued,** so the project would write the module's own small firmware. That code stays off the safety processor, but it is still code to write and maintain. Accept, or leave Bluetooth out of the first prototype?
+
+## Questions from the settling and self-test work (27 November 2026)
+
+**Q-41. The quarter-second guard.** Removing it would save another 0.25 s of hands-off time. On made-up signals no guard length ever produced a wrong "shockable". On real development recordings the count of wrong shock decisions moved between 8 and 12 across guard lengths with no pattern, so the data cannot say which is safer. Keep 0.25 s (assumed), or remove it?
+
+**Q-42. Self-test schedule details.** Confirm D-49 and D-50, in particular: should a device that shows "not ready" still shock if its switch-on self-test passes (assumed yes), and should it say "not ready" aloud at switch-on (assumed no)?
 
 ## Things that need a professional, not a guess
 

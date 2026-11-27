@@ -295,6 +295,40 @@ pub struct Config {
     /// chest was not still leads to a fresh analysis instead of CPR.
     /// Provisional: 1 (see the aed-core README for why).
     pub hands_on_reanalyses: u8,
+    /// Periodic self-test (decision D-15, confirmed by the owner): the
+    /// low-voltage check runs every this many seconds. 86,400 s: once a day.
+    /// Seconds, on the low-power timer that keeps running while the device
+    /// is off (see [`crate::schedule`]).
+    pub daily_test_interval_s: u32,
+    /// Periodic self-test (D-15): the full-energy test into the internal
+    /// load runs every this many seconds. 604,800 s: once a week. A passed
+    /// full-energy test also counts as that day's low-voltage check.
+    pub full_test_interval_s: u32,
+    /// A periodic test that has not passed for its interval plus this many
+    /// seconds is overdue, and the device shows "not ready". Provisional:
+    /// 86,400 s (one day), so one missed day is tolerated but two are not.
+    pub test_overdue_grace_s: u32,
+    /// After a failed low-voltage check, try it again after this many
+    /// seconds. Provisional: 3,600 s (one hour): a fault that clears (for
+    /// example a cold battery warming up) is seen to clear within the hour.
+    pub failed_daily_retry_s: u32,
+    /// After a failed full-energy test, try it again after this many
+    /// seconds. Provisional: 86,400 s (one day). Not sooner, because every
+    /// full-energy test wears the capacitor (the reason D-15 chose weekly).
+    pub failed_full_retry_s: u32,
+    /// While a due test is put off (device in use, or for the full-energy
+    /// test: too cold or hot, or battery not good), wake again after this
+    /// many seconds to see whether it can run. Provisional: 3,600 s.
+    pub deferred_recheck_s: u32,
+    /// The full-energy test runs only between these temperatures, degrees
+    /// Celsius (inside the device). Provisional: 0 to 45 °C, a cautious
+    /// range for charging the capacitor at full energy from lithium-ion
+    /// cells; UNVERIFIED, to be set from the chosen cells' and capacitor's
+    /// data sheets. The daily low-voltage check runs at any temperature: if
+    /// the device does not work in the cold, that is what it should report.
+    pub full_test_min_temp_c: i8,
+    /// See [`Config::full_test_min_temp_c`].
+    pub full_test_max_temp_c: i8,
 }
 
 impl Default for Config {
@@ -339,6 +373,14 @@ impl Default for Config {
             no_compression_prompt_ms: 15_000,
             pause_record_ms: 2_000,
             hands_on_reanalyses: 1,
+            daily_test_interval_s: 86_400,
+            full_test_interval_s: 604_800,
+            test_overdue_grace_s: 86_400,
+            failed_daily_retry_s: 3_600,
+            failed_full_retry_s: 86_400,
+            deferred_recheck_s: 3_600,
+            full_test_min_temp_c: 0,
+            full_test_max_temp_c: 45,
         }
     }
 }
@@ -383,6 +425,10 @@ pub enum ConfigError {
     /// pause), or the channel failure time is not longer than the
     /// stale-sample time.
     ChestSensingTimes,
+    /// A periodic self-test time is zero, the full-energy interval is
+    /// shorter than the daily one, a retry is longer than its own test's
+    /// interval, or the full-energy test's temperature range is empty.
+    SelfTestSchedule,
 }
 
 impl Config {
@@ -477,6 +523,23 @@ impl Config {
             && prompt_ok;
         if !chest_ok {
             return Err(ConfigError::ChestSensingTimes);
+        }
+        let schedule_ok = [
+            self.daily_test_interval_s,
+            self.full_test_interval_s,
+            self.test_overdue_grace_s,
+            self.failed_daily_retry_s,
+            self.failed_full_retry_s,
+            self.deferred_recheck_s,
+        ]
+        .iter()
+        .all(|t| *t > 0)
+            && self.full_test_interval_s >= self.daily_test_interval_s
+            && self.failed_daily_retry_s <= self.daily_test_interval_s
+            && self.failed_full_retry_s <= self.full_test_interval_s
+            && self.full_test_min_temp_c < self.full_test_max_temp_c;
+        if !schedule_ok {
+            return Err(ConfigError::SelfTestSchedule);
         }
         Ok(())
     }

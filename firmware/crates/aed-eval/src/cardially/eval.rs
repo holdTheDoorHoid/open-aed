@@ -28,7 +28,7 @@ use super::report_pdf::PdfEcg;
 use super::txt::to_uniform;
 use super::{Item, ShockOutcome};
 use crate::condition::{quantize, Resampler};
-use crate::eval::{run_segment_with, run_stream, AnalysisRun, Outcome, COUNTDOWN_S, FS};
+use crate::eval::{run_segment_from, run_stream, AnalysisRun, Outcome, Start, COUNTDOWN_S, FS, WARM_PRE_ROLL_S};
 use crate::stats::{clopper_pearson_lower, percentile};
 use crate::truth::amplitude_uv;
 
@@ -118,8 +118,26 @@ pub struct PreRun {
     pub countdown_cancelled: Option<bool>,
 }
 
-fn pre_run(seg: &[i16], s: Settings) -> PreRun {
-    let run = run_segment_with(seg, &[], s);
+/// The pre-roll for a [`Start::Warm`] analysis of `seg`, which starts
+/// `a_s` seconds into `sig`: the [`WARM_PRE_ROLL_S`] seconds before it if
+/// the report has at least one second there, otherwise the first
+/// [`WARM_PRE_ROLL_S`] seconds of `seg` itself played backwards (a mirror,
+/// so the signal is continuous where the analysis starts). Empty for a
+/// cold start.
+fn pre_roll(start: Start, sig: &[i16], a_s: f64, seg: &[i16]) -> Vec<i16> {
+    if start == Start::Cold {
+        return Vec::new();
+    }
+    let before = slice(sig, a_s - WARM_PRE_ROLL_S, a_s);
+    if before.len() >= FS {
+        before.to_vec()
+    } else {
+        seg.iter().take((WARM_PRE_ROLL_S * FS as f64) as usize).rev().copied().collect()
+    }
+}
+
+fn pre_run(pre: &[i16], start: Start, seg: &[i16], s: Settings) -> PreRun {
+    let run = run_segment_from(pre, start, seg, &[], s);
     let stream = run_stream(seg, s);
     let length_s = seg.len() as f64 / FS as f64;
     let (seen, cancelled) = match (run.outcome, run.decided_at_s) {
@@ -231,6 +249,15 @@ fn best_match(pdf: &[f64], fs: u32, txt: &[f64], txt_fs: u32, shock_s: f64) -> O
 /// Evaluate one recording with `settings` (the device uses `Settings::DEFAULT`).
 #[must_use]
 pub fn evaluate(item: &Item, settings: Settings) -> RecordResult {
+    evaluate_with(item, settings, Start::Cold)
+}
+
+/// As [`evaluate`], with each device-style analysis started as `start`
+/// says (decision D-47). For [`Start::Warm`] see `pre_roll`: the reports
+/// rarely hold two seconds before the 9 s segment, so most warm starts use
+/// the mirrored segment as the pre-roll.
+#[must_use]
+pub fn evaluate_with(item: &Item, settings: Settings, start: Start) -> RecordResult {
     let mut r = RecordResult {
         key: item.key(),
         outcome: item.outcome,
@@ -281,8 +308,9 @@ pub fn evaluate(item: &Item, settings: Settings) -> RecordResult {
     r.amplitude_uv = amplitude_uv(seg9, FS).unwrap_or(f64::NAN);
     r.pre9_clipped = edge_share(p, end - PRE_S, end);
     r.post5_clipped = edge_share(p, shock, shock + 5.0);
-    r.pre9 = Some(pre_run(seg9, settings));
-    r.pre_all = Some(pre_run(slice(&sig, 0.0, end), settings));
+    r.pre9 = Some(pre_run(&pre_roll(start, &sig, end - PRE_S, seg9), start, seg9, settings));
+    let all = slice(&sig, 0.0, end);
+    r.pre_all = Some(pre_run(&pre_roll(start, &sig, 0.0, all), start, all, settings));
     for amp in AMPS {
         let factor = match amp {
             Amp::AsPrinted => 1.0,
@@ -297,7 +325,8 @@ pub fn evaluate(item: &Item, settings: Settings) -> RecordResult {
         };
         if let Ok(s) = to_analyser(&p.samples_uv, p.fs_hz, factor) {
             let seg = slice(&s, end - PRE_S, end);
-            r.by_amp.push((amp, run_segment_with(seg, &[], settings).outcome));
+            let pre = pre_roll(start, &s, end - PRE_S, seg);
+            r.by_amp.push((amp, run_segment_from(&pre, start, seg, &[], settings).outcome));
         }
     }
     // The dataset's own digitisation (millivolts as given).
@@ -305,7 +334,7 @@ pub fn evaluate(item: &Item, settings: Settings) -> RecordResult {
         let mv = to_uniform(points, FS as u32, PRE_S);
         let uv: Vec<f64> = mv.iter().map(|v| v * 1000.0).collect();
         let q = quantize(&uv).samples;
-        r.txt = Some(pre_run(&q, settings));
+        r.txt = Some(pre_run(&pre_roll(start, &[], 0.0, &q), start, &q, settings));
         let pre_uv: Vec<f64> = p.samples_uv.iter().take((shock * f64::from(p.fs_hz)) as usize).copied().collect();
         r.txt_match = best_match(&pre_uv, p.fs_hz, &uv, FS as u32, shock);
     }
@@ -314,7 +343,7 @@ pub fn evaluate(item: &Item, settings: Settings) -> RecordResult {
     looped.extend_from_slice(seg9);
     let limit = (DEVICE_LIMIT_S * FS as f64) as usize;
     let (a, b) = looped.split_at(limit.min(looped.len()));
-    r.looped = Some(run_segment_with(a, b, settings));
+    r.looped = Some(run_segment_from(&pre_roll(start, &sig, end - PRE_S, seg9), start, a, b, settings));
     // After the shock.
     let post_end = next.unwrap_or(p.duration_s()).min(p.duration_s());
     let post = slice(&sig, shock, post_end);

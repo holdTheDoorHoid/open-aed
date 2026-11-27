@@ -423,3 +423,148 @@ fn chest_sensing_settings_that_contradict_each_other_are_refused() {
         assert_eq!(bad.validate(), Err(ConfigError::ChestSensingTimes));
     }
 }
+
+// ----- D-47: fresh analysis window once the chest is confirmed still ---------------------
+
+#[test]
+fn after_cpr_with_the_chest_confirmed_still_the_analysis_starts_a_fresh_window_not_a_full_reset() {
+    let config = Config {
+        cpr_period_ms: 20_000,
+        ..Config::default()
+    };
+    let mut b = Bench::with_chest(config);
+    b.board.rhythm = RhythmDecision::NonShockable;
+    reach(&mut b, S::Cpr, 30_000);
+    // Hands come off before the CPR period ends: the next analysis opens
+    // with the chest confirmed still.
+    b.board.chest = BoardChest::HandsOff;
+    let resets = b.resets.get();
+    let restarts = b.restarts.get();
+    reach(&mut b, S::AnalysingCharging, 30_000);
+    assert_eq!(b.restarts.get(), restarts + 1, "fresh window on the running filters");
+    assert_eq!(b.resets.get(), resets, "no full reset");
+    assert_eq!(b.rescue.counters().fresh_windows, 1);
+    assert!(b.has_event(|e| *e == Event::FreshAnalysisWindow));
+    b.assert_no_violations();
+}
+
+#[test]
+fn hands_off_after_compressions_in_an_analysis_starts_a_fresh_window_on_the_running_filters() {
+    let mut b = chest_bench();
+    b.board.rhythm = RhythmDecision::Shockable;
+    b.board.chest = BoardChest::Compressing;
+    b.run_to_analysing();
+    b.run_ms(2_000);
+    let resets = b.resets.get();
+    let restarts = b.restarts.get();
+    b.board.chest = BoardChest::HandsOff;
+    b.run_ms(20);
+    assert_eq!(b.restarts.get(), restarts + 1);
+    assert_eq!(b.resets.get(), resets);
+    reach(&mut b, S::Countdown, 15_000);
+    b.assert_no_violations();
+}
+
+#[test]
+fn hands_off_with_a_signal_that_is_not_good_keeps_the_full_reset() {
+    // "Hands off" while the impedance signal is still settling is not
+    // "confirmed still": the analysis restarts from a full reset, as before
+    // D-47.
+    let mut b = chest_bench();
+    b.board.rhythm = RhythmDecision::NonShockable;
+    b.board.chest = BoardChest::Compressing;
+    b.run_to_analysing();
+    b.run_ms(2_000);
+    let resets = b.resets.get();
+    let restarts = b.restarts.get();
+    b.board.chest = BoardChest::HandsOffSettling;
+    b.run_ms(20);
+    assert_eq!(b.restarts.get(), restarts, "no fresh window");
+    assert_eq!(b.resets.get(), resets + 1, "full reset");
+    assert_eq!(b.rescue.counters().fresh_windows, 0);
+    b.assert_no_violations();
+}
+
+#[test]
+fn a_failed_sensing_channel_or_unknown_chest_keeps_the_full_reset() {
+    // The channel fails while the analysis is held: from then on the heart
+    // signal is used alone, from a full reset (the behaviour before D-47).
+    let mut b = chest_bench();
+    b.board.rhythm = RhythmDecision::Shockable;
+    b.board.chest = BoardChest::OutOfRange;
+    b.run_to_analysing();
+    let restarts = b.restarts.get();
+    reach(&mut b, S::Countdown, 20_000);
+    assert!(!b.rescue.chest_sensing_active());
+    assert_eq!(b.restarts.get(), restarts, "no fresh window when sensing failed");
+    // "Cannot tell" throughout: never a fresh window.
+    let mut b = chest_bench();
+    b.board.rhythm = RhythmDecision::NonShockable;
+    b.board.chest = BoardChest::Unknown;
+    reach(&mut b, S::Cpr, 30_000);
+    reach(&mut b, S::AnalysingCharging, 150_000);
+    assert_eq!(b.restarts.get(), 0);
+    b.assert_no_violations();
+}
+
+#[test]
+fn without_compression_sensing_every_analysis_starts_with_a_full_reset() {
+    for mut b in [
+        Bench::new(),
+        Bench::with_chest(Config {
+            chest_sensing: false,
+            ..Config::default()
+        }),
+    ] {
+        b.board.rhythm = RhythmDecision::NonShockable;
+        reach(&mut b, S::Cpr, 30_000);
+        let resets = b.resets.get();
+        reach(&mut b, S::AnalysingCharging, 150_000);
+        assert_eq!(b.restarts.get(), 0);
+        assert_eq!(b.resets.get(), resets + 1);
+        assert_eq!(b.rescue.counters().fresh_windows, 0);
+    }
+}
+
+#[test]
+fn pads_attached_and_after_a_shock_keep_the_full_reset() {
+    // Pads going on: full reset even with the chest still.
+    let mut b = chest_bench();
+    b.board.rhythm = RhythmDecision::Shockable;
+    b.run_to_analysing();
+    assert_eq!(b.restarts.get(), 0);
+    assert!(b.resets.get() >= 1);
+    // After the shock: full reset at delivery (the front end saturates).
+    reach(&mut b, S::Delivering, 20_000);
+    let resets = b.resets.get();
+    reach(&mut b, S::Cpr, 5_000);
+    assert_eq!(b.shocks_fired(), 1);
+    assert_eq!(b.resets.get(), resets + 1, "full reset after the shock");
+    b.assert_no_violations();
+}
+
+#[test]
+fn the_filters_are_kept_running_through_cpr_and_while_compressions_hold_the_analysis() {
+    let config = Config {
+        cpr_period_ms: 20_000,
+        ..Config::default()
+    };
+    let mut b = Bench::with_chest(config);
+    b.board.rhythm = RhythmDecision::NonShockable;
+    reach(&mut b, S::Cpr, 30_000);
+    let before = b.tracked.get();
+    b.board.chest = BoardChest::Compressing;
+    b.run_ms(10_000);
+    // 250 samples a second through CPR.
+    assert!((2_490..=2_510).contains(&(b.tracked.get() - before)), "{}", b.tracked.get() - before);
+    reach(&mut b, S::AnalysingCharging, 30_000);
+    let before = b.tracked.get();
+    b.run_ms(2_000);
+    assert!((490..=510).contains(&(b.tracked.get() - before)), "held analysis tracks too");
+    // Pads off: nothing to track.
+    b.board.pad_ohms = 10_000;
+    reach(&mut b, S::AttachPads, 5_000);
+    let before = b.tracked.get();
+    b.run_ms(2_000);
+    assert_eq!(b.tracked.get(), before);
+}

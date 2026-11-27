@@ -53,6 +53,10 @@ pub struct FakeAnalyzer {
     count: u32,
     pub last_emitted: Rc<Cell<Option<RhythmDecision>>>,
     pub resets: Rc<Cell<u32>>,
+    /// Fresh windows started on running filters (D-47).
+    pub restarts: Rc<Cell<u32>>,
+    /// Samples passed through the filters only, not analysed (D-47).
+    pub tracked: Rc<Cell<u32>>,
 }
 
 impl RhythmAnalyzer for FakeAnalyzer {
@@ -73,6 +77,17 @@ impl RhythmAnalyzer for FakeAnalyzer {
         self.last_emitted.set(None);
         self.resets.set(self.resets.get() + 1);
     }
+
+    fn track(&mut self, _sample: EcgSample) {
+        self.tracked.set(self.tracked.get() + 1);
+    }
+
+    fn restart_window(&mut self) {
+        // Like a reset for the fake (it has no filters), but counted apart.
+        self.count = 0;
+        self.last_emitted.set(None);
+        self.restarts.set(self.restarts.get() + 1);
+    }
 }
 
 // ----- fake compression sensing ----------------------------------------------------
@@ -86,6 +101,8 @@ pub enum BoardChest {
     Compressing,
     /// Movement the sensor cannot classify.
     Unknown,
+    /// Hands off, but the signal is still settling (not `Good`).
+    HandsOffSettling,
     /// Front end saturated (channel problem).
     Saturated,
     /// Reading out of range (channel problem).
@@ -98,6 +115,7 @@ pub fn impedance_for(c: BoardChest) -> ImpedanceSample {
         BoardChest::HandsOff => ImpedanceSample::Milliohms(80_000),
         BoardChest::Compressing => ImpedanceSample::Milliohms(81_000),
         BoardChest::Unknown => ImpedanceSample::Milliohms(82_000),
+        BoardChest::HandsOffSettling => ImpedanceSample::Milliohms(83_000),
         BoardChest::OutOfRange => ImpedanceSample::Milliohms(300_000),
         BoardChest::Saturated => ImpedanceSample::Saturated,
     }
@@ -136,6 +154,7 @@ impl ChestSensor for FakeChest {
             ImpedanceSample::Saturated => (ChestState::Unknown, ImpedanceSignal::Saturated),
             ImpedanceSample::Milliohms(80_000) => (ChestState::HandsOff, ImpedanceSignal::Good),
             ImpedanceSample::Milliohms(81_000) => (ChestState::Compressing, ImpedanceSignal::Good),
+            ImpedanceSample::Milliohms(83_000) => (ChestState::HandsOff, ImpedanceSignal::Settling),
             ImpedanceSample::Milliohms(300_000) => (ChestState::Unknown, ImpedanceSignal::OutOfRange),
             ImpedanceSample::Milliohms(_) => (ChestState::Unknown, ImpedanceSignal::Good),
         };
@@ -483,7 +502,7 @@ impl MainHardware for MainView<'_> {
             && b.chest_in_use
             && b.impedance_up
             && known
-            && b.chest != BoardChest::HandsOff
+            && !matches!(b.chest, BoardChest::HandsOff | BoardChest::HandsOffSettling)
         {
             b.violations.push(format!(
                 "t={} shock requested while the chest channel carried {:?}",
@@ -592,6 +611,10 @@ pub struct Bench {
     pub main_alive: bool,
     pub sup_alive: bool,
     pub resets: Rc<Cell<u32>>,
+    /// Analyser `restart_window` calls (D-47).
+    pub restarts: Rc<Cell<u32>>,
+    /// Samples passed to the analyser's `track` (D-47).
+    pub tracked: Rc<Cell<u32>>,
     pub states: Vec<(u32, RescueState)>,
 }
 
@@ -620,11 +643,15 @@ impl Bench {
     fn build(config: Config, planner: FakePlanner, every: u32, chest_fitted: bool) -> Self {
         let last = Rc::new(Cell::new(None));
         let resets = Rc::new(Cell::new(0));
+        let restarts = Rc::new(Cell::new(0));
+        let tracked = Rc::new(Cell::new(0));
         let analyzer = FakeAnalyzer {
             every,
             count: 0,
             last_emitted: last.clone(),
             resets: resets.clone(),
+            restarts: restarts.clone(),
+            tracked: tracked.clone(),
         };
         let rescue = Rescue::with_chest_sensor(config, analyzer, planner, FakeChest::new(chest_fitted))
             .expect("valid config");
@@ -638,6 +665,8 @@ impl Bench {
             main_alive: true,
             sup_alive: true,
             resets,
+            restarts,
+            tracked,
             states: Vec::new(),
         }
     }

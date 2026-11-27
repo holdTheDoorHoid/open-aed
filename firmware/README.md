@@ -8,7 +8,7 @@ Rust firmware for the Open AED, at the simulation stage. **No hardware exists. N
 | `crates/aed-rhythm` | Decides shockable / not shockable / not sure |
 | `crates/aed-waveform` | Plans the shock and models the discharge |
 | `crates/aed-cpr` | Senses chest compressions from the resistance between the pads (D-14, D-36): hands off / compressing / cannot tell, rate, pauses, time on chest |
-| `crates/aed-core` | The rescue sequence, the supervisor's rules, self-test, prompts, event record |
+| `crates/aed-core` | The rescue sequence, the supervisor's rules, self-test (at switch-on, and the daily and weekly periodic tests of D-15), prompts, event record |
 | `crates/aed-eval` | Scores the rhythm analysis against public recordings of real heart rhythms (data not included) |
 | `crates/aed-cpr-eval` | Scores compression sensing against real pad-impedance recordings (Paris Fire Brigade; data not included). Results: `crates/aed-cpr-eval/REPORT.md` |
 | `crates/aed-sim` | Simulated device and patient; runs everything together |

@@ -17,6 +17,17 @@ Small VF (under 200 microvolts, "fine VF") is answered "cannot tell", not "shock
 
 Every window's measurements and verdict can be read out for the event record.
 
+## Starting a fresh window without the settling second (decision D-47)
+
+A freshly reset analyser throws away its first second while its filters settle, then needs a 4-second window and three agreeing windows: "shockable" at the earliest 7 s after the start. Compression sensing (D-36) restarts the analysis each time the chest becomes still, so that second was paid again on every hands-off pause (finding F-14).
+
+Two calls now let the rescue sequence avoid it, without changing anything else:
+
+- **`track(sample)`** passes a sample through the filters only. The rescue sequence calls it during CPR and while compressions hold an analysis back, so the filters are always running on the real signal.
+- **`restart_window()`** starts a fresh window **now**, forgetting the previous window, its measurements and its confirmations, but keeping the filters. It waits only a quarter-second guard (62 samples), or whatever is left of the full second if the filters were reset less than a second ago. The rescue sequence uses it only when compression sensing confirms the chest is still; in every other case (pads just attached, after a shock, sensing off, failed or unsure) it uses the full `reset()` exactly as before.
+
+Why that is enough (made-up signals, `tests/fresh_window.rs`): after a compression artifact stops abruptly, what is left of it in the filters falls below 10 % of its size within 0.45 s, 3 % within 0.74 s and 1 % within 0.87 s. With artifact of 0.5 to 20 mV at 60-180 compressions a minute, stopping at any point of a compression exactly as the window starts, over normal rhythm at 40-180 beats a minute and over flatline, no run in 13,200 reached "shockable", with the guard or without it; VF and rapid VT were still detected in every run, 0.75 s sooner. The guard is therefore a margin, not a measured necessity: it keeps the sharp end of the artifact out of the first window. On real recordings (PhysioNet development half) running the filters beforehand made no difference at all; the only effect is that the windows fall 0.75 s earlier in the signal (`crates/aed-eval/TUNING_LOG.md`, "D-47 timing change"). No threshold was changed.
+
 ## What has been shown, and what has not
 
 **Shown (simulated only):** on made-up signals from the `synth` module, the code runs, never crashes, never answers "shockable" for normal rhythm at 40-180 beats per minute, flatline, heavy noise, clipped input or compressions over a normal rhythm, and does answer "shockable" for made-up VF and rapid VT. After VF turns into a normal rhythm it stops answering "shockable" within a few seconds.
@@ -37,4 +48,8 @@ From `firmware/`:
 cargo test -p aed-rhythm -- --nocapture
 ```
 
-The `synthetic_confusion_table` test prints a table of outcomes per made-up rhythm class.
+The `synthetic_confusion_table` test prints a table of outcomes per made-up rhythm class. `tests/fresh_window.rs` holds the D-47 measurements and safety checks; its slow comparison of guards is ignored by default:
+
+```
+cargo test --release -p aed-rhythm --test fresh_window -- --ignored --nocapture
+```
