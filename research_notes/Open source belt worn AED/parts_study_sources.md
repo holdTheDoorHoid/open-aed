@@ -277,3 +277,31 @@ After D-41 was revised (capacitor storage about 70 °C) and D-48 set the ruggedn
 - Roll-up method unchanged (parts ÷ packing factor; shell scaled as (inside / v0.1 inside)^⅔ from 110 cm³ / 140 g (a) or 90 cm³ / 100 g (b)). v0.3 adds 1 cm³ / 1 g of temperature sensing. Results with pads: (a) 0.89 L / 903 g; (b) 0.64 L / 699 g; (a) low / high capacitor 817 / 1,030 g; (b) expected 783 g; (a) 60 °C working 868 g; (a) 2,500 cycles 832 g; option C (2 × LFP 26650, +60 g and about +36 cm³ of cells) 975 g.
 - Device thermal time constant: 0.8 kg × 900 J/kg·K ÷ 0.49 W/K = 1,470 s ≈ 25 min. With a 10 mm foam pouch (0.035 W/m·K, 0.05 m²): 0.175 W/K in series with 0.49 W/K = 0.13 W/K → 93 min.
 - Temperature logging power [EST]: 10–20 µW → 0.24–0.48 mWh/day, about 1% of standby.
+
+---
+
+# Revision pass: version 0.4 of the parts study (27 November 2026)
+
+After D-09, D-41, D-43, D-48 and D-51 to D-53. No new web searches: this pass is re-derivation from the sources above. Same tags and repository rule.
+
+## 23. Arithmetic done in this pass (working in PARTS_STUDY.md v0.4)
+
+- **Combined capacitor, 60 °C working and 2,500 charges, 2,200 V, 100 µF (242 J rated energy):**
+  - Version 0.3 shortcut: 1.66 × 2^(−1/6.6) [60 °C] × 2^(2/6.6) [half the life] = 1.66 × 0.90 × 1.23 = **1.84 J/cc**.
+  - Full method: GA 320DQ4130 1.66 J/cc, 2,500 cycles at rated voltage → × (2,200/1,950)^6.6 = 2.22 → about 5,550 cycles at 1,950 V; at 60 °C × 2^(−0.5) → 3,924; spare against 2,500 = 1.57; allowed density 1.66 × 1.57^(1/3.3) = **1.90 J/cc**. With a life exponent of 10 instead of 6.6: 1.66 × 1.57^(0.2) = 1.81 J/cc.
+  - **Capped**: no published defibrillator film part exceeds 1.66 J/cc (GA, 2.0 kV); at 2.2 kV the best published is 1.20 J/cc (GA 322DQ4196B). CDE press material says "as high as 2 J/cc" with no part named (section 3 above). Expected case therefore 1.66 J/cc; low case 2.0 J/cc; high case 1.35 J/cc (GA's real 5,000-cycle grade).
+  - Boxed volume (+18%) and mass: low 242/2.0 = 121 → 143 cm³, × 1.3 = 186 g (about 145 / 185); expected 242/1.66 = 146 → 172 cm³, × 1.4 = 241 g (about 170 / 240); high 242/1.35 = 179 → 212 cm³, × 1.5 = 317 g (about 210 / 315).
+  - Heavy-duty later option (5,000 charges at 60 °C): version 0.3 figure 190 cm³ / 270 g.
+- **Cycle-life requirement:** typical profile 520 self-tests + 600 rescue charges + 100 service = 1,220 in 10 years; × 2 = 2,440 → 2,500. Heavy profile 4,120 → 412 a year → reaches 2,500 in 6.1 years. Charge-hold 2,500 × 30 s = 21 h, × 3 ≈ 60 h.
+- **Roll-up** (same method as before; Bluetooth module −1 g with its 2 cm³ kept as empty reserved volume; data contacts +1 cm³, +1 g):
+  - Lower-risk set: parts 319 cm³ / 594 g → inside 638 → shell 109 cm³ / 138 g → 0.75 L / 732 g → **0.81 L / 832 g with pads**.
+  - Smallest set: parts 269 / 470 → inside 448 → shell 92 / 103 → 0.54 L / 573 g → **0.59 L / 653 g with pads**.
+  - Capacitor cases with pads: (a) 770 / 832 / 919 g; (b) 653 / 714 / 798 g. Heavy-duty capacitor (a) 868 g. 2 × 21700 cells (a) about 890 g.
+  - D-41 + D-53 applied alone to the version 0.1 set: (a) −22 cm³, −8 g; (b) −10 cm³, −23 g.
+- **Vehicle pouch requirement:** bare device time constant about 25 min; requirement ≥ 75 min (×3), target 90 min. Half-rise times: 75 × ln 2 = 52 min; 90 × ln 2 = 62 min. 2-hour stop at 60 °C from 30 °C: pouch (90 min) 30 + 30 × (1 − e^(−120/90)) = 52 °C; bare 30 + 30 × (1 − e^(−120/25)) = 60 °C. 10 mm foam at 0.035 W/m·K over 0.05 m² → 0.175 W/K, in series with 0.49 W/K → 0.13 W/K → 720 J/K ÷ 0.13 = 93 min.
+- **Standby without Bluetooth:** version 0.3's 0.5–1 mW less 30–90 µW advertising → 0.45–0.9 mW; with self-tests and logging 1.05–1.5 mW, 0.025–0.036 Wh a day.
+
+## 24. Not checked in this pass
+
+- No pouch product was checked against the requirement; product classes are background knowledge.
+- No sealed contact part with a data rating was checked for the dock data link.

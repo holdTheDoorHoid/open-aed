@@ -11,11 +11,11 @@ Trained responders: police officers, paramedics, medical professionals. They car
 | Target | Value | Why |
 |---|---|---|
 | Weight, finished design | 700 g or less, **including pads** (D-43). A first prototype of 780–900 g is accepted. | Matches the smallest full-energy units on sale (St John Pocket AED P3, Schiller FRED easyport plus at 780 g) |
-| Volume, first prototype goal | 0.7 litre or less | Same |
+| Volume, finished design | 0.7 litre or less | Same |
 | Stretch goal | 500 g and 0.5 litre | Not reachable with parts available today (parts study version 0.3) |
 | Not a goal | 300 g, like the CellAED | That device reached its size by cutting shock energy and shock count, and its maker has had regulatory trouble. Catalogue parts do not get there at full energy. |
 
-**What the parts study found (version 0.3, 27 November 2026):** a set of parts that follows every decision with lower-risk choices comes to about 0.89 L and 903 g with pads, about 200 g over the target. The smallest plausible set comes to about 0.64 L and 699 g, and only if a capacitor maker delivers the most optimistic estimate; with the expected capacitor it is about 783 g. A first prototype is more likely to weigh 780–900 g. The 500 g stretch goal is not reachable with parts available today. See [PARTS_STUDY.md](PARTS_STUDY.md).
+**What the parts study found (version 0.4, 27 November 2026):** a set of parts that follows every decision with lower-risk choices comes to about 0.81 L and 832 g with pads, about 130 g over the finished-design goal and inside the accepted first-prototype range. The smallest plausible set comes to about 0.59 L and 653 g, or 714 g with the expected capacitor. The remaining weight savings that need no further decision total about 200 g on paper. The 500 g stretch goal is not reachable with parts available today. See [PARTS_STUDY.md](PARTS_STUDY.md).
 
 For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 
@@ -76,10 +76,11 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 
 Field surveys found 15–21% of public AEDs not ready when inspected, and an analysis of 1,150 fatal failures found about a quarter caused by battery or power and about a quarter by pads and connectors. So:
 
+- The device counts full charges and calls for service as the capacitor nears its 2,500-charge life (D-53).
 - Self-test into an internal test load: full energy once a week, a low-voltage check every day (D-15).
 - Battery tested under a realistic load, with cautious low-battery logic.
 - Pad connection and gel condition checked through the pads' electrical resistance.
-- A clear ready / not-ready indicator, and readiness reported to the agency over Bluetooth.
+- A clear ready / not-ready indicator, and readiness read out by cable through the dock (D-09).
 
 ## CPR support
 

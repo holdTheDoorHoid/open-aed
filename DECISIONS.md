@@ -52,7 +52,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-40 | **Device recordings and evaluation data are never committed**; evaluation tools skip cleanly without them. The Cardially dataset is never used for tuning. | Provisional | Licences, privacy, and keeping a clean external test. |
 | D-41 | **The storage capacitor is made to order: about 100 µF, at least 2,200 V, about 70 °C storage, charged only up to 60 °C, and good for at least 2,500 full charges.** | **Confirmed by owner, 27 Nov 2026** (revised: 85 °C lowered; 60 °C working and 2,500 charges set) | Owner: as rugged as feasible without blowing the weight budget. An 85 °C storage rating would not have made the device safe in a hot car, because the battery and pad gel are limited to about 60 °C. **Correction:** an earlier note here said the 85 °C rating cost about 60 g. The reworked parts study (version 0.3) found that it cost about nothing; the weight comes from the capacitor's working temperature and voltage rating, not its storage rating. Lowering it does widen the choice of makers. |
 | D-42 | **Catalogue parts wherever they exist; made-to-order parts where they do not**, each with a published specification so anyone can order the same part. | **Confirmed by owner, 27 Nov 2026** (relaxes "off-the-shelf only") | The capacitor, charging transformer, switch drive, pad connector and pads cannot be bought from a catalogue. |
-| D-43 | **The 700 g target includes the pads, and is the goal for the finished design.** A first prototype of 780–900 g is accepted. | **Confirmed by owner, 27 Nov 2026** | What the responder carries is what counts. After the capacitor and battery decisions (D-41, D-44) the parts study (version 0.3) puts the lower-risk set at about 903 g with pads and the smallest plausible set at about 699 g. The target is at risk; see Q-36. |
+| D-43 | **The 700 g target includes the pads, and is the goal for the finished design.** A first prototype of 780–900 g is accepted. | **Confirmed by owner, 27 Nov 2026** | What the responder carries is what counts. Parts study version 0.4 puts the lower-risk set at about 832 g with pads and the smallest plausible set at about 653 g (714 g with the expected capacitor). The 700 g goal no longer depends on the most optimistic capacitor estimate. |
 | D-44 | **Two battery cells.** | **Confirmed by owner, 27 Nov 2026** | Full-speed charging at −20 °C; about 20 g heavier. |
 | D-45 | **When Bluetooth is added it will be a separate pre-certified module** with its own processor. | **Confirmed by owner, 27 Nov 2026** (deferred by D-09) | Keeps radio code off the processor that decides to shock (D-24). |
 | D-46 | **Charging is through sealed contacts and a dock**, not a USB socket. | **Confirmed by owner, 27 Nov 2026** | Sealing to IP65. |
@@ -148,6 +148,10 @@ Answered on 27 November 2026.
 - **Q-20, Q-21, Q-33** (clinician): the last-seconds blind spot, how strict the countdown is, and movement during the countdown.
 - **Q-35** (owner, later): how to obtain the reference test equipment.
 - **Q-39** (after bench tests): two larger battery cells if cold-weather tests show too little margin.
+
+- **Q-47** (owner): how records come off by cable. Either the dock is the reader (one extra contact on the device), or the device speaks USB itself through the dock (two extra contacts).
+- **Q-48** (owner, with a lawyer): may the specification sheets for made-to-order parts be published now, or held for the patent review? They state what a part must do, not how to build anything, and are currently in the public parts study.
+- **For the hardware engineer:** how to hold the voltage sensors to 1% + 7 V over the device's life (recalibrate at service, or costlier low-drift parts); the temperature range of the candidate pad-resistance chip.
 
 ## Things that need a professional, not a guess
 
