@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use aed_core::interlock::{bridge_may_fire, charger_may_run, discharge_path_active};
 use aed_core::{BatteryStatus, MainStatus, PadCartridge, Prompt, ShockStatus, SupervisorReport};
 use aed_rhythm::synth::{Rhythm, Synth, Xorshift32};
-use aed_types::{EcgSample, ShockPlan, Volts};
+use aed_types::{EcgSample, ImpedanceSample, ShockPlan, Volts};
 use aed_waveform::{discharge, DischargeResult, WaveformConfig};
 
 /// A sensor with a gain error, an offset error and an optional stuck-at fault.
@@ -109,6 +109,19 @@ pub struct PlantConfig {
     /// How long the heart-signal input reads flat after a shock while the
     /// front end recovers, ms. Default 1,500 ms (model choice).
     pub post_shock_blanking_ms: u32,
+    /// Pad-impedance (compression sensing) front end: random noise, ohms
+    /// RMS. Default 5 mΩ, inside the 10 mΩ the detector assumes (aed-cpr
+    /// `FrontEndAssumptions`). Model choice.
+    pub impedance_noise_ohms: f64,
+    /// How long the impedance front end reads saturated after a shock, ms.
+    /// Default 300 ms. Model choice, not measured.
+    pub impedance_shock_saturation_ms: u32,
+    /// After that, the impedance reads this much high and recovers
+    /// exponentially (pad polarisation after a shock), ohms. Default 3 Ω.
+    /// Model choice, not measured.
+    pub impedance_shock_offset_ohms: f64,
+    /// Time constant of that recovery, ms. Default 1,500 ms. Model choice.
+    pub impedance_shock_recovery_ms: f64,
 }
 
 impl Default for PlantConfig {
@@ -132,6 +145,10 @@ impl Default for PlantConfig {
             supervisor_resistance_sensor: SensorModel::ideal(),
             open_circuit_reading: 10_000,
             post_shock_blanking_ms: 1_500,
+            impedance_noise_ohms: 0.005,
+            impedance_shock_saturation_ms: 300,
+            impedance_shock_offset_ohms: 3.0,
+            impedance_shock_recovery_ms: 1_500.0,
         }
     }
 }
@@ -166,6 +183,11 @@ pub enum Fault {
     BatteryDepleted,
     /// The output bridge does not fire when told to, and reports nothing.
     BridgeFailsToFire,
+    /// The pad-impedance channel used for compression sensing stops
+    /// delivering samples. Not in [`Fault::ALL`], so that the random
+    /// campaign's choices are the same as before compression sensing; it
+    /// has its own scenario and tests.
+    ImpedanceChannelLost,
 }
 
 impl Fault {
@@ -201,6 +223,7 @@ impl Fault {
             Fault::CancelStuck => "cancel control stuck down",
             Fault::BatteryDepleted => "battery suddenly depleted",
             Fault::BridgeFailsToFire => "output bridge fails to fire",
+            Fault::ImpedanceChannelLost => "compression-sensing (impedance) channel stops",
         }
     }
 
@@ -220,6 +243,7 @@ impl Fault {
             Fault::CancelStuck => "cancel-stuck",
             Fault::BatteryDepleted => "battery-depleted",
             Fault::BridgeFailsToFire => "bridge-fails",
+            Fault::ImpedanceChannelLost => "impedance-lost",
         }
     }
 }
@@ -342,6 +366,32 @@ pub struct Plant {
     pub compressing: bool,
     /// Compression artifact size, microvolts peak to peak.
     pub compression_uv: f64,
+    /// Compression rate, per minute. Default 110.
+    pub compression_per_min: f64,
+    /// Change in pad impedance from one compression, ohms peak to peak.
+    /// Default 1.5 Ω: the median of 1.1 to 1.7 Ω reported for out-of-hospital
+    /// compressions through pads (Alonso et al., CinC 2013;40:803); the
+    /// Paris recordings have a median of about 2.6 Ω.
+    pub compression_ohms: f64,
+    /// Someone is giving breaths (bag and mask) every 6 s.
+    pub ventilating: bool,
+    /// Change in pad impedance from one breath, ohms. Default 0.8 Ω. Model
+    /// choice (no verified figure; breaths are of the same order as
+    /// compressions but go in over about 1 s).
+    pub ventilation_ohms: f64,
+    /// Change in pad impedance from each heartbeat while the heart is
+    /// beating (normal rhythm), ohms. Default 0.05 Ω: the cardiac component
+    /// "rarely exceeding 100 mΩ" (Urteaga et al., Entropy 2021;23:847).
+    pub cardiac_ohms: f64,
+    /// Someone is pressing on the chest (a touch, not compressions) until
+    /// this time, if set.
+    pub touch_until_ms: Option<u32>,
+    /// Change in pad impedance from such a touch, ohms. Default 1.0 Ω (a
+    /// firm press; a light touch changes too little to see). Model choice.
+    pub touch_ohms: f64,
+    /// Ground truth: since when a responder's hands have been on the chest
+    /// (compressing or touching), `None` while they are off.
+    pub hands_on_since: Option<u32>,
     /// Faults switched on so far.
     pub faults: Vec<Fault>,
     /// Every prompt the main controller gave, with the time.
@@ -371,8 +421,12 @@ pub struct Plant {
     pub after_shock: Vec<Option<Rhythm>>,
     synth: Synth,
     rng: Xorshift32,
+    imp_rng: Xorshift32,
     blank_until_ms: u32,
     compression_phase: f64,
+    cardiac_phase: f64,
+    touch_started_ms: u32,
+    last_shock_ms: Option<u32>,
     events: Vec<PlantEvent>,
     bridge_fail_reported: bool,
 }
@@ -402,6 +456,14 @@ impl Plant {
             supervisor_alarm: false,
             compressing: false,
             compression_uv: 1_500.0,
+            compression_per_min: 110.0,
+            compression_ohms: 1.5,
+            ventilating: false,
+            ventilation_ohms: 0.8,
+            cardiac_ohms: 0.05,
+            touch_until_ms: None,
+            touch_ohms: 1.0,
+            hands_on_since: None,
             faults: Vec::new(),
             prompts: Vec::new(),
             metronome_beats: 0,
@@ -416,8 +478,12 @@ impl Plant {
             after_shock: Vec::new(),
             synth,
             rng: Xorshift32::new(seed ^ 0x5eed_1234),
+            imp_rng: Xorshift32::new(seed ^ 0x1a2b_3c4d),
             blank_until_ms: 0,
             compression_phase: 0.0,
+            cardiac_phase: 0.0,
+            touch_started_ms: 0,
+            last_shock_ms: None,
             events: Vec::new(),
             bridge_fail_reported: false,
         }
@@ -491,7 +557,8 @@ impl Plant {
             | Fault::DischargeStuck
             | Fault::MainFreeze
             | Fault::LinkDrop
-            | Fault::BridgeFailsToFire => {}
+            | Fault::BridgeFailsToFire
+            | Fault::ImpedanceChannelLost => {}
         }
     }
 
@@ -674,6 +741,7 @@ impl Plant {
         self.blank_until_ms = self
             .now_ms
             .saturating_add(self.config.post_shock_blanking_ms);
+        self.last_shock_ms = Some(self.now_ms);
         // Only a shock that reached the patient can change the rhythm.
         if result.is_some() {
             let index = self.shocks.iter().filter(|s| s.result.is_some()).count();
@@ -702,7 +770,7 @@ impl Plant {
         if self.compressing {
             // A rounded compression artifact at about 110 per minute, with a
             // little harmonic content and rate wobble.
-            let hz = 110.0 / 60.0 * (1.0 + 0.03 * f64::from(self.rng.next_unit() - 0.5));
+            let hz = self.compression_per_min / 60.0 * (1.0 + 0.03 * f64::from(self.rng.next_unit() - 0.5));
             self.compression_phase += std::f64::consts::TAU * hz / 250.0;
             let p = self.compression_phase;
             v += self.compression_uv * 0.5 * (p.sin() + 0.25 * (2.0 * p).sin());
@@ -710,5 +778,107 @@ impl Plant {
         // Clamped into the i16 range.
         v.round()
             .clamp(f64::from(EcgSample::MIN), f64::from(EcgSample::MAX)) as EcgSample
+    }
+
+    /// True while hands are on the chest (ground truth).
+    #[must_use]
+    pub fn hands_on(&self) -> bool {
+        self.compressing || self.touch_until_ms.is_some_and(|t| self.now_ms < t)
+    }
+
+    /// Start or stop compressions, keeping the ground truth up to date.
+    pub fn set_compressing(&mut self, on: bool) {
+        self.compressing = on;
+        self.update_hands_on();
+    }
+
+    /// Press on the chest (a touch, not a compression) for `ms`.
+    pub fn touch(&mut self, ms: u32) {
+        self.touch_started_ms = self.now_ms;
+        self.touch_until_ms = Some(self.now_ms.saturating_add(ms));
+        self.update_hands_on();
+    }
+
+    /// Keep [`Plant::hands_on_since`] in step with the truth (call after
+    /// anything that changes it, and every step for touches that end).
+    pub fn update_hands_on(&mut self) {
+        match (self.hands_on(), self.hands_on_since) {
+            (true, None) => self.hands_on_since = Some(self.now_ms),
+            (false, Some(_)) => self.hands_on_since = None,
+            _ => {}
+        }
+    }
+
+    /// The next pad-impedance sample for compression sensing (call 125 times
+    /// a second), or `None` if the channel has failed (no sample at all).
+    ///
+    /// The model: the patient's pad resistance, plus each compression (a
+    /// rounded push over 40 % of the cycle and release over 60 %, in step
+    /// with the compression artifact in the heart signal), each breath
+    /// (1 s in, 2 s out, every 6 s), each heartbeat of a beating heart (a
+    /// short bump), a touch (a press held, with 0.15 s ramps), and noise,
+    /// in 1 mΩ steps. Pads off read as an open circuit (out of range).
+    /// After a shock the front end is saturated briefly, then reads high
+    /// and recovers. SIMULATION ONLY: shapes are cartoons.
+    pub fn impedance_sample(&mut self) -> Option<ImpedanceSample> {
+        if self.has_fault(Fault::ImpedanceChannelLost) {
+            return None;
+        }
+        let noise = self.config.impedance_noise_ohms * f64::from(self.imp_rng.next_gaussian());
+        let Some(base) = self.pad_ohms else {
+            let open = f64::from(self.config.open_circuit_reading) * 1000.0;
+            return Some(ImpedanceSample::Milliohms(open.clamp(0.0, f64::from(u32::MAX)) as u32));
+        };
+        let t = f64::from(self.now_ms) / 1000.0;
+        let mut z = base + noise;
+        if let Some(shock) = self.last_shock_ms {
+            let since = self.now_ms.saturating_sub(shock);
+            if since < self.config.impedance_shock_saturation_ms {
+                return Some(ImpedanceSample::Saturated);
+            }
+            let after = f64::from(since - self.config.impedance_shock_saturation_ms);
+            z += self.config.impedance_shock_offset_ohms
+                * (-after / self.config.impedance_shock_recovery_ms).exp();
+        }
+        if self.compressing {
+            let p = (self.compression_phase / std::f64::consts::TAU).rem_euclid(1.0);
+            let shape = if p < 0.4 {
+                0.5 * (1.0 - (std::f64::consts::PI * p / 0.4).cos())
+            } else {
+                0.5 * (1.0 + (std::f64::consts::PI * (p - 0.4) / 0.6).cos())
+            };
+            z += self.compression_ohms * shape;
+        }
+        if self.ventilating {
+            let p = t.rem_euclid(6.0);
+            let shape = if p < 1.0 {
+                0.5 * (1.0 - (std::f64::consts::PI * p).cos())
+            } else if p < 3.0 {
+                0.5 * (1.0 + (std::f64::consts::PI * (p - 1.0) / 2.0).cos())
+            } else {
+                0.0
+            };
+            z += self.ventilation_ohms * shape;
+        }
+        if let Rhythm::Sinus { bpm, .. } = self.rhythm {
+            self.cardiac_phase = (self.cardiac_phase + f64::from(bpm) / 60.0 / 125.0).fract();
+            if self.cardiac_phase < 0.35 {
+                z -= self.cardiac_ohms
+                    * 0.5
+                    * (1.0 - (std::f64::consts::TAU * self.cardiac_phase / 0.35).cos());
+            }
+        }
+        if let Some(until) = self.touch_until_ms {
+            let ramp = 150.0;
+            let rise = (f64::from(self.now_ms.saturating_sub(self.touch_started_ms)) / ramp).min(1.0);
+            let fall = if self.now_ms < until {
+                1.0
+            } else {
+                (1.0 - f64::from(self.now_ms - until) / ramp).max(0.0)
+            };
+            z += self.touch_ohms * rise.min(fall);
+        }
+        let mohm = (z * 1000.0).round().clamp(0.0, f64::from(u32::MAX));
+        Some(ImpedanceSample::Milliohms(mohm as u32))
     }
 }

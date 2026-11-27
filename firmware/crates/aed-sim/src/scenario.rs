@@ -40,6 +40,10 @@ pub enum Action {
     PressCancel(u32),
     /// Move the adult/child switch.
     SetMode(PatientMode),
+    /// Someone presses on the chest (a touch, not compressions) for this many ms.
+    Touch(u32),
+    /// Someone starts (`true`) or stops giving breaths every 6 s.
+    Ventilate(bool),
 }
 
 /// How the person doing the rescue behaves.
@@ -64,6 +68,11 @@ pub struct Responder {
     /// reaction time) and the pad resistance becomes this, ohms. `None`
     /// (the default): pressing makes no difference.
     pub pressing_pads_brings_ohms_to: Option<f64>,
+    /// Compression rate, per minute. Default 110.
+    pub compression_per_min: f64,
+    /// Change in pad impedance from each compression, ohms peak to peak.
+    /// Default 1.5 Ω (see `Plant::compression_ohms`).
+    pub compression_ohms: f64,
 }
 
 impl Default for Responder {
@@ -75,6 +84,8 @@ impl Default for Responder {
             reattach_after_ms: None,
             keeps_compressing: false,
             pressing_pads_brings_ohms_to: None,
+            compression_per_min: 110.0,
+            compression_ohms: 1.5,
         }
     }
 }
@@ -121,6 +132,13 @@ pub struct Scenario {
     pub seed: u32,
     /// What the test checks about this scenario.
     pub expect: Expect,
+    /// The firmware uses compression sensing (aed-core
+    /// `Config::chest_sensing`). Default true; false gives the earlier,
+    /// heart-signal-only behaviour for comparison.
+    pub chest_sensing: bool,
+    /// Change in pad impedance from each heartbeat of a beating heart,
+    /// ohms (see `Plant::cardiac_ohms`). Default 0.05 Ω.
+    pub cardiac_ohms: f64,
 }
 
 /// The safety outcome a scenario must show.
@@ -164,6 +182,8 @@ impl Scenario {
             duration_ms: 170_000,
             seed: 1,
             expect: Expect::Shocks(1),
+            chest_sensing: true,
+            cardiac_ohms: 0.05,
         }
     }
 
@@ -375,8 +395,85 @@ pub fn catalogue() -> Vec<Scenario> {
             s.plant.supervisor_voltage_sensor.gain = 0.99;
             s.plant.supervisor_voltage_sensor.offset = -7.0;
         }),
+        Scenario::base(
+            "f12-compressions-150-over-flatline",
+            "Flatline; the responder never stops compressing, at 150/min (finding F-12): never shocked.",
+        )
+        .with(|s| {
+            s.rhythm = Rhythm::Asystole;
+            s.after_shock = Vec::new();
+            s.responder.keeps_compressing = true;
+            s.responder.compression_per_min = 150.0;
+            s.expect = Expect::NeverCountsDown;
+        }),
+        Scenario::base(
+            "f12-compressions-150-over-normal-rhythm",
+            "Normal rhythm; the responder never stops compressing, at 150/min: never shocked.",
+        )
+        .with(|s| {
+            s.rhythm = Rhythm::sinus(75.0);
+            s.after_shock = Vec::new();
+            s.responder.keeps_compressing = true;
+            s.responder.compression_per_min = 150.0;
+            s.expect = Expect::NeverCountsDown;
+        }),
+        Scenario::base(
+            "stops-very-late",
+            "Adult VF; the responder takes 3.5 s to stop compressions when told: the analysis waits for hands off and the shock still comes.",
+        )
+        .with(|s| {
+            s.responder.reaction_ms = 3_500;
+        }),
+        Scenario::base(
+            "touch-during-countdown",
+            "Adult VF; someone presses on the chest for 0.8 s, 1.5 s into the countdown: shock held back, analysed again, then given.",
+        )
+        .with(|s| {
+            s.script.push((after(Countdown, 1_500), Action::Touch(800)));
+        }),
+        Scenario::base(
+            "ventilations-during-analysis",
+            "Adult VF; breaths every 6 s (no compressions) from the start of the first analysis: the analysis is not blocked.",
+        )
+        .with(|s| {
+            s.script.push((after(AnalysingCharging, 0), Action::Ventilate(true)));
+        }),
+        Scenario::base(
+            "strong-pulse",
+            "Normal rhythm 75/min with a strong heartbeat in the pad impedance (0.1 ohm): not read as compressions, never charged for a shock.",
+        )
+        .with(|s| {
+            s.rhythm = Rhythm::sinus(75.0);
+            s.after_shock = Vec::new();
+            s.cardiac_ohms = 0.1;
+            s.expect = Expect::NeverCountsDown;
+        }),
+        Scenario::base(
+            "fast-rhythm-with-pulse",
+            "Fast normal rhythm 160/min with a 0.1 ohm heartbeat in the pad impedance: not read as compressions.",
+        )
+        .with(|s| {
+            s.rhythm = Rhythm::sinus(160.0);
+            s.after_shock = Vec::new();
+            s.cardiac_ohms = 0.1;
+            s.expect = Expect::InvariantsOnly;
+        }),
+        Scenario::base(
+            "small-compressions",
+            "Adult VF; compressions change the impedance by only 0.2 ohm (seen in some real patients): below the detector's threshold.",
+        )
+        .with(|s| {
+            s.responder.compression_ohms = 0.2;
+            s.expect = Expect::InvariantsOnly;
+        }),
     ];
 
+    v.push(fault_scenario(
+        Fault::ImpedanceChannelLost,
+        Trigger::At(0),
+        Expect::Shocks(1),
+        "from switch-on; the device carries on from the heart signal alone",
+    ));
     v.push(fault_scenario(
         Fault::MainVoltageSensorWrong,
         after(AnalysingCharging, 3_000),

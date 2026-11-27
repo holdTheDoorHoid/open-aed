@@ -43,9 +43,38 @@ fn random_rhythm(rng: &mut Xorshift32) -> Rhythm {
     }
 }
 
-/// One random scenario for `seed`.
+/// What a campaign varies beyond the original random scenarios.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CampaignOptions {
+    /// The firmware uses compression sensing (D-36). Default true.
+    pub chest_sensing: bool,
+    /// Add the compression-sensing variations: compression rate (90 to
+    /// 160 per minute) and size (0.2 to 4 Ω), heartbeat size in the
+    /// impedance, and in some runs a touch during the countdown, breaths
+    /// during the analysis, or a responder who never stops compressing.
+    /// They are drawn AFTER every original choice, so with this off the
+    /// scenarios are exactly the original ones. Default false.
+    pub extended: bool,
+}
+
+impl Default for CampaignOptions {
+    fn default() -> Self {
+        CampaignOptions {
+            chest_sensing: true,
+            extended: false,
+        }
+    }
+}
+
+/// One random scenario for `seed` (the original variations only).
 #[must_use]
 pub fn random_scenario(seed: u32) -> Scenario {
+    random_scenario_with(seed, CampaignOptions::default())
+}
+
+/// One random scenario for `seed`, with the given options.
+#[must_use]
+pub fn random_scenario_with(seed: u32, options: CampaignOptions) -> Scenario {
     let mut rng = Xorshift32::new(seed.wrapping_mul(2_654_435_761).wrapping_add(7));
     let mut s = Scenario::base(&format!("random-{seed}"), "randomised");
     s.seed = seed;
@@ -119,6 +148,34 @@ pub fn random_scenario(seed: u32) -> Scenario {
     }
     s.duration_ms = range(&mut rng, 60_000, 160_000);
     s.expect = Expect::InvariantsOnly;
+    s.chest_sensing = options.chest_sensing;
+    if options.extended {
+        s.responder.compression_per_min = f64::from(range(&mut rng, 90, 161));
+        // Log-uniform from 0.2 to 4 ohms (some real patients are below the
+        // detector's 0.3 ohm threshold).
+        s.responder.compression_ohms = 0.2 * 20f64.powf(f64::from(rng.next_unit()));
+        s.cardiac_ohms = 0.02 + 0.13 * f64::from(rng.next_unit());
+        match range(&mut rng, 0, 20) {
+            0 | 1 => s.script.push((
+                Trigger::AfterState {
+                    state: RescueState::Countdown,
+                    nth: 1,
+                    after_ms: range(&mut rng, 0, 3_000),
+                },
+                Action::Touch(range(&mut rng, 300, 1_500)),
+            )),
+            2 | 3 => s.script.push((
+                Trigger::AfterState {
+                    state: RescueState::AnalysingCharging,
+                    nth: 1,
+                    after_ms: 0,
+                },
+                Action::Ventilate(true),
+            )),
+            4 => s.responder.keeps_compressing = true,
+            _ => {}
+        }
+    }
     s
 }
 
@@ -166,6 +223,12 @@ pub struct CampaignSummary {
     pub dump_energy_j: f64,
     /// The most energy burned off in any one run, joules (model), and its seed.
     pub max_dump_energy_j: (f64, u32),
+    /// Shocks fired while hands were on the chest: (seed, how long they had been on, ms).
+    pub hands_on_fires: Vec<(u32, u32)>,
+    /// Compressions the firmware counted, all runs.
+    pub compressions_counted: u64,
+    /// Shocks held back because the chest was not still, all runs.
+    pub hands_on_aborts: u64,
     /// Simulated time over all runs, ms.
     pub simulated_ms: u64,
 }
@@ -189,6 +252,11 @@ fn tally(sum: &mut CampaignSummary, seed: u32, r: &RunResult) {
         sum.max_dump_energy_j = (r.dump_energy_j, seed);
     }
     sum.simulated_ms += u64::from(r.scenario.duration_ms);
+    for &ms in &r.hands_on_at_fire {
+        sum.hands_on_fires.push((seed, ms));
+    }
+    sum.compressions_counted += u64::from(r.compressions_counted);
+    sum.hands_on_aborts += u64::from(r.hands_on_aborts);
     if !r.shocks.is_empty() {
         sum.runs_with_shock += 1;
     }
@@ -259,6 +327,12 @@ fn tally(sum: &mut CampaignSummary, seed: u32, r: &RunResult) {
 /// cores: every run is seeded on its own and results are tallied in seed order.
 #[must_use]
 pub fn run_campaign(n: u32, first_seed: u32) -> CampaignSummary {
+    run_campaign_with(n, first_seed, CampaignOptions::default())
+}
+
+/// Run a campaign with the given options.
+#[must_use]
+pub fn run_campaign_with(n: u32, first_seed: u32, options: CampaignOptions) -> CampaignSummary {
     let seeds: Vec<u32> = (0..n).map(|i| first_seed.wrapping_add(i)).collect();
     let workers = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let chunk = seeds.len().div_ceil(workers).max(1);
@@ -270,7 +344,8 @@ pub fn run_campaign(n: u32, first_seed: u32) -> CampaignSummary {
                 scope.spawn(move || {
                     part.iter()
                         .map(|&seed| {
-                            let r = run(&random_scenario(seed)).map_err(|e| format!("{e:?}"));
+                            let r = run(&random_scenario_with(seed, options))
+                                .map_err(|e| format!("{e:?}"));
                             (seed, r)
                         })
                         .collect::<Vec<_>>()
@@ -323,6 +398,24 @@ pub fn campaign_text(s: &CampaignSummary) -> String {
         s.max_dump_energy_j.0,
         s.max_dump_energy_j.1
     );
+    let _ = writeln!(
+        out,
+        "  Compression sensing: {} compressions counted; {} shocks held back because the chest was not still",
+        s.compressions_counted, s.hands_on_aborts
+    );
+    let mut exposures: Vec<u32> = s.hands_on_fires.iter().map(|&(_, ms)| ms).collect();
+    exposures.sort_unstable();
+    let _ = writeln!(
+        out,
+        "  Shocks fired while hands were on the chest (ground truth): {}{}",
+        exposures.len(),
+        exposures
+            .last()
+            .map_or(String::new(), |m| format!(", hands on for at most {m} ms before the shock"))
+    );
+    for (seed, ms) in s.hands_on_fires.iter().take(20) {
+        let _ = writeln!(out, "    seed {seed}: hands on for {ms} ms");
+    }
     let _ = writeln!(out, "  Final states:");
     for (k, v) in &s.final_states {
         let _ = writeln!(out, "    {k:<12} {v}");

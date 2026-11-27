@@ -16,8 +16,9 @@ use crate::rescue::{Rescue, RescueState};
 use crate::supervisor::Supervisor;
 use crate::Config;
 use aed_types::{
-    EcgSample, Micros, Millis, Ohms, PatientMode, PlanError, RhythmAnalyzer, RhythmDecision,
-    ShockPlan, ShockPlanner, Volts, MAX_PATIENT_OHMS, MIN_PATIENT_OHMS,
+    ChestEvent, ChestSensor, ChestState, EcgSample, ImpedanceSample, ImpedanceSignal, Micros,
+    Millis, Ohms, PatientMode, PlanError, RhythmAnalyzer, RhythmDecision, ShockPlan, ShockPlanner,
+    Volts, MAX_PATIENT_OHMS, MIN_PATIENT_OHMS,
 };
 use std::cell::Cell;
 use std::format;
@@ -70,6 +71,112 @@ impl RhythmAnalyzer for FakeAnalyzer {
     fn reset(&mut self) {
         self.count = 0;
         self.last_emitted.set(None);
+        self.resets.set(self.resets.get() + 1);
+    }
+}
+
+// ----- fake compression sensing ----------------------------------------------------
+
+/// What the simulated pad-impedance channel carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoardChest {
+    /// Still chest.
+    HandsOff,
+    /// Compressions (one compression event every 545 ms).
+    Compressing,
+    /// Movement the sensor cannot classify.
+    Unknown,
+    /// Front end saturated (channel problem).
+    Saturated,
+    /// Reading out of range (channel problem).
+    OutOfRange,
+}
+
+/// Impedance samples that carry the chest state the fake sensor will report.
+pub fn impedance_for(c: BoardChest) -> ImpedanceSample {
+    match c {
+        BoardChest::HandsOff => ImpedanceSample::Milliohms(80_000),
+        BoardChest::Compressing => ImpedanceSample::Milliohms(81_000),
+        BoardChest::Unknown => ImpedanceSample::Milliohms(82_000),
+        BoardChest::OutOfRange => ImpedanceSample::Milliohms(300_000),
+        BoardChest::Saturated => ImpedanceSample::Saturated,
+    }
+}
+
+/// Reports whatever chest state the latest sample carries. Counts a
+/// compression every 68 samples (545 ms) while compressing.
+pub struct FakeChest {
+    pub fitted: bool,
+    state: ChestState,
+    signal: ImpedanceSignal,
+    samples_compressing: u32,
+    samples_since_compression: u32,
+    pub resets: Rc<Cell<u32>>,
+}
+
+impl FakeChest {
+    pub fn new(fitted: bool) -> Self {
+        FakeChest {
+            fitted,
+            state: ChestState::Unknown,
+            signal: ImpedanceSignal::Missing,
+            samples_compressing: 0,
+            samples_since_compression: 0,
+            resets: Rc::new(Cell::new(0)),
+        }
+    }
+}
+
+impl ChestSensor for FakeChest {
+    fn fitted(&self) -> bool {
+        self.fitted
+    }
+    fn push(&mut self, sample: ImpedanceSample) -> Option<ChestEvent> {
+        let (state, signal) = match sample {
+            ImpedanceSample::Saturated => (ChestState::Unknown, ImpedanceSignal::Saturated),
+            ImpedanceSample::Milliohms(80_000) => (ChestState::HandsOff, ImpedanceSignal::Good),
+            ImpedanceSample::Milliohms(81_000) => (ChestState::Compressing, ImpedanceSignal::Good),
+            ImpedanceSample::Milliohms(300_000) => (ChestState::Unknown, ImpedanceSignal::OutOfRange),
+            ImpedanceSample::Milliohms(_) => (ChestState::Unknown, ImpedanceSignal::Good),
+        };
+        self.state = state;
+        self.signal = signal;
+        self.samples_since_compression = self.samples_since_compression.saturating_add(1);
+        if state == ChestState::Compressing {
+            self.samples_compressing += 1;
+            if self.samples_compressing.is_multiple_of(68) {
+                let since = self.samples_since_compression * 8;
+                self.samples_since_compression = 0;
+                return Some(ChestEvent::Compression {
+                    amplitude_mohm: 1_000,
+                    since_previous_ms: since,
+                });
+            }
+        } else {
+            self.samples_compressing = 0;
+        }
+        None
+    }
+    fn state(&self) -> ChestState {
+        self.state
+    }
+    fn signal(&self) -> ImpedanceSignal {
+        self.signal
+    }
+    fn rate_per_min(&self) -> Option<u16> {
+        (self.state == ChestState::Compressing).then_some(110)
+    }
+    fn ms_since_compression(&self) -> u32 {
+        self.samples_since_compression * 8
+    }
+    fn time_on_chest_permille(&self) -> u16 {
+        0
+    }
+    fn reset(&mut self) {
+        self.state = ChestState::Unknown;
+        self.signal = ImpedanceSignal::Missing;
+        self.samples_compressing = 0;
+        self.samples_since_compression = 0;
         self.resets.set(self.resets.get() + 1);
     }
 }
@@ -192,6 +299,18 @@ pub struct Board {
     pub rhythm: RhythmDecision,
     /// The fake analyser's latest emitted decision (shared with it).
     pub last_decision: Rc<Cell<Option<RhythmDecision>>>,
+    /// What the pad-impedance channel carries (compression sensing).
+    pub chest: BoardChest,
+    /// The impedance channel delivers samples.
+    pub impedance_up: bool,
+    /// Compression sensing is fitted and switched on (for the invariant
+    /// "no shock request unless the chest is still").
+    pub chest_sensing: bool,
+    /// When `chest` last changed (set through [`Board::set_chest`]).
+    pub chest_since: u32,
+    /// The main controller was using compression sensing as of its last
+    /// tick (it stops after a channel failure, by design).
+    pub chest_in_use: bool,
 }
 
 impl Board {
@@ -234,6 +353,19 @@ impl Board {
             violations: Vec::new(),
             rhythm: RhythmDecision::Shockable,
             last_decision,
+            chest: BoardChest::HandsOff,
+            impedance_up: true,
+            chest_sensing: false,
+            chest_since: 0,
+            chest_in_use: false,
+        }
+    }
+
+    /// Change what the chest channel carries, remembering when.
+    pub fn set_chest(&mut self, c: BoardChest) {
+        if c != self.chest {
+            self.chest = c;
+            self.chest_since = self.now;
         }
     }
 
@@ -344,6 +476,20 @@ impl MainHardware for MainView<'_> {
             b.violations
                 .push(format!("t={} shock requested while cancel pressed", b.now));
         }
+        // One impedance sample (8 ms) and one tick (2 ms) may pass before
+        // the main controller can know of a change.
+        let known = b.now.saturating_sub(b.chest_since) > 10;
+        if b.chest_sensing
+            && b.chest_in_use
+            && b.impedance_up
+            && known
+            && b.chest != BoardChest::HandsOff
+        {
+            b.violations.push(format!(
+                "t={} shock requested while the chest channel carried {:?}",
+                b.now, b.chest
+            ));
+        }
         if b.request.is_some() {
             b.violations.push(format!(
                 "t={} shock requested twice without withdrawal",
@@ -435,7 +581,7 @@ impl SupervisorHardware for SupView<'_> {
 
 // ----- the bench: board + both controllers --------------------------------------
 
-pub type TestRescue = Rescue<FakeAnalyzer, FakePlanner>;
+pub type TestRescue = Rescue<FakeAnalyzer, FakePlanner, FakeChest>;
 
 pub struct Bench {
     pub board: Board,
@@ -460,6 +606,18 @@ impl Bench {
 
     /// `every`: how many samples between fake analyser decisions (250 = one per second).
     pub fn with_all(config: Config, planner: FakePlanner, every: u32) -> Self {
+        Self::build(config, planner, every, false)
+    }
+
+    /// A bench whose device has compression sensing fitted (D-36). The
+    /// chest channel starts "hands off".
+    pub fn with_chest(config: Config) -> Self {
+        let mut b = Self::build(config, FakePlanner::default(), 250, true);
+        b.board.chest_sensing = config.chest_sensing;
+        b
+    }
+
+    fn build(config: Config, planner: FakePlanner, every: u32, chest_fitted: bool) -> Self {
         let last = Rc::new(Cell::new(None));
         let resets = Rc::new(Cell::new(0));
         let analyzer = FakeAnalyzer {
@@ -468,7 +626,8 @@ impl Bench {
             last_emitted: last.clone(),
             resets: resets.clone(),
         };
-        let rescue = Rescue::new(config, analyzer, planner).expect("valid config");
+        let rescue = Rescue::with_chest_sensor(config, analyzer, planner, FakeChest::new(chest_fitted))
+            .expect("valid config");
         let sup = Supervisor::new(config).expect("valid config");
         Bench {
             board: Board::new(last),
@@ -496,6 +655,15 @@ impl Bench {
                 self.rescue
                     .on_ecg_sample(sample_for(self.board.rhythm), Millis(now));
             }
+            // 125 impedance samples per second: one every 8 ms.
+            if self.board.impedance_up {
+                let due = now / 8 - before / 8;
+                for _ in 0..due {
+                    self.rescue
+                        .on_impedance_sample(impedance_for(self.board.chest), Millis(now));
+                }
+            }
+            self.board.chest_in_use = self.rescue.chest_sensing_active();
             self.rescue.tick(&mut MainView(&mut self.board));
         }
         if self.sup_alive {

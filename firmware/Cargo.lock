@@ -46,6 +46,7 @@ name = "aed-sim"
 version = "0.1.0"
 dependencies = [
  "aed-core",
+ "aed-cpr",
  "aed-rhythm",
  "aed-types",
  "aed-waveform",

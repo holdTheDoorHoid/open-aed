@@ -71,16 +71,42 @@
 //!   tells the responder to continue CPR. If the capacitor cannot be
 //!   confirmed empty, that is its own, more serious fault.
 //! * Every state except AttachPads and Fault has a time limit.
+//!
+//! **Compression sensing** (decision D-36, [`Config::chest_sensing`]): when a
+//! [`ChestSensor`] is fitted and switched on,
+//!
+//! * the rhythm analysis is fed only while the chest is still (`HandsOff`).
+//!   The moment it is not (`Compressing`, or `Unknown`: cannot tell), the
+//!   analysis is reset and fed nothing until hands are off again, so every
+//!   decision comes from a window of still-chest signal (apart from at most
+//!   the sensor's onset latency, about 0.3 s typically). "Not sure" is still
+//!   not final, but the "Do not touch the patient" reminder now follows the
+//!   chest state, not the "not sure" answers. The analysis time limit is
+//!   unchanged: still nothing clear by then is "inconclusive", CPR.
+//! * once a shock is advised (charging, counting down, delivering), a chest
+//!   that is not still holds the shock back at once: "Movement detected.
+//!   Shock delayed.", the charge is emptied and the rhythm analysed again
+//!   from the start, at most [`Config::hands_on_reanalyses`] times per cycle;
+//!   after that "Movement detected. No shock." and CPR.
+//! * a channel that stays missing, saturated, out of range or stuck (with
+//!   the pads on) for [`Config::chest_channel_fail_ms`] is recorded as failed
+//!   and the device carries on from the heart signal alone until it recovers.
+//! * during CPR, compressions, pauses and time on chest are recorded, and
+//!   "Continue CPR." is said after [`Config::no_compression_prompt_ms`]
+//!   without compressions.
 
 use crate::config::{Config, ConfigError};
-use crate::events::{Event, EventRecord, EVENT_CAPACITY};
+use crate::events::{
+    CompressionEntry, CompressionLog, Event, EventRecord, COMPRESSION_LOG_CAPACITY, EVENT_CAPACITY,
+};
 use crate::hal::{BatteryStatus, MainHardware, ShockStatus};
 use crate::link::{MainStatus, SupervisorFault, SupervisorReport};
 use crate::prompts::Prompt;
 use crate::selftest::{LinkSnapshot, SelfTest, SelfTestFailure, SelfTestProgress};
 use aed_types::{
-    pads_sensed, EcgSample, Millis, PatientMode, PlanError, RhythmAnalyzer, RhythmDecision,
-    ShockPlan, ShockPlanner, Volts, MAX_PATIENT_OHMS,
+    pads_sensed, ChestEvent, ChestSensor, ChestState, EcgSample, ImpedanceSample, ImpedanceSignal,
+    Millis, NoChestSensor, PatientMode, PlanError, RhythmAnalyzer, RhythmDecision, ShockPlan,
+    ShockPlanner, Volts, MAX_PATIENT_OHMS,
 };
 
 /// The states of the rescue sequence (ARCHITECTURE.md diagram).
@@ -152,6 +178,9 @@ pub enum AbortReason {
     PlanRefused(PlanError),
     /// No recent enough `Shockable` decision at the moment of delivery.
     ConfirmationStale,
+    /// Compression sensing (D-36) said the chest was being compressed, or
+    /// could not tell, after the shock was advised.
+    HandsOnChest,
 }
 
 /// What happened to a requested shock.
@@ -227,6 +256,28 @@ pub struct Counters {
     pub cpr_periods: u16,
     /// Metronome beats given.
     pub metronome_beats: u32,
+    /// Compressions detected by compression sensing (all states).
+    pub compressions: u32,
+    /// Pauses in compressions during CPR of at least
+    /// [`Config::pause_record_ms`].
+    pub cpr_pauses: u16,
+    /// Times an analysis was reset because the chest stopped being still.
+    pub analyses_held: u16,
+    /// Shocks held back because the chest was not still after the shock
+    /// was advised.
+    pub hands_on_aborts: u16,
+    /// "Continue CPR." prompts for lack of compressions.
+    pub continue_cpr_prompts: u16,
+}
+
+/// What compression sensing measured during the current CPR period.
+#[derive(Debug, Clone, Copy, Default)]
+struct CprPeriod {
+    compressions: u16,
+    interval_sum_ms: u32,
+    intervals: u16,
+    on_chest_ms: u32,
+    longest_pause_ms: u32,
 }
 
 /// Debounced on/off condition (pad contact, poor pad contact).
@@ -278,13 +329,25 @@ enum ArmedExit {
 
 /// The main controller's rescue sequence.
 ///
-/// Non-blocking: call [`Rescue::tick`] frequently (every few milliseconds) and
-/// [`Rescue::on_ecg_sample`] for every heart-signal sample.
+/// Non-blocking: call [`Rescue::tick`] frequently (every few milliseconds),
+/// [`Rescue::on_ecg_sample`] for every heart-signal sample and, if the device
+/// senses compressions, [`Rescue::on_impedance_sample`] for every
+/// pad-impedance sample.
 #[derive(Debug)]
-pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner> {
+pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor = NoChestSensor> {
     config: Config,
     analyzer: A,
     planner: P,
+    chest: C,
+    chest_last_sample: Option<Millis>,
+    chest_seen: Option<ChestState>,
+    chest_failed: bool,
+    chest_problem_since: Option<Millis>,
+    chest_good_since: Option<Millis>,
+    hands_on_reanalyses_used: u8,
+    continue_cpr_said_at: Option<Millis>,
+    cpr_period: CprPeriod,
+    compression_log: CompressionLog<COMPRESSION_LOG_CAPACITY>,
     started: bool,
     powered_on_at: Millis,
     state: RescueState,
@@ -293,6 +356,7 @@ pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner> {
     self_test: SelfTest,
     self_test_result: Option<Result<(), SelfTestFailure>>,
     pads: Debounced,
+    pads_raw_on: bool,
     poor_contact: Debounced,
     cancel_was_pressed: bool,
     cancel_since: Option<Millis>,
@@ -325,17 +389,44 @@ pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner> {
     events: EventRecord<EVENT_CAPACITY>,
 }
 
-impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
-    /// A new rescue sequence, before switch-on. The first `tick` starts the self-test.
+impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P, NoChestSensor> {
+    /// A new rescue sequence without compression sensing, before switch-on.
+    /// The first `tick` starts the self-test.
     ///
     /// # Errors
     /// Refuses a configuration whose numbers contradict each other.
     pub fn new(config: Config, analyzer: A, planner: P) -> Result<Self, ConfigError> {
+        Self::with_chest_sensor(config, analyzer, planner, NoChestSensor)
+    }
+}
+
+impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
+    /// A new rescue sequence with compression sensing (decision D-36),
+    /// before switch-on. The first `tick` starts the self-test.
+    ///
+    /// # Errors
+    /// Refuses a configuration whose numbers contradict each other.
+    pub fn with_chest_sensor(
+        config: Config,
+        analyzer: A,
+        planner: P,
+        chest: C,
+    ) -> Result<Self, ConfigError> {
         config.validate()?;
         Ok(Rescue {
             config,
             analyzer,
             planner,
+            chest,
+            chest_last_sample: None,
+            chest_seen: None,
+            chest_failed: false,
+            chest_problem_since: None,
+            chest_good_since: None,
+            hands_on_reanalyses_used: 0,
+            continue_cpr_said_at: None,
+            cpr_period: CprPeriod::default(),
+            compression_log: CompressionLog::new(),
             started: false,
             powered_on_at: Millis(0),
             state: RescueState::SelfTest,
@@ -344,6 +435,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             self_test: SelfTest::new(config, config.self_test_voltage),
             self_test_result: None,
             pads: Debounced::off(),
+            pads_raw_on: false,
             poor_contact: Debounced::off(),
             cancel_was_pressed: false,
             cancel_since: None,
@@ -456,9 +548,170 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         now.since(self.state_since)
     }
 
+    /// The compression sensor (for inspection by tests and the simulator).
+    #[must_use]
+    pub const fn chest_sensor(&self) -> &C {
+        &self.chest
+    }
+
+    /// The compression record (one entry per detected compression).
+    #[must_use]
+    pub const fn compression_log(&self) -> &CompressionLog<COMPRESSION_LOG_CAPACITY> {
+        &self.compression_log
+    }
+
+    /// True if compression sensing is fitted, switched on and has not failed:
+    /// the device is using it now.
+    #[must_use]
+    pub fn chest_sensing_active(&self) -> bool {
+        self.config.chest_sensing && self.chest.fitted() && !self.chest_failed
+    }
+
+    /// The chest state the device acts on at `now`: `None` when compression
+    /// sensing is not in use (heart signal only), `Unknown` if impedance
+    /// samples have stopped arriving.
+    #[must_use]
+    pub fn chest_state(&self, now: Millis) -> Option<ChestState> {
+        if !self.chest_sensing_active() {
+            return None;
+        }
+        Some(if self.chest_stale(now) {
+            ChestState::Unknown
+        } else {
+            self.chest.state()
+        })
+    }
+
+    fn chest_stale(&self, now: Millis) -> bool {
+        self.chest_last_sample
+            .is_none_or(|t| now.since(t) > self.config.impedance_stale_ms)
+    }
+
+    /// Whether the compression-sensing signal is usable at `now`.
+    #[must_use]
+    pub fn chest_signal(&self, now: Millis) -> ImpedanceSignal {
+        if self.chest_stale(now) {
+            ImpedanceSignal::Missing
+        } else {
+            self.chest.signal()
+        }
+    }
+
+    /// True while a shock decision may rely on the chest being still: the
+    /// heart signal is analysed only then. Always true without compression
+    /// sensing.
+    fn chest_still(&self, now: Millis) -> bool {
+        self.chest_state(now)
+            .is_none_or(|s| s == ChestState::HandsOff)
+    }
+
+    /// Feed one pad-impedance sample (compression sensing, D-36), at
+    /// [`aed_types::IMPEDANCE_SAMPLE_RATE_HZ`]. Ignored if the device has no
+    /// compression sensing or it is switched off.
+    pub fn on_impedance_sample(&mut self, sample: ImpedanceSample, now: Millis) {
+        if !(self.config.chest_sensing && self.chest.fitted()) {
+            return;
+        }
+        let event = self.chest.push(sample);
+        self.chest_last_sample = Some(now);
+        if let Some(ChestEvent::Compression {
+            amplitude_mohm,
+            since_previous_ms,
+        }) = event
+        {
+            self.on_compression(now, amplitude_mohm, since_previous_ms);
+        }
+        if self.state == RescueState::Cpr && self.chest.state() == ChestState::Compressing {
+            let ms = 1000 / aed_types::IMPEDANCE_SAMPLE_RATE_HZ;
+            self.cpr_period.on_chest_ms = self.cpr_period.on_chest_ms.saturating_add(ms);
+        }
+        self.refresh_chest(now);
+    }
+
+    fn on_compression(&mut self, now: Millis, amplitude_mohm: u32, since_previous_ms: u32) {
+        self.counters.compressions = self.counters.compressions.saturating_add(1);
+        self.compression_log.push(CompressionEntry {
+            at: now,
+            amplitude_mohm: u16::try_from(amplitude_mohm).unwrap_or(u16::MAX),
+        });
+        if self.state != RescueState::Cpr {
+            return;
+        }
+        let p = &mut self.cpr_period;
+        p.compressions = p.compressions.saturating_add(1);
+        if since_previous_ms == u32::MAX {
+            return;
+        }
+        let since_cpr_start = now.since(self.state_since);
+        // A pause counts from the later of the last compression and the
+        // start of this CPR period.
+        let pause = since_previous_ms.min(since_cpr_start);
+        if since_previous_ms <= 1_500 {
+            p.interval_sum_ms = p.interval_sum_ms.saturating_add(since_previous_ms);
+            p.intervals = p.intervals.saturating_add(1);
+        }
+        p.longest_pause_ms = p.longest_pause_ms.max(pause);
+        if pause >= self.config.pause_record_ms {
+            self.counters.cpr_pauses = self.counters.cpr_pauses.saturating_add(1);
+            self.events.push(now, Event::CprPause(pause));
+        }
+    }
+
+    /// React to a change in the chest state the device acts on.
+    fn refresh_chest(&mut self, now: Millis) {
+        let current = self.chest_state(now);
+        if current == self.chest_seen {
+            return;
+        }
+        let was_still = self.chest_seen.is_none_or(|s| s == ChestState::HandsOff);
+        self.chest_seen = current;
+        let still = current.is_none_or(|s| s == ChestState::HandsOff);
+        if was_still && !still && self.state.is_analysing() {
+            // Everything the analysis has seen may include the start of the
+            // movement: forget it, and feed nothing until hands are off.
+            self.analyzer.reset();
+            self.analysis_result = None;
+            self.last_decision = None;
+            self.counters.analyses_held = self.counters.analyses_held.saturating_add(1);
+            if let Some(s) = current {
+                self.events.push(now, Event::AnalysisHeld(s));
+            }
+        }
+    }
+
+    /// Watch for a failed compression-sensing channel, and for its recovery.
+    fn check_chest_channel(&mut self, now: Millis) {
+        if !(self.config.chest_sensing && self.chest.fitted()) {
+            return;
+        }
+        let signal = self.chest_signal(now);
+        let problem = self.pads.on && signal.is_channel_problem();
+        if problem {
+            self.chest_good_since = None;
+            let since = *self.chest_problem_since.get_or_insert(now);
+            if !self.chest_failed && now.since(since) >= self.config.chest_channel_fail_ms {
+                self.chest_failed = true;
+                self.events.push(now, Event::ChestSensingFailed(signal));
+            }
+        } else {
+            self.chest_problem_since = None;
+            if signal == ImpedanceSignal::Good {
+                let since = *self.chest_good_since.get_or_insert(now);
+                if self.chest_failed && now.since(since) >= self.config.chest_channel_recover_ms {
+                    self.chest_failed = false;
+                    self.events.push(now, Event::ChestSensingRestored);
+                }
+            } else {
+                self.chest_good_since = None;
+            }
+        }
+        self.refresh_chest(now);
+    }
+
     /// Feed one heart-signal sample. Samples are passed to the rhythm analysis
     /// only while analysing, charging, counting down or delivering; during CPR
-    /// the signal is full of compression movement and is not analysed.
+    /// the signal is full of compression movement and is not analysed. With
+    /// compression sensing they are passed on only while the chest is still.
     pub fn on_ecg_sample(&mut self, sample: EcgSample, now: Millis) {
         let analysing = self.state.is_analysing()
             || matches!(
@@ -466,6 +719,10 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                 RescueState::Charging | RescueState::Countdown | RescueState::Delivering
             );
         if !analysing {
+            return;
+        }
+        self.refresh_chest(now);
+        if !self.chest_still(now) {
             return;
         }
         let Some(decision) = self.analyzer.push(sample) else {
@@ -511,10 +768,14 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             .pads
             .update(pads_sensed(ohms), now, self.config.pad_debounce_ms)
         {
-            Some(true) => self.events.push(now, Event::PadsOn),
+            Some(true) => {
+                self.events.push(now, Event::PadsOn);
+                self.chest.reset();
+            }
             Some(false) => self.events.push(now, Event::PadsOff),
             None => {}
         }
+        self.pads_raw_on = pads_sensed(ohms);
         let poor_raw = pads_sensed(ohms) && ohms > MAX_PATIENT_OHMS;
         if self
             .poor_contact
@@ -557,6 +818,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         if self.link_required && link_stale {
             self.begin_fault(FaultKind::SupervisorLinkLost, hw, now);
         }
+
+        self.check_chest_channel(now);
 
         let voltage = hw.capacitor_voltage();
         self.check_emptying(hw, now, voltage);
@@ -790,18 +1053,19 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                 return true;
             }
             Some(RhythmDecision::Indeterminate) => {
-                // Not final: movement is the likely cause. Ask again for
-                // hands off (not too often) and keep analysing.
+                // Not final: movement is the likely cause. Without
+                // compression sensing, ask again for hands off (not too
+                // often) and keep analysing. With it, the reminder follows
+                // the chest state instead (below).
                 self.not_sure_seen = true;
-                let due = self
-                    .hands_off_reminded_at
-                    .is_none_or(|t| now.since(t) >= self.config.hands_off_reminder_ms);
-                if due {
-                    self.hands_off_reminded_at = Some(now);
-                    hw.prompt(Prompt::DoNotTouchPatient);
+                if self.chest_state(now).is_none() {
+                    self.remind_hands_off(hw, now);
                 }
             }
             None => {}
+        }
+        if self.chest_state(now).is_some_and(|s| s != ChestState::HandsOff) {
+            self.remind_hands_off(hw, now);
         }
         if self.time_in_state_ms(now) > self.config.analysis_time_limit_ms {
             // Neither "shock" nor "no shock" in time. Never leave the
@@ -819,6 +1083,18 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             return true;
         }
         false
+    }
+
+    /// "Do not touch the patient. Still analysing.", at most once per
+    /// [`Config::hands_off_reminder_ms`].
+    fn remind_hands_off(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        let due = self
+            .hands_off_reminded_at
+            .is_none_or(|t| now.since(t) >= self.config.hands_off_reminder_ms);
+        if due {
+            self.hands_off_reminded_at = Some(now);
+            hw.prompt(Prompt::DoNotTouchPatient);
+        }
     }
 
     /// A shock is advised: straight to the countdown if the capacitor is
@@ -920,6 +1196,18 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         }
         if !self.pads.on {
             return Some(ArmedExit::Abort(AbortReason::PadsOff));
+        }
+        if !self.chest_still(now) {
+            // Compressions (or cannot tell) after the shock was advised:
+            // never shock a chest that is being compressed (D-36). If the
+            // latest pad reading also shows the pads off, that is the
+            // reason (the impedance channel sees a lifting pad before the
+            // smoothed pad contact does).
+            return Some(ArmedExit::Abort(if self.pads_raw_on {
+                AbortReason::HandsOnChest
+            } else {
+                AbortReason::PadsOff
+            }));
         }
         if self.mode != self.mode_at_arming {
             return Some(ArmedExit::Abort(AbortReason::ModeChanged));
@@ -1086,6 +1374,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
 
     fn tick_cpr(&mut self, hw: &mut impl MainHardware, now: Millis) {
         if !self.pads.on {
+            self.end_cpr_period(now);
             self.go(RescueState::AttachPads, hw, now);
             return;
         }
@@ -1096,9 +1385,58 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             self.press_pads_reminded_at = now;
             hw.prompt(Prompt::PressPadsFirmly);
         }
+        self.prompt_if_no_compressions(hw, now);
         if self.time_in_state_ms(now) >= self.config.cpr_period_ms {
+            self.end_cpr_period(now);
             self.enter_analysis(hw, now);
         }
+    }
+
+    /// During CPR: "Continue CPR." when compression sensing has seen a still
+    /// chest, with no compressions, for [`Config::no_compression_prompt_ms`]
+    /// (and again after the same time). Never while it cannot tell.
+    fn prompt_if_no_compressions(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        let limit = self.config.no_compression_prompt_ms;
+        if limit == 0 || self.chest_state(now) != Some(ChestState::HandsOff) {
+            return;
+        }
+        let quiet = self
+            .chest
+            .ms_since_compression()
+            .min(self.time_in_state_ms(now));
+        let since_said = self.continue_cpr_said_at.map_or(u32::MAX, |t| now.since(t));
+        if quiet >= limit && since_said >= limit {
+            self.continue_cpr_said_at = Some(now);
+            self.counters.continue_cpr_prompts = self.counters.continue_cpr_prompts.saturating_add(1);
+            self.events.push(now, Event::NoCompressionsPrompt);
+            hw.prompt(Prompt::ContinueCpr);
+        }
+    }
+
+    /// Record what compression sensing measured during the CPR period that
+    /// is ending (nothing without compression sensing).
+    fn end_cpr_period(&mut self, now: Millis) {
+        if !self.chest_sensing_active() {
+            return;
+        }
+        let p = self.cpr_period;
+        let length = self.time_in_state_ms(now).max(1);
+        let rate = u32::from(p.intervals)
+            .saturating_mul(60_000)
+            .checked_div(p.interval_sum_ms)
+            .unwrap_or(0);
+        let on_chest = u64::from(p.on_chest_ms) * 1000 / u64::from(length);
+        // A pause still running at the end of the period counts too.
+        let open_pause = self.chest.ms_since_compression().min(length);
+        self.events.push(
+            now,
+            Event::CprPeriodSummary {
+                compressions: p.compressions,
+                rate_per_min: u16::try_from(rate).unwrap_or(u16::MAX),
+                on_chest_permille: u16::try_from(on_chest.min(1000)).unwrap_or(1000),
+                longest_pause_ms: p.longest_pause_ms.max(open_pause),
+            },
+        );
     }
 
     fn tick_fault(&mut self, hw: &mut impl MainHardware, now: Millis) {
@@ -1143,7 +1481,12 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                 self.analyzer.reset();
                 self.analysis_result = None;
                 self.not_sure_seen = false;
-                self.hands_off_reminded_at = None;
+                // With compression sensing the reminder follows the chest
+                // state; the instruction just given counts as the first.
+                self.hands_off_reminded_at = self.chest_state(now).map(|_| now);
+                if from == RescueState::Cpr || from == RescueState::AttachPads {
+                    self.hands_on_reanalyses_used = 0;
+                }
                 self.last_decision = None;
                 self.counters.analyses = self.counters.analyses.saturating_add(1);
                 if self.poor_contact.on {
@@ -1165,6 +1508,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             RescueState::Cpr => {
                 self.next_beat = now;
                 self.press_pads_reminded_at = now;
+                self.cpr_period = CprPeriod::default();
+                self.continue_cpr_said_at = None;
                 self.counters.cpr_periods = self.counters.cpr_periods.saturating_add(1);
                 hw.prompt(Prompt::StartCpr);
             }
@@ -1191,8 +1536,31 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
     }
 
     fn abort(&mut self, reason: AbortReason, hw: &mut impl MainHardware, now: Millis) {
+        if reason == AbortReason::PadsOff && self.pads.on && !self.pads_raw_on {
+            // Take the fresh reading's word for it (as for the shock plan),
+            // so the one instruction is "Attach pads" (finding F-6).
+            self.pads.force(false);
+            self.events.push(now, Event::PadsOff);
+        }
         self.events.push(now, Event::ShockAborted(reason));
         self.not_given();
+        if reason == AbortReason::HandsOnChest {
+            self.counters.hands_on_aborts = self.counters.hands_on_aborts.saturating_add(1);
+            if self.pads.on && self.hands_on_reanalyses_used < self.config.hands_on_reanalyses {
+                // Someone touched or compressed the chest after "shock
+                // advised": empty the charge and analyse again from the
+                // start, rather than sending a patient in VF to two minutes
+                // of CPR for one touch.
+                self.hands_on_reanalyses_used = self.hands_on_reanalyses_used.saturating_add(1);
+                hw.prompt(Prompt::MovementShockDelayed);
+                self.burn_charge_if_any(now);
+                self.armed_since = None;
+                self.charged_at = None;
+                self.start_emptying(hw, now);
+                self.enter_analysis(hw, now);
+                return;
+            }
+        }
         hw.prompt(match reason {
             AbortReason::Cancelled => Prompt::ShockCancelled,
             AbortReason::RhythmChanged => Prompt::RhythmChangedNoShock,
@@ -1201,6 +1569,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             }
             AbortReason::PadsOff | AbortReason::PlanRefused(_) => Prompt::CheckPads,
             AbortReason::ModeChanged | AbortReason::ConfirmationStale => Prompt::ShockNotDelivered,
+            AbortReason::HandsOnChest => Prompt::MovementNoShock,
         });
         // With the pads off the device can neither analyse nor shock, so the
         // one instruction is to put them back (finding F-6): straight to

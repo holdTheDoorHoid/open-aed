@@ -243,6 +243,58 @@ pub struct Config {
     pub cancel_stuck_ms: u32,
     /// How often the fault prompt is repeated in the Fault state. Provisional: 30 s.
     pub fault_reminder_ms: u32,
+    /// Use compression sensing through the pads (decision D-36), if the
+    /// device has it. When true:
+    ///
+    /// * the rhythm analysis is fed only while the chest is still ("hands
+    ///   off"); whenever it is not (compressing, or cannot tell) the
+    ///   analysis is reset, and the "Do not touch the patient" reminder is
+    ///   driven by that, not by a "not sure" answer;
+    /// * a shock being prepared is held back if the chest is not still
+    ///   (see [`Config::hands_on_reanalyses`]);
+    /// * compressions, pauses and time on chest are recorded during CPR.
+    ///
+    /// When false (or with no sensor fitted) the device behaves exactly as
+    /// before compression sensing: heart signal only. Default: true. The
+    /// switch exists so that the effect can be measured.
+    pub chest_sensing: bool,
+    /// If no impedance sample arrives for this long, the chest counts as
+    /// "cannot tell", ms. Provisional: 100 ms (about 12 samples).
+    pub impedance_stale_ms: u32,
+    /// A compression-sensing channel that has been missing, saturated, out of
+    /// range or stuck for this long while the pads read as on counts as
+    /// failed, ms. The device then records it and carries on from the heart
+    /// signal alone (as with [`Config::chest_sensing`] off) rather than
+    /// faulting: a failed sensing channel must not stop every shock (no
+    /// single fault may block an advised shock, SAFETY.md). Until then
+    /// "cannot tell" holds the analysis. Provisional: 5 s, longer than the
+    /// time the front end is saturated after a shock.
+    pub chest_channel_fail_ms: u32,
+    /// A failed channel that has been good again for this long is used
+    /// again, ms. Provisional: 3 s.
+    pub chest_channel_recover_ms: u32,
+    /// During CPR, say "Continue CPR." if compression sensing has seen the
+    /// chest still, with no compressions, for this long (and again after the
+    /// same time), ms. 0 switches it off.
+    ///
+    /// Default: on, 15 s. Guidelines ask for pauses under 10 s (UNVERIFIED
+    /// against the current guideline text). In the development half of the
+    /// Paris recordings the pauses between runs of compressions (breaths,
+    /// analyses, shocks) had a median of 3 s and 90 % were under 12 s
+    /// (aed-cpr-eval, after-the-fact reference), so 15 s is past nearly all
+    /// normal pauses, and a responder who has stopped for that long has most
+    /// likely stopped for good (tired, confused, distracted). The metronome keeps running regardless. Nothing is said
+    /// while sensing "cannot tell", and no "faster/slower" prompts are given:
+    /// the evidence for real-time feedback prompts is weak and too many
+    /// prompts is a known risk (research notes on CPR feedback).
+    pub no_compression_prompt_ms: u32,
+    /// During CPR, pauses between compressions at least this long are
+    /// recorded in the event record, ms. Provisional: 2 s.
+    pub pause_record_ms: u32,
+    /// How many times in one analysis cycle a shock held back because the
+    /// chest was not still leads to a fresh analysis instead of CPR.
+    /// Provisional: 1 (see the aed-core README for why).
+    pub hands_on_reanalyses: u8,
 }
 
 impl Default for Config {
@@ -280,6 +332,13 @@ impl Default for Config {
             press_pads_repeat_ms: 15_000,
             cancel_stuck_ms: 10_000,
             fault_reminder_ms: 30_000,
+            chest_sensing: true,
+            impedance_stale_ms: 100,
+            chest_channel_fail_ms: 5_000,
+            chest_channel_recover_ms: 3_000,
+            no_compression_prompt_ms: 15_000,
+            pause_record_ms: 2_000,
+            hands_on_reanalyses: 1,
         }
     }
 }
@@ -319,6 +378,11 @@ pub enum ConfigError {
     SelfTestVoltageTooHigh,
     /// The CPR period is not longer than the analysis time limit (sanity check).
     CprPeriodTooShort,
+    /// A compression-sensing time is zero, the "Continue CPR" prompt time is
+    /// shorter than 5 s (prompting sooner would talk over every breath
+    /// pause), or the channel failure time is not longer than the
+    /// stale-sample time.
+    ChestSensingTimes,
 }
 
 impl Config {
@@ -403,6 +467,16 @@ impl Config {
         }
         if self.cpr_period_ms <= self.analysis_time_limit_ms {
             return Err(ConfigError::CprPeriodTooShort);
+        }
+        let prompt_ok =
+            self.no_compression_prompt_ms == 0 || self.no_compression_prompt_ms >= 5_000;
+        let chest_ok = self.impedance_stale_ms > 0
+            && self.chest_channel_fail_ms > self.impedance_stale_ms
+            && self.chest_channel_recover_ms > 0
+            && self.pause_record_ms > 0
+            && prompt_ok;
+        if !chest_ok {
+            return Err(ConfigError::ChestSensingTimes);
         }
         Ok(())
     }

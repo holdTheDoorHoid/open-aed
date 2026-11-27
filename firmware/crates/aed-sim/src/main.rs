@@ -12,7 +12,7 @@
 
 use std::process::ExitCode;
 
-use aed_sim::campaign::{campaign_text, run_campaign};
+use aed_sim::campaign::{campaign_text, run_campaign_with, CampaignOptions};
 use aed_sim::report::{summary, timeline, timing_table};
 use aed_sim::{by_name, catalogue, run};
 
@@ -26,7 +26,10 @@ fn usage() {
     println!("  aed-sim <scenario>                run one scenario and print its timeline");
     println!("  aed-sim timings                   run every scenario and print the timing table");
     println!("  aed-sim campaign [runs] [seed]    random campaign (default 300 runs, seed 1)");
+    println!("        [--no-chest]                firmware without compression sensing (the earlier behaviour)");
+    println!("        [--extended]                add compression-sensing variations (touches, breaths, ...)");
     println!("  aed-sim random <seed>             replay one run of the random campaign");
+    println!("        (with the same --no-chest / --extended options as the campaign)");
 }
 
 fn main() -> ExitCode {
@@ -65,7 +68,11 @@ fn main() -> ExitCode {
         "campaign" => {
             let n = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(300);
             let seed = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(1);
-            let s = run_campaign(n, seed);
+            let options = CampaignOptions {
+                chest_sensing: !args.iter().any(|a| a == "--no-chest"),
+                extended: args.iter().any(|a| a == "--extended"),
+            };
+            let s = run_campaign_with(n, seed, options);
             println!("{BANNER}\n");
             print!("{}", campaign_text(&s));
             if s.clean() {
@@ -78,7 +85,15 @@ fn main() -> ExitCode {
             let chosen = if name == "random" {
                 args.get(1)
                     .and_then(|a| a.parse().ok())
-                    .map(aed_sim::campaign::random_scenario)
+                    .map(|seed| {
+                        aed_sim::campaign::random_scenario_with(
+                            seed,
+                            aed_sim::campaign::CampaignOptions {
+                                chest_sensing: !args.iter().any(|a| a == "--no-chest"),
+                                extended: args.iter().any(|a| a == "--extended"),
+                            },
+                        )
+                    })
             } else {
                 by_name(name)
             };

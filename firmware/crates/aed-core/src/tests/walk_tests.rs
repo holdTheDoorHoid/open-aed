@@ -177,8 +177,19 @@ impl Watcher {
 
 /// One random walk; returns the broken invariants, if any.
 fn random_walk(seed: u64, length_ms: u32) -> Vec<String> {
+    random_walk_with(seed, length_ms, false)
+}
+
+/// `chest`: the device has compression sensing (D-36) and the chest
+/// channel changes at random too (still, compressing, cannot tell,
+/// saturated, out of range, or no samples at all).
+fn random_walk_with(seed: u64, length_ms: u32, chest: bool) -> Vec<String> {
     let mut rng = Rng::new(seed);
-    let mut b = Bench::with(walk_config(), FakePlanner::default());
+    let mut b = if chest {
+        Bench::with_chest(walk_config())
+    } else {
+        Bench::with(walk_config(), FakePlanner::default())
+    };
     let mut w = Watcher::new();
     // Perhaps one hardware fault, at a random moment.
     let fault_kind = if rng.chance(400) {
@@ -209,6 +220,15 @@ fn random_walk(seed: u64, length_ms: u32) -> Vec<String> {
                 b.board.cancel = true;
             } else if b.board.cancel && rng.chance(300) {
                 b.board.cancel = false;
+            }
+            if chest && rng.chance(60) {
+                use super::mock::BoardChest as C;
+                let c = [C::HandsOff, C::HandsOff, C::HandsOff, C::Compressing, C::Unknown, C::Saturated, C::OutOfRange]
+                    [rng.below(7) as usize];
+                b.board.set_chest(c);
+            }
+            if chest && rng.chance(5) {
+                b.board.impedance_up = !b.board.impedance_up;
             }
             if rng.chance(8) {
                 b.board.mode = match b.board.mode {
@@ -256,6 +276,17 @@ fn random_walk(seed: u64, length_ms: u32) -> Vec<String> {
         }
     }
     Vec::new()
+}
+
+#[test]
+fn random_walks_with_compression_sensing_never_shock_a_chest_that_is_not_still() {
+    // The same invariants as below, plus (checked by the mock board at every
+    // shock request) no request while the chest channel has carried
+    // anything but "still" for longer than one sample and one tick.
+    for seed in 1..=200u64 {
+        let failures = random_walk_with(seed, 90_000, true);
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
 }
 
 #[test]

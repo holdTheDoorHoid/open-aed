@@ -11,6 +11,9 @@
 //! with the owner decisions of 27 November 2026 (D-28, D-31, D-32). Only F-4
 //! is still parked; its exposure is measured by
 //! `measure_how_close_to_delivery_a_rhythm_change_is_still_caught`.
+//! F-12 (fast compressions over a flatline read as shockable) passes in
+//! simulation with compression sensing (D-36); its wider tests are in
+//! `compression_sensing.rs`.
 //! SIMULATION ONLY.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
@@ -303,4 +306,21 @@ fn measure_how_close_to_delivery_a_rhythm_change_is_still_caught() {
             );
         }
     }
+}
+
+/// Finding 12 (closed IN SIMULATION by compression sensing, D-36).
+/// Compressions at 150/min over a flatline, from a responder who never
+/// stops, were read by the heart-signal analysis as a shockable rhythm. With
+/// compression sensing the analysis is never fed while compressions are
+/// sensed: no countdown, no shock. Without it the flatline is shocked.
+#[test]
+fn finding_12_fast_compressions_over_a_flatline_are_never_shocked() {
+    let r = run_scenario(&by_name("f12-compressions-150-over-flatline").unwrap());
+    if !r.shocks.is_empty() || r.entered(RescueState::Countdown) {
+        fail(&r, "compressions over a flatline led to a countdown or a shock");
+    }
+    let mut old = by_name("f12-compressions-150-over-flatline").unwrap();
+    old.chest_sensing = false;
+    let old = run(&old).unwrap();
+    assert!(!old.violations_of(Rule::FiredOnNonShockableRhythm).is_empty());
 }

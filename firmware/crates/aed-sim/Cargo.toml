@@ -9,6 +9,7 @@ aed-types.workspace = true
 aed-rhythm.workspace = true
 aed-waveform.workspace = true
 aed-core.workspace = true
+aed-cpr.workspace = true
 
 [lints]
 workspace = true
