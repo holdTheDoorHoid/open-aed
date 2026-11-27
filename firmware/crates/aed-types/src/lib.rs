@@ -2,8 +2,8 @@
 //! Shared vocabulary for the Open AED firmware.
 //!
 //! This crate is the contract between the other crates. It holds units,
-//! the small enums every part needs, and the two traits that let the rescue
-//! sequence (`aed-core`) use rhythm analysis and shock planning without
+//! the small enums every part needs, and the traits that let the rescue
+//! sequence (`aed-core`) use rhythm analysis, compression sensing and shock planning without
 //! depending on how they are implemented.
 //!
 //! NOT A MEDICAL DEVICE. See SAFETY.md at the repository root.
@@ -177,6 +177,172 @@ pub trait RhythmAnalyzer {
 
     /// Forget everything seen so far (for example after a shock, or when pads are reattached).
     fn reset(&mut self);
+}
+
+// ---------------------------------------------------------------------------
+// Chest-compression sensing through the pads (decisions D-14 and D-36)
+// ---------------------------------------------------------------------------
+
+/// Pad-resistance (impedance) sampling rate for compression sensing, in
+/// samples per second.
+///
+/// 125 per second: one sample every 8 ms. A compression at the fastest rate
+/// worth caring about (about 200 per minute, 3.3 Hz) is then about 38
+/// samples long, and the one open recording set the detector was checked on
+/// (Paris Fire Brigade, Schiller defibrillators) is sampled at exactly this
+/// rate, so it can be fed in without resampling. Not from the standard.
+pub const IMPEDANCE_SAMPLE_RATE_HZ: u32 = 125;
+
+/// One pad-impedance sample from the front end, for compression sensing.
+///
+/// This is the small, fast measurement taken with a high-frequency test
+/// current between the pads (decision D-36), not the heart signal. Its value
+/// is the whole resistance between the pads, not just the change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImpedanceSample {
+    /// A good reading, in milliohms (80 Ω is `Milliohms(80_000)`).
+    Milliohms(u32),
+    /// The front end's input was at the end of its range (for example during
+    /// and just after a shock, or with a pad lifting): the value means nothing.
+    Saturated,
+}
+
+/// What compression sensing says about the patient's chest right now.
+///
+/// `Unknown` must be treated like `Compressing` wherever a shock decision
+/// depends on it: if the device cannot tell, it must not assume that hands
+/// are off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChestState {
+    /// No compressions and no other movement: hands are off the chest.
+    HandsOff,
+    /// Regular chest compressions are being given.
+    Compressing,
+    /// Cannot tell: the signal is missing, saturated, settling, noisy, or
+    /// shows movement that is not (yet) a clear run of compressions.
+    Unknown,
+}
+
+/// Why the impedance signal cannot be read, if it cannot. `Good` does not
+/// mean hands are off, only that the signal itself is usable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImpedanceSignal {
+    /// Usable.
+    Good,
+    /// No samples are arriving (reported by the rescue sequence, which
+    /// watches the time of the last sample).
+    Missing,
+    /// The front end is saturated.
+    Saturated,
+    /// The resistance is outside the 25 to 250 Ω pad-sensing range.
+    OutOfRange,
+    /// The reading has not changed at all for too long: a real front end
+    /// always shows a little noise, so a frozen value means a dead channel.
+    Stuck,
+    /// Recovering after one of the above; the filters are settling.
+    Settling,
+    /// Fast electrical noise far above the normal level.
+    Noisy,
+}
+
+impl ImpedanceSignal {
+    /// True for the conditions that point at a broken or disconnected
+    /// channel rather than at something the responder is doing.
+    #[must_use]
+    pub const fn is_channel_problem(self) -> bool {
+        matches!(
+            self,
+            ImpedanceSignal::Missing
+                | ImpedanceSignal::Saturated
+                | ImpedanceSignal::OutOfRange
+                | ImpedanceSignal::Stuck
+        )
+    }
+}
+
+/// Something compression sensing noticed, for the event record and the CPR
+/// measurements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChestEvent {
+    /// One chest compression was detected.
+    Compression {
+        /// Its size, peak to peak after filtering, in milliohms.
+        amplitude_mohm: u32,
+        /// Time since the previous detected compression, ms (`u32::MAX` if
+        /// this is the first since the detector was reset). A long gap is a
+        /// pause in CPR.
+        since_previous_ms: u32,
+    },
+}
+
+/// Compression sensing as the rescue sequence sees it (decision D-36).
+///
+/// The rescue sequence feeds every pad-impedance sample in (at
+/// [`IMPEDANCE_SAMPLE_RATE_HZ`]) and reads [`ChestSensor::state`] to decide
+/// whether a rhythm analysis is looking at a still chest. Like
+/// [`RhythmAnalyzer`], this keeps the rescue sequence independent of how
+/// compressions are detected.
+pub trait ChestSensor {
+    /// False if this device has no compression sensing at all, in which case
+    /// the rescue sequence behaves exactly as it did without it (heart signal
+    /// only). Defaults to true.
+    fn fitted(&self) -> bool {
+        true
+    }
+
+    /// Feed one sample. Returns an event when one happens.
+    fn push(&mut self, sample: ImpedanceSample) -> Option<ChestEvent>;
+
+    /// The current chest state.
+    fn state(&self) -> ChestState;
+
+    /// Whether the signal is usable, and if not, why.
+    fn signal(&self) -> ImpedanceSignal;
+
+    /// Compression rate over the last few compressions, per minute, while
+    /// compressions are being given.
+    fn rate_per_min(&self) -> Option<u16>;
+
+    /// Milliseconds since the last detected compression (0 while
+    /// compressing; counts from the last `reset` if there has been none).
+    fn ms_since_compression(&self) -> u32;
+
+    /// Share of the recent rolling period (see the implementation) during
+    /// which compressions were being given, in tenths of a percent.
+    fn time_on_chest_permille(&self) -> u16;
+
+    /// Forget everything (for example when the pads are reattached).
+    fn reset(&mut self);
+}
+
+/// A [`ChestSensor`] for a device without compression sensing. It reports
+/// `fitted() == false`, so the rescue sequence ignores it entirely.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NoChestSensor;
+
+impl ChestSensor for NoChestSensor {
+    fn fitted(&self) -> bool {
+        false
+    }
+    fn push(&mut self, _sample: ImpedanceSample) -> Option<ChestEvent> {
+        None
+    }
+    fn state(&self) -> ChestState {
+        ChestState::Unknown
+    }
+    fn signal(&self) -> ImpedanceSignal {
+        ImpedanceSignal::Missing
+    }
+    fn rate_per_min(&self) -> Option<u16> {
+        None
+    }
+    fn ms_since_compression(&self) -> u32 {
+        0
+    }
+    fn time_on_chest_permille(&self) -> u16 {
+        0
+    }
+    fn reset(&mut self) {}
 }
 
 /// Shock planning as the rescue sequence sees it.
