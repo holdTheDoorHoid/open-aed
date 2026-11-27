@@ -6,11 +6,11 @@ This project is share-alike. You may use, study, change and share everything her
 
 | What | Licence | SPDX identifier | Full text |
 |---|---|---|---|
-| Hardware designs (schematics, board layouts, mechanical drawings, parts lists) | CERN Open Hardware Licence Version 2, Strongly Reciprocal | `CERN-OHL-S-2.0` | https://ohwr.org/cern_ohl_s_v2.txt |
-| Firmware and software | GNU General Public License, version 3 or any later version | `GPL-3.0-or-later` | https://www.gnu.org/licenses/gpl-3.0.txt |
-| Documents, research notes and reports | Creative Commons Attribution-ShareAlike 4.0 International | `CC-BY-SA-4.0` | https://creativecommons.org/licenses/by-sa/4.0/legalcode |
+| Hardware designs (schematics, board layouts, mechanical drawings, parts lists) | CERN Open Hardware Licence Version 2, Strongly Reciprocal | `CERN-OHL-S-2.0` | [LICENSES/CERN-OHL-S-2.0.txt](LICENSES/CERN-OHL-S-2.0.txt) |
+| Firmware and software | GNU General Public License, version 3 or any later version | `GPL-3.0-or-later` | [LICENSES/GPL-3.0-or-later.txt](LICENSES/GPL-3.0-or-later.txt) |
+| Documents, research notes and reports | Creative Commons Attribution-ShareAlike 4.0 International | `CC-BY-SA-4.0` | [LICENSES/CC-BY-SA-4.0.txt](LICENSES/CC-BY-SA-4.0.txt) |
 
-The full licence texts are to be added to a `LICENSES/` folder before the repository is made public.
+The full licence texts are in the `LICENSES/` folder, taken unmodified from the SPDX licence list.
 
 ## No warranty, and not a medical device
 
