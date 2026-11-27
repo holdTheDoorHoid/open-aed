@@ -356,6 +356,7 @@ pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor = NoChestSe
     self_test: SelfTest,
     self_test_result: Option<Result<(), SelfTestFailure>>,
     pads: Debounced,
+    pads_raw_on: bool,
     poor_contact: Debounced,
     cancel_was_pressed: bool,
     cancel_since: Option<Millis>,
@@ -434,6 +435,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             self_test: SelfTest::new(config, config.self_test_voltage),
             self_test_result: None,
             pads: Debounced::off(),
+            pads_raw_on: false,
             poor_contact: Debounced::off(),
             cancel_was_pressed: false,
             cancel_since: None,
@@ -773,6 +775,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             Some(false) => self.events.push(now, Event::PadsOff),
             None => {}
         }
+        self.pads_raw_on = pads_sensed(ohms);
         let poor_raw = pads_sensed(ohms) && ohms > MAX_PATIENT_OHMS;
         if self
             .poor_contact
@@ -1196,8 +1199,15 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         }
         if !self.chest_still(now) {
             // Compressions (or cannot tell) after the shock was advised:
-            // never shock a chest that is being compressed (D-36).
-            return Some(ArmedExit::Abort(AbortReason::HandsOnChest));
+            // never shock a chest that is being compressed (D-36). If the
+            // latest pad reading also shows the pads off, that is the
+            // reason (the impedance channel sees a lifting pad before the
+            // smoothed pad contact does).
+            return Some(ArmedExit::Abort(if self.pads_raw_on {
+                AbortReason::HandsOnChest
+            } else {
+                AbortReason::PadsOff
+            }));
         }
         if self.mode != self.mode_at_arming {
             return Some(ArmedExit::Abort(AbortReason::ModeChanged));
@@ -1526,6 +1536,12 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     }
 
     fn abort(&mut self, reason: AbortReason, hw: &mut impl MainHardware, now: Millis) {
+        if reason == AbortReason::PadsOff && self.pads.on && !self.pads_raw_on {
+            // Take the fresh reading's word for it (as for the shock plan),
+            // so the one instruction is "Attach pads" (finding F-6).
+            self.pads.force(false);
+            self.events.push(now, Event::PadsOff);
+        }
         self.events.push(now, Event::ShockAborted(reason));
         self.not_given();
         if reason == AbortReason::HandsOnChest {
