@@ -12,10 +12,10 @@ Trained responders: police officers, paramedics, medical professionals. They car
 |---|---|---|
 | Weight, first prototype goal | 700 g or less, **including pads** (D-43) | Matches the smallest full-energy units on sale (St John Pocket AED P3, Schiller FRED easyport plus at 780 g) |
 | Volume, first prototype goal | 0.7 litre or less | Same |
-| Stretch goal | 500 g and 0.5 litre | The hardware estimate for a 150 J device from catalogue parts is 350–620 cm³ and 420–800 g |
+| Stretch goal | 500 g and 0.5 litre | Not reachable with parts available today (parts study version 0.3) |
 | Not a goal | 300 g, like the CellAED | That device reached its size by cutting shock energy and shock count, and its maker has had regulatory trouble. Catalogue parts do not get there at full energy. |
 
-**What the parts study found (27 November 2026, after the owner's decisions on the capacitor, battery and pads):** a set of parts that follows every decision with lower-risk choices comes to about 0.89 L and 902 g with pads, which misses the target by about 200 g. (Those figures assume the 85 °C capacitor; dropping that requirement, as the owner since decided, should save roughly 60 g. Not yet re-derived.) The smallest plausible set that still follows every decision comes to about 0.63 L and 697 g, meeting it by 3 g, and only if a capacitor maker can deliver the most optimistic estimate. A first prototype is more likely to weigh 780–900 g. The 500 g stretch goal is not reachable with parts available today. See [PARTS_STUDY.md](PARTS_STUDY.md).
+**What the parts study found (version 0.3, 27 November 2026):** a set of parts that follows every decision with lower-risk choices comes to about 0.89 L and 903 g with pads, about 200 g over the target. The smallest plausible set comes to about 0.64 L and 699 g, and only if a capacitor maker delivers the most optimistic estimate; with the expected capacitor it is about 783 g. A first prototype is more likely to weigh 780–900 g. The 500 g stretch goal is not reachable with parts available today. See [PARTS_STUDY.md](PARTS_STUDY.md).
 
 For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 
@@ -59,7 +59,7 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 
 ## Power
 
-- Rechargeable lithium-ion, charged like a radio. One modern 21700-size cell (about 70 g) holds enough for roughly 200 charges of the capacitor. A unit that is worn daily does not need the four-year standby battery of a wall-mounted AED, and this is the biggest single size saving. (D-07)
+- Rechargeable lithium-ion, charged like a radio. Two cells (D-44), so charging stays fast at −20 °C; together they hold enough for a few hundred charges of the capacitor. A unit that is worn daily does not need the four-year standby battery of a wall-mounted AED, and this is the biggest single size saving. (D-07)
 - Self-test must load the battery realistically. A past fatal recall came from battery logic that misjudged the charge.
 
 ## Toughness
@@ -69,7 +69,8 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 | Dust and water | IP65 or better |
 | Drop | 1.5 m onto concrete |
 | Operating temperature | −20 to +50 °C target (commercial AEDs are rated 0 to 50 °C) |
-| Storage heat | **Left in a vehicle for short periods, not kept on a dashboard** (D-48). Provisional limit: about 70 °C for a few hours, to be set from the capacitor, battery and pad datasheets. The device records its own temperature and reports "not ready" after overheating until it has cooled and passed a self-test. |
+| Storage heat | **Left in a vehicle for short periods, not kept on a dashboard** (D-48). Proposed limits: long-term storage up to about 40 °C (set by the pads); stays ready up to 60 °C for up to 8 hours at a time; "not ready" above 60 °C until cooled and re-tested; "service needed" above 70 °C. The pads and battery set these limits. The device records its own temperature at all times. |
+| Charging temperature | Battery charging only between 0 and 45 °C. Capacitor charging only at or below its working temperature. |
 
 ## Readiness and self-test
 

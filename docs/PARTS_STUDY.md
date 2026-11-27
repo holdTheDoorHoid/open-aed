@@ -1,10 +1,14 @@
 # Parts study and size, weight and power budget
 
-> **Superseded in part, 27 November 2026:** after this revision the owner lowered the capacitor storage requirement from 85 °C to about 70 °C (D-41) and set the ruggedness goal as "left in a vehicle for short periods" (D-48). The roll-up and the capacitor requirements sheet below still assume 85 °C. By this study's own lever table the change should save roughly 60 g; the figures have not yet been re-derived.
+| Version | Date | What changed |
+|---|---|---|
+| 0.1 | 27 Nov 2026 | First paper study of the parts, with a size, weight, cost and power roll-up. |
+| 0.2 | 27 Nov 2026 | Re-done after the owner's decisions D-15, D-39 and D-41 to D-46: 2.2 kV capacitor with 85 °C storage, two cells, separate Bluetooth module, dock contacts, pads counted in the 700 g. Capacitor requirements sheet (Appendix A) and other made-to-order requirement lists (Appendix B) added. |
+| **0.3** | **27 Nov 2026** | After D-41 was revised (capacitor storage lowered from 85 °C to about 70 °C) and D-48 set the ruggedness goal. **New:** heat limits of every temperature-sensitive part from makers' documents, published parked-car temperatures, and a proposed storage and heat envelope with three options (§8A). Capacitor re-sized for 70 °C storage, roll-up re-done, levers re-ranked, Appendix A moved to 70 °C, owner questions updated. **Finding:** dropping 85 °C storage saves almost no weight by this study's own method; version 0.2 overstated the saving (§1). |
 
-Version 0.2, 27 November 2026. Revised the same day as version 0.1, after the owner answered the questions version 0.1 raised (decisions D-15, D-39 and D-41 to D-46). This is a paper study from datasheets, maker pages and distributor listings, checked on 27 November 2026. **No part has been bought, measured or tested. No hardware exists.** Working notes and every source link are in [research_notes/Open source belt worn AED/parts_study_sources.md](../research_notes/Open%20source%20belt%20worn%20AED/parts_study_sources.md). Decision numbers (D-xx) refer to [DECISIONS.md](../DECISIONS.md).
+This is a paper study from datasheets, maker manuals, maker pages, distributor listings and published studies, checked on 27 November 2026. **No part has been bought, measured or tested. No hardware exists.** Working notes and every source link are in [research_notes/Open source belt worn AED/parts_study_sources.md](../research_notes/Open%20source%20belt%20worn%20AED/parts_study_sources.md). Decision numbers (D-xx) and open questions (Q-xx) refer to [DECISIONS.md](../DECISIONS.md).
 
-> **What this document is not.** It names kinds of parts, specific part numbers and their published ratings, and does sizing arithmetic. The appendices are *requirement sheets for parts to be bought*: what the part must do and what proof to ask the maker for. They say nothing about how to make the part. This document contains no schematics, wiring, board layouts, winding details or assembly steps, and nothing in it is an instruction to build or power anything above 50 volts (D-10, SAFETY.md). Nothing here is safe or ready for use on a person or animal.
+> **What this document is not.** It names kinds of parts, specific part numbers and their published ratings, and does sizing arithmetic. The appendices are *requirement sheets for parts to be bought*: what the part must do and what proof to ask the maker for. They say nothing about how to make the part. The heat section states what the device must *do* (requirements), not how its circuits do it. This document contains no schematics, wiring, board layouts, winding details or assembly steps, and nothing in it is an instruction to build or power anything above 50 volts (D-10, SAFETY.md). Nothing here is safe or ready for use on a person or animal.
 
 How to read the tags:
 - **[CALC]** is arithmetic done for this study. The working is shown.
@@ -13,42 +17,40 @@ How to read the tags:
 - **[UNVERIFIED]** means I looked and could not confirm it.
 - **"Checked 27 Nov 2026"** means the listing or page was seen that day.
 
-Most distributor pages (Digi-Key, Ohmite, TME) refused automated access on the day. Most prices below are therefore **estimates**, not quotes. They must be re-checked by hand before anything is ordered.
+Most distributor pages (Digi-Key, Ohmite, TME) refused automated access on the day. Most prices below are therefore **estimates**, not quotes. They must be re-checked by hand before anything is ordered. Several makers' PDF manuals could not be opened by the research tools; where a figure comes from a search-result extract of a maker's document rather than the document itself, it says so.
 
 ---
 
-## What changed in version 0.2
+## What changed in version 0.3
 
 | Decision | What it means for this study | Where |
 |---|---|---|
-| D-41: made-to-order capacitor, ≥ 2,200 V, 85 °C storage, about 100 µF | The capacitor is re-sized for those ratings, with a low, expected and high estimate. A specification sheet for it is drafted. | §1, Appendix A |
-| D-42: catalogue parts where they exist, made-to-order with a published specification where they do not | Requirement lists for the other made-to-order parts. | Appendix B |
-| D-43: the 700 g includes the pads | The roll-up is judged with pads in. | §9 |
-| D-44: two battery cells | Wired end to end ("in series"); cold-weather arithmetic redone. | §5 |
-| D-45: Bluetooth on a separate pre-certified module | Module candidates with their published approvals. | §7 |
-| D-46: sealed contacts and a dock | Replaces the USB-C socket. | §5 |
-| D-39: two Cortex-M33-class processors from different makers | Confirms the version 0.1 recommendation. | §7 |
-| D-15: full-energy self-test weekly, low-voltage check daily | Capacitor and discharge-load wear and standby energy recomputed over a 10-year life. | §1, §4, §9 |
-
-The version 0.1 roll-up is kept in §9 as "before the 27 November decisions", so the cost of each decision can be seen.
+| D-41 revised: capacitor storage about 70 °C instead of 85 °C | Capacitor re-estimated. Storage temperature on its own barely moves the estimate; the weight lever is the capacitor's *working* temperature, which is still 65 °C and is now an owner question. More makers' standard parts now meet the storage figure. | §1, Appendix A |
+| D-48: left in a vehicle for short periods; device records its temperature and reports "not ready" after overheating | Heat limits of every part gathered; parked-car data gathered; a storage and heat envelope proposed in numbers, with three options; the sensing, logging and "not ready" rules written as requirements | §8A |
+| D-43: 700 g includes pads | Roll-up re-done; versions 0.1, 0.2 and 0.3 side by side | §9 |
+| Q-36 to Q-40 | Restated with this version's numbers | §11 |
 
 ---
 
 ## Summary for the owner
 
-- **The 700 g / 0.7 L target is not met by the set of parts that follows your decisions.**
-  - With the expected capacitor, that set comes to about **0.89 L and 900 g with pads**. That is about **200 g (29%) and 0.19 L (27%) over**.
-  - The smallest plausible set that still follows every decision comes to about **0.63 L and 697 g with pads**. It meets the target, but only by 3 g, and only if the capacitor comes in at the *low* end of its estimate. With the expected capacitor the smallest set is about 784 g.
-  - **Plainly: a 700 g device is possible on paper only if almost every part lands at its optimistic value.** A first prototype is more likely to weigh 780–900 g. For comparison, the St John Pocket AED P3 is under 700 g with pads and the Schiller FRED easyport plus is 780 g.
-- **What the decisions cost.** Against version 0.1, the decisions add about **70 cm³ and 68 g** to the lower-risk set and about **62 cm³ and 53 g** to the smallest set. Almost all of it is the heavier capacitor (D-41) and, in the smallest set, the second cell (D-44). Bluetooth on its own module, two M33 processors and dock contacts cost only a few grams each. The table is in §9.
-- **The capacitor (D-41).**
-  - A made-to-order film capacitor of 100 µF, rated 2,200 V, with 85 °C storage and 65 °C working, is estimated at **170 / 210 / 270 cm³ and 225 / 300 / 410 g** (low / expected / high). Version 0.1 budgeted 180 cm³ and 250 g.
-  - Confidence: moderate on volume (it is scaled from a published family of real parts, including two rated 2.2 kV), low on mass (only one maker publishes a mass, and none publishes a temperature-versus-life curve).
-  - Its draft specification sheet is Appendix A. It asks for **at least 5,000 full-energy cycles at 50 °C**, from a stated usage profile.
-- **New problem found: the capacitor is not the only part that dislikes a hot car.** Lithium-ion cells and pad gel are both usually limited to about 50–60 °C storage [BK]. An 85 °C capacitor does not on its own make the device survive a dashboard. This is a new owner question.
-- **Two cells, in series.** Series halves the current in the wiring, switches and charger. The cold arithmetic says two high-drain 18650 cells **just** manage a full-speed charge at −20 °C from a nearly flat battery; a single cell does not. If the cold tests disappoint, two 21700 cells would add about 50 g more.
-- **Bluetooth module.** Three current pre-certified modules fit: Ezurio BL54L15, Raytac AN54L15Q (both Nordic nRF54L15) and Silicon Labs BGM220S. Several older u-blox modules that ran a ready-made serial firmware are being withdrawn. The module adds about 1 g and under 1 cm³.
-- **Self-test (D-15).** Over 10 years the self-test now accounts for about 520 full-energy cycles, against 600 (typical user) to 3,500 (heavy user) from rescues. Daily low-voltage checks cause practically no wear. Standby including self-tests uses about 0.03–0.04 Wh a day.
+- **The 700 g / 0.7 L target is still not met by the set of parts that follows your decisions.**
+  - Lower-risk set, expected capacitor: about **0.89 L and 903 g with pads**. That is **203 g (29%) and 0.19 L (27%) over**. Version 0.2 said 902 g; the 1 g is the new temperature sensors.
+  - Smallest plausible set (needs the *low* capacitor): about **0.64 L and 699 g with pads**, meeting the target by 1 g. With the expected capacitor it is **783 g, 83 g over**.
+  - **Plainly: the heat decision did not close the gap.** The figure of "about 840 g / 640 g" written into Q-36 after the revision is not borne out (§1 explains why). A first prototype is still more likely to weigh 780–900 g.
+- **Why dropping 85 °C saved almost nothing.** In version 0.2 the capacitor's extra size came from asking it to *work* at 65 °C (so it has margin during a long rescue on a 50 °C day), not from asking it to be *stored* at 85 °C. Version 0.2's lever table then credited "about 60 g" to going back to a 70 °C part, but that figure quietly assumed the working rating would also fall back to 55 °C. That was an error in version 0.2. The real savings of the 70 °C decision are: more makers' standard parts qualify, a cheaper qualification test, and less risk. **The weight lever is the working temperature: 60 °C working saves about 35 g on the finished device; 55 °C saves about 86 g** but leaves about 1 °C of margin on a 50 °C day (new question L).
+- **Capacitor at 70 °C storage, 65 °C working:** about **170 / 210 / 270 cm³ and 225 / 300 / 410 g** (low / expected / high), the same as version 0.2.
+- **What sets the heat limit: the pads and the battery, not the capacitor.**
+
+  | Limit | Set by | Figure | Source |
+  |---|---|---|---|
+  | Long-term storage | Pads | 35–40 °C (ZOLL pads 0–35 °C; Stryker 15–35 °C; Avive 5–40 °C) | Maker manuals and data sheets |
+  | Short excursions | Pads and the lithium-ion cell | about 60 °C for up to a week (Philips, Stryker, Avive); ZOLL pads 65 °C; a typical high-drain cell keeps 90% of its capacity after 1 month at 60 °C | Maker documents |
+  | Above which a part may be damaged | Capacitor (70 °C by D-41), display (operating to 70 °C); no cell or pad in the set has a published rating above 60–65 °C | 70 °C | D-41; Sharp |
+- **Proposed envelope (option A, no new parts):** stored continuously up to **40 °C**; excursions up to **60 °C** for up to **8 hours** at a time with the device staying ready; **60–70 °C** → "not ready" until it has cooled and passed a self-test; **above 70 °C** → "service needed", because the battery and pads may be damaged. Option B adds an insulated car pouch (not carried, so no weight on the belt) that slows the heating about fourfold. Option C uses heat-tolerant parts to raise the excursion limit to 65 °C for about 70 g more. **No option survives a dashboard in direct sun**, which reaches about 70 °C on average and up to 89 °C in published measurements.
+- **Plainly, in car terms:** door pocket, footwell, under a seat or a shaded parked car on a hot day: inside the envelope, still ready. A whole afternoon shut in a car in desert heat: may go "not ready" for a while, no damage expected. Dashboard or rear shelf in sun: outside the envelope; the device must be checked afterwards.
+- **Lithium-ion safety.** At 60–70 °C a healthy cell is not expected to catch fire; that needs temperatures well above 100 °C [BK]. The real risks are **charging a hot cell** and **later using a cell that heat has damaged** (swollen, leaking charge). So the requirements forbid battery charging above 45 °C and require a battery health check after any reading above 70 °C.
+- **What it costs to enforce:** four or five temperature sensors, logging that never stops (about 10–20 µW, about 1% of the standby budget), a passive heat-indicator label as an independent witness, and the "not ready" rules. About 1 g and 2 cm³ in all.
 
 ---
 
@@ -83,6 +85,12 @@ The version 0.1 roll-up is kept in §9 as "before the 27 November decisions", so
 | Packing factor | The volume of the parts divided by the inside volume of the box. Real products are about 0.4–0.6. |
 | dB SPL | Loudness. +10 dB sounds about twice as loud. |
 | IP65 | Dust-tight, and protected against water jets. |
+| Storage temperature | The range a part may sit in, switched off or idle, without damage. Makers often give a long-term range and a wider short-term range with a time limit. |
+| Working (operating) temperature | The range in which a part may be used, for example charged and discharged. |
+| Excursion | A limited time outside the normal storage range, such as a parked car on a hot afternoon. |
+| Thermal time constant | How quickly the inside of the device follows the air around it. After one time constant it has made about two-thirds of the change; after three, about 95%. |
+| LFP | Lithium iron phosphate, a lithium-ion chemistry that is more heat-tolerant and heavier for its energy than the usual high-drain cells. |
+| JEITA rules | An industry practice for slowing or stopping battery charging when the cell is too cold or too hot. |
 
 ---
 
@@ -93,7 +101,7 @@ From [DESIGN_TABLE.md](../firmware/crates/aed-waveform/DESIGN_TABLE.md) (model, 
 | Item | Adult | Child | Source |
 |---|---:|---:|---|
 | Capacitor | 100 µF | 100 µF | D-23, D-41 |
-| Capacitor rating | at least 2,200 V | | D-41 |
+| Capacitor rating | at least 2,200 V; storage about 70 °C | | D-41 |
 | Charge voltage | 1,950 V (worst-case true 2,008 V) | 1,150 V | D-23; FINDINGS.md |
 | Stored energy | 190.1 J | 66.1 J | DESIGN_TABLE |
 | Peak current (25 Ω) | 65.0 A | 38.3 A | DESIGN_TABLE |
@@ -111,11 +119,11 @@ From [DESIGN_TABLE.md](../firmware/crates/aed-waveform/DESIGN_TABLE.md) (model, 
 - Store at least **190 J at 1,950 V**. Rated **at least 2,200 V** (D-41), which is 10% above the 2,008 V worst case and 13% above the nominal 1,950 V [CALC].
 - Give up 65 A in a few milliseconds.
 - Survive the D-15 self-test schedule and the D-29 charge on every analysis, over a 10-year life.
-- Survive storage at 85 °C in a parked car (D-41), and work in a device at up to 50 °C outside.
+- Survive **storage at about 70 °C** (D-41, revised), and work in a device at up to 50 °C outside.
 
 ### Catalogue and quote-only parts found in version 0.1
 
-Kept for reference. Checked 27 Nov 2026. "Stored at 1,950 V" is [CALC] ½CV². None of these meets D-41 as listed: the compact film parts are rated 2.0 kV and none has a trustworthy 85 °C storage rating; the electrolytic options are not pulse parts.
+Kept for reference. Checked 27 Nov 2026. "Stored at 1,950 V" is [CALC] ½CV². None of these meets D-41 as listed: the compact film parts are rated 2.0 kV; the electrolytic options are not pulse parts.
 
 | | A. GA 320DQ4130 (film) | B. CRE DMJ-PC 125 µF (film) | C. TDK B32365 (film, made to order) | D. Bank of 10 × 450 V 105 °C electrolytics | E. Bank of 28 × 330 V photoflash (Chemi-Con EPH-331) |
 |---|---|---|---|---|---|
@@ -129,11 +137,17 @@ Kept for reference. Checked 27 Nov 2026. "Stored at 1,950 V" is [CALC] ½CV². N
 | Cycle life | **2,500** | ≥ 10,000 | up to 10,000 **at 25 °C** | not rated for pulse discharge [UNVERIFIED] | 5,000 (camera-flash test) |
 | Where to buy | quote only (General Atomics, US) | quote only (China) | quote only (TDK, made in Brazil) | Digi-Key, in stock | not found at Digi-Key, Mouser or LCSC |
 
-General Atomics (GA) also lists two biphasic parts **rated 2.2 kV**, both 196 µF: 322DQ4196B (1.20 J/cc, 5,000 cycles, 49 × 74 × 129 mm) and 30920 (1.05 J/cc, 10,000 cycles, 49 × 74 × 146 mm). They are about twice the capacitance needed and twice the size. They matter here because they show what a 2.2 kV rating costs in density. CRE lists a 200 µF, 2,200 V part with 85 °C storage; it publishes no size or mass for it.
+General Atomics (GA) also lists two biphasic parts **rated 2.2 kV**, both 196 µF: 322DQ4196B (1.20 J/cc, 5,000 cycles, 49 × 74 × 129 mm) and 30920 (1.05 J/cc, 10,000 cycles, 49 × 74 × 146 mm). They are about twice the capacitance needed and twice the size. They matter here because they show what a 2.2 kV rating costs in density. CRE lists a 200 µF, 2,200 V part with storage −40 to 85 °C and working −25 to 70 °C, rated ≥ 2,500 cycles into 10 Ω; it publishes no size or mass for it.
+
+**Who now meets the 70 °C storage figure (new in version 0.3).** At 85 °C only CRE claimed the storage rating. At 70 °C:
+- **TDK's standard B32365 storage rating (−20 to +70 °C) now meets it**, but its +55 °C working limit still falls short of the 65 °C working requirement (Appendix A) unless the owner chooses 55 °C working (question L).
+- **CRE** meets storage on both its parts; its 2.2 kV part's 70 °C working rating would also meet 65 °C working, but its published 2,500-cycle life is half what Appendix A asks.
+- **GA and CDE/Knowles** publish no temperature ratings; still to be asked.
+So the 70 °C decision widens the field from one maker to at least two whose *standard* storage ratings fit, which should lower qualification cost and risk. It does not, on the published evidence, make the part smaller.
 
 ### What D-41's capacitor will cost in size and weight
 
-#### Scaling law used
+#### Scaling law used (unchanged from version 0.2)
 
 1. **Size follows the energy at the *rated* voltage, not the working voltage.** A film capacitor's size is set by how hard its plastic film is stressed. At a fixed stress, the stored energy per cm³ at the rated voltage is roughly the same whatever the rating. So, at the same quality of film:
 
@@ -155,45 +169,59 @@ General Atomics (GA) also lists two biphasic parts **rated 2.2 kV**, both 196 µ
 
 3. **Running below the rating buys life.** At 1,950 V a 2,200 V part is stressed 11% less than at its rating, so it lasts about **2.2 times** its rated cycle count [CALC: (2,200/1,950)^6.6 = 2.22]. At the 2,008 V worst case the gain is 1.8.
 
-4. **Heat.** Two separate things:
-   - **Storage at 85 °C, with no voltage.** Polypropylene film capacitors are commonly rated to 85 °C or 105 °C, with voltage derating of about 1.0–1.25% per °C only *above* 85 °C (Panasonic and other film datasheets, checked 27 Nov 2026). So unpowered storage at 85 °C is at the edge of the film's ordinary range, not beyond it. The risk lies in the filling, the case and slow shrinkage of the film, which a maker must prove by test (Appendix A). **Cost in density: small [EST].**
-   - **Working at 65 °C instead of 55 °C.** The defibrillator parts found are rated to 55 °C working (TDK) or 60 °C (CRE). A device at 50 °C outside warms by about 4 K in a long rescue (§4), so the capacitor needs about 65 °C working to have margin. Film capacitor life is generally taken to halve for every 10 °C rise (Digi-Key technical forum) [EST that this holds for pulse duty]. Recovering a factor of two in life costs about **19% of energy density** [CALC: stress × 0.5^(1/6.6) = 0.90; density × 0.90² = 0.81].
+4. **Heat (revised for version 0.3).** Two separate things, which version 0.2 kept apart in its working but merged in its lever table:
+   - **Storage, with no voltage on the part.** Polypropylene film capacitors are commonly rated to 85 °C or 105 °C, with voltage derating of about 1.0–1.25% per °C only *above* 85 °C (Panasonic and other film datasheets, checked 27 Nov 2026). Unpowered storage at 70 °C is comfortably inside the film's ordinary range; TDK's and CRE's standard defibrillator parts are already rated for it. **Cost in density of 70 °C storage: none [EST]. Cost of 85 °C storage in version 0.2: "small" [EST, unchanged].** So moving from 85 °C to 70 °C storage changes the estimate by about nothing.
+   - **Working temperature, with voltage on the part.** This is what costs density. The defibrillator parts found are rated to 55 °C working (TDK) or 60 °C (CRE 125 µF). A device at 50 °C outside warms by about 4 K in a long rescue (§4), so Appendix A asks for 65 °C working to keep about 10 K of margin. Film capacitor life is generally taken to halve for every 10 °C rise (Digi-Key technical forum) [EST that this holds for pulse duty]. Recovering that life costs density [CALC, using the exponent 6.6]:
+
+     | Working rating | Life lost against 55 °C | Film stress to recover it | Density, from GA's 1.66 J/cc |
+     |---|---:|---:|---:|
+     | 55 °C | none | — | 1.66 J/cc |
+     | 60 °C | ×0.71 (2^−0.5) | ×0.949 (2^(−0.5/6.6)) | **1.49 J/cc** (×0.90) |
+     | 65 °C | ×0.5 | ×0.900 (2^(−1/6.6)) | **1.35 J/cc** (×0.81) |
 
 5. **Box versus active volume.** GA's quoted J/cc is 15–18% higher than its parts' outside-box figures [CALC: e.g. 320DQ4130 stores 260 J rated in a 179.7 cm³ box = 1.45 J/cc, against 1.66 quoted]. The estimates below add **18%** for the can.
 
 6. **Mass.** Only one defibrillator film capacitor has a published mass (CRE, 300 g for a 250 J part). This study uses **1.3–1.5 g/cm³** [EST: polypropylene film is about 0.9 g/cm³; an aluminium can and resin fill raise it], and checks against CRE's 0.83 J per gram [CALC: 250 J / 300 g].
 
-#### Low, expected and high estimate [CALC from the scaling above; EST inputs as marked]
+#### Low, expected and high estimate at 70 °C storage and 65 °C working [CALC from the scaling above; EST inputs as marked]
 
 | | Low | Expected | High |
 |---|---|---|---|
-| Basis | GA's densest film (1.66 J/cc) meets D-41 with no temperature penalty, because the maker's standard film already holds 85 °C storage and 65 °C working (as CRE claims for its parts) | GA's densest film, less 19% for 65 °C working: **1.35 J/cc**. This happens to equal GA's real 2.3 kV, 5,000-cycle grade | GA's real 2.2 kV, 10,000-cycle grade (**1.05 J/cc**), in case the hot-working life needs it |
+| Basis | GA's densest film (1.66 J/cc) meets Appendix A with no temperature penalty, because the maker's standard film already holds 65 °C working (as CRE claims 70 °C working for its 2.2 kV part) | GA's densest film, less 19% for 65 °C working: **1.35 J/cc**. This happens to equal GA's real 2.3 kV, 5,000-cycle grade | GA's real 2.2 kV, 10,000-cycle grade (**1.05 J/cc**), in case the hot-working life needs it |
 | Active volume (242 J rated ÷ density) | 146 cm³ | 180 cm³ | 230 cm³ |
 | **Boxed volume** (+18%) | **about 170 cm³** | **about 210 cm³** | **about 270 cm³** |
 | **Mass** | 1.3 g/cm³: **about 225 g** | 1.4 g/cm³: **about 300 g** (CRE's 0.83 J/g gives 290 g) | 1.5 g/cm³: **about 410 g** |
-| Change from version 0.1's 180 cm³ / 250 g budget | −10 cm³ / −25 g | **+30 cm³ / +50 g** | +90 cm³ / +160 g |
-| Change from version 0.1's smallest-set 150 cm³ / 210 g | +20 cm³ / +15 g | +60 cm³ / +90 g | +120 cm³ / +200 g |
+| Change from version 0.2 (85 °C storage) | none | none | none |
 | Life at 1,950 V | about 5,500 cycles at 25 °C [CALC: 2,500 × 2.22], less when hot | about 5,500 cycles at the working limit [CALC] | over 10,000 |
 
-**How confident.** Moderate on volume: the scaling is anchored on five real parts from one maker, two of them at 2.2 kV, and the expected case equals a real GA density. Low on mass: one maker's figure, and no maker publishes a mass for a 2.2 kV part. Lowest on the temperature penalty: no defibrillator capacitor maker publishes a life-versus-temperature curve; TDK refers to one that is not in its datasheet. **The range will only narrow when makers quote against Appendix A.**
+**What changed from 85 °C, plainly.** The numbers did not move, because the method never charged anything for storage heat. What changed is the field of suppliers (above), the qualification test (1,000 h at 70 °C instead of 85 °C, Appendix A), and the price (below). Version 0.2's "about 60 g" saving for a 70 °C part (its lever 7) assumed the working rating would also fall to TDK's 55 °C. That saving is still available, but only by changing the **working** rating, which is owner question L.
+
+#### The same estimate with a lower working rating [CALC]
+
+Shown so that question L can be answered. Storage stays 70 °C. The low and high cases do not change.
+
+| Working rating | Expected capacitor | Device with pads, lower-risk set (§9) | What it costs in use |
+|---|---|---|---|
+| 65 °C (Appendix A today) | 210 cm³ / 300 g (1.35 J/cc) | 0.89 L / 903 g | Nothing: about 10 K of margin at a 50 °C ambient |
+| 60 °C | **190 cm³ / 270 g** (1.49 J/cc: 242 ÷ 1.49 × 1.18 = 191 cm³; × 1.4 = 268 g) | **0.85 L / 868 g** (−35 g) | About 6 K of margin at a 50 °C ambient. A device that is already hot (for example just out of a hot car) waits to cool before charging, per question M |
+| 55 °C (TDK class) | **170 cm³ / 225 g** (1.66 J/cc; the same as the low case) | **0.80 L / 817 g** (−86 g) | About 1 K of margin at a 50 °C ambient: in a long rescue on a very hot day the device would sometimes have to pause charging to cool. Equivalent to lowering the operating target from 50 °C to about 45 °C [CALC: 55 − 4 K rise − about 5 K margin] |
+
+**How confident.** Moderate on volume: the scaling is anchored on five real parts from one maker, two of them at 2.2 kV, and the expected case equals a real GA density. Low on mass: one maker's figure, and no maker publishes a mass for a 2.2 kV part. Lowest on the temperature penalty: no defibrillator capacitor maker publishes a life-versus-temperature curve; TDK refers to one that is not in its datasheet. **The range will only narrow when makers quote against Appendix A**, which now asks each maker to quote at 55, 60 and 65 °C working.
 
 **Shape.** A box of about 33 × 60 × 105 mm holds the expected 210 cm³ [CALC: 207.9 cm³]. That is the same footprint as the GA 320DQ4130, a little longer.
 
-**Price [EST].** Version 0.1 estimated $150–400 for a sample and $80–200 at qty 100. A 2.2 kV rating and an 85 °C qualification test add perhaps 20–50% [EST, from custom-part norms]: **$200–600 for samples, $100–250 at qty 100**, plus a one-off qualification charge of perhaps $1,000–3,000 [EST].
+**Price [EST].** Version 0.1 estimated $150–400 for a sample and $80–200 at qty 100. Version 0.2 added 20–50% for the 2.2 kV rating and an 85 °C test. With 70 °C storage inside two makers' standard ratings, perhaps 15–40% [EST, from custom-part norms]: **$180–550 for samples, $95–230 at qty 100**, plus a one-off qualification charge of perhaps $800–2,500 [EST].
 
-### Temperature: what still does not survive a parked car
+### Temperature
 
-- **Cabin air, 47–70 °C, and dashboard, 70–100 °C.** D-41's capacitor is specified for storage to 85 °C. That covers cabin air with margin and the cooler end of a dashboard. **Nothing covers 100 °C.**
-- **New finding: the battery and the pads are now the weak links.**
-  - High-drain lithium-ion cells are usually rated for storage to about 60 °C for short periods, and their makers advise much cooler for long storage [BK; P28A storage range not confirmed]. Hours at 85 °C would cost permanent capacity and could swell a cell [BK]. Charging is blocked above about 45–60 °C anyway.
-  - Defibrillator pad gel dries faster when hot. Commercial pads are typically labelled for storage up to about 43–50 °C [BK; not checked in this pass].
-  - So an 85 °C capacitor protects the most expensive part, but **the device as a whole is still limited to roughly 50–60 °C storage by its battery and pads**. A "not on the dashboard" rule is still needed. See the new owner question in §11.
+The capacitor is no longer the part that decides how hot the device may get. That is set by the pads and the battery; all the heat limits, the parked-car data and the proposed envelope are in **§8A**.
+
 - **What heat does to electrolytics.** Kept from version 0.1: only the 105 °C electrolytics have a rating above 70 °C, and they are the heaviest and least suited to pulse duty. Not recommended.
 
 ### Operating heat inside the device
 
 - At a 50 °C ambient, a long no-shock rescue warms the inside of the box by about 4 K (§4), more near the discharge resistors.
-- Appendix A therefore asks for **65 °C working**. That gives about 10 K of margin over the 54–55 °C the capacitor would reach.
+- Appendix A therefore asks for **65 °C working**. That gives about 10 K of margin over the 54–55 °C the capacitor would reach. Lower ratings are question L.
 
 ### Cycle life over 10 years under D-15 [CALC]
 
@@ -211,7 +239,8 @@ Usage profile, stated as an assumption [EST]:
 | Wear from the low-voltage checks, in full-cycle equivalents | about 0 | about 0 | at 10% of full voltage, one check is 0.1^6.6 ≈ 0.0000003 of a full cycle. Even at half voltage it would be 0.01 each, about 37 in total |
 | Time held charged (up to about 30 s per charge) | about 10 h | about 34 h | 1,220 × 30 s; 4,120 × 30 s |
 
-- **Requirement:** at least **5,000 full-energy cycles at 1,950 V and 50 °C ambient** (the heavy profile plus about 20%), and 100 h of cumulative holding at 2,008 V. The expected-case part above meets it on paper.
+- **Requirement:** at least **5,000 full-energy cycles at 1,950 V and 50 °C ambient** (the heavy profile plus about 20%), and 100 h of cumulative holding at 2,008 V. The expected-case part above meets it on paper. Heat in storage does not change this figure.
+- **If the requirement were 2,500 cycles** (twice the typical profile; Q-38), the film could be stressed about 11% harder [CALC: 2^(1/6.6) = 1.11], density rises by 23%, and the expected part becomes about **170 cm³ / 240 g** [CALC: 1.35 × 1.23 = 1.66 J/cc; 242 ÷ 1.66 × 1.18 = 172 cm³; × 1.4 = 241 g], saving about 71 g on the finished device (§9).
 - **For comparison:** version 0.1's twice-daily full-energy policy would have used about 7,300 cycles in 10 years on self-tests alone [CALC: 730 × 10], forcing the high, 10,000-cycle case. D-15 is what keeps the capacitor at the expected size.
 
 ### Self-discharge, recovery and failure
@@ -221,14 +250,14 @@ Usage profile, stated as an assumption [EST]:
 
 ### Recommendation
 
-- **Order a single film capacitor to the specification in Appendix A** from defibrillator-capacitor makers: GA, CDE/Knowles, TDK, and CRE as a low-cost check. Ask each for a quote against the same sheet.
+- **Order a single film capacitor to the specification in Appendix A** from defibrillator-capacitor makers: GA, CDE/Knowles, TDK, and CRE as a low-cost check. Ask each for a quote against the same sheet, **at 55, 60 and 65 °C working**, so question L can be answered with makers' figures instead of this study's scaling.
 - **Budget 210 cm³ and 300 g** (the expected case), and carry the low and high cases in the roll-up.
 - Keep the 105 °C electrolytic bank only as a heat fallback, not for size.
 
 ### What must be tested to confirm it
 
 Later, under the lab safety policy. Appendix A lists the proof to ask the maker for; the project's own checks would be:
-- Capacitance, leakage and internal loss before and after 1,000 h at 85 °C, unpowered.
+- Capacitance, leakage and internal loss before and after 1,000 h at **70 °C**, unpowered.
 - 1,000 full-energy cycles at 50 °C ambient, measuring capacitance loss and any rise in internal loss.
 - Voltage recovered 1 minute after a full dump.
 - Mass and dimensions of the delivered part.
@@ -289,7 +318,7 @@ About 63 J per charge [CALC], mostly in the transformer and switch. Over a 30-mi
 
 ## 3. Output bridge and patient isolation
 
-Unchanged from version 0.1 except that the gate-drive isolation now has a requirement list (Appendix B).
+Unchanged from version 0.1 except that the gate-drive isolation has a requirement list (Appendix B).
 
 ### What it must do
 
@@ -356,6 +385,7 @@ Four switches, drivers, gate supplies and a protective inductor-resistor: **25�
 - Box about 150 × 86 × 50 mm: surface 494 cm²; about 10 W/m²·K to still air [BK]: 0.49 W/K.
 - Steady rise 2.5 W / 0.49 = 5.1 K; time constant about 21 minutes (0.7 kg × 900 J/kg·K = 630 J/K).
 - **After 30 minutes the inside is about 3.8 K above ambient**: about 54 °C at a 50 °C ambient. Appendix A's 65 °C working rating covers this with about 10 K margin. A heavier device (§9) warms slightly more slowly.
+- The same box constant governs how fast the device heats in a parked car (§8A): at about 0.8 kg without pads it is about 25 minutes [CALC: 0.8 kg × 900 J/kg·K ÷ 0.49 W/K = 1,470 s].
 
 ### Resistor temperature [CALC]
 
@@ -428,8 +458,15 @@ Assumptions:
 **Plainly:**
 - One cell cannot be relied on for a full-speed charge at −20 °C when nearly flat. That confirms D-44.
 - Two 18650s **just** manage it in the pessimistic case. Two 21700s manage it comfortably but weigh about 48 g more than two 18650s (2 × 70 g against 2 × 46 g).
-- If cold tests show the 18650s sag too far, the firmware can slow the charge when the battery is cold and low, so the shock follows a few seconds after the analysis. That is a fallback, not a plan; see the new owner question in §11.
+- If cold tests show the 18650s sag too far, the firmware can slow the charge when the battery is cold and low, so the shock follows a few seconds after the analysis. That is a fallback, not a plan (Q-39).
 - Charging the *battery itself* is a different matter: the cells must not be charged below 0 °C (P28A rating: charge 0–60 °C). A device docked in a freezing car will not recharge until it warms.
+
+### Heat limits of the cells (new in version 0.3; detail in §8A)
+
+- **Molicel P28A** (maker's specification, third-party copy): charge 0–60 °C, discharge −40 to 60 °C; storage for shipping **below 35 °C**, and **below 23 °C recommended** for long-term storage; shelf life 1 year. **No short-term storage maximum is published in the copy found.**
+- **Class reference, Samsung INR18650-25R** (maker's specification, 2014, third-party copy): keeps at least 90% of its capacity after **1 month at up to 60 °C**, 3 months at up to 45 °C, or 1.5 years at up to 25 °C.
+- So for this study's cells, **60 °C is the top of what any maker of this class of cell publishes**, and only as a one-month allowance. Between 60 and 70 °C the cells are outside every rating found.
+- Heat-tolerant alternatives exist but cost weight or current (§8A, option C).
 
 ### Charges per battery charge [CALC]
 
@@ -441,16 +478,16 @@ A 2-cell pack needs: a protector that can cut the pack off for over-voltage, und
 
 | Part | What it is | Status |
 |---|---|---|
-| **ADI MAX17320** | 2-to-4-cell fuel gauge with protector, programmable thresholds, internal self-discharge detection, SHA-256 battery authentication | **Recommended for new designs** (ADI page) |
+| **ADI MAX17320** | 2-to-4-cell fuel gauge with protector, programmable thresholds (including over- and under-temperature), internal self-discharge detection, SHA-256 battery authentication | **Recommended for new designs** (ADI page). Temperature range not re-checked [BK: −40 to 85 °C] |
 | TI BQ28Z610 / BQ28Z620 | 1-to-2-cell gauge with protection and cell balancing; the BQ28Z620 is TI's newer version | BQ28Z620 **ACTIVE**; TI flags a newer version of BQ28Z610 |
 | TI BQ25887 (charger) | 2-cell boost charger from a 5 V input, 2 A, integrated cell balancing, battery thermistor with JEITA temperature rules, −40 to 85 °C | Listed on TI's site; stock not confirmed |
 
 Implications of 2 cells:
 - The protector's switches must carry about 7.6 A average and 15 A peaks while charging the capacitor, with low loss [CALC, §2]. Half the single-cell current.
 - The gauge's per-cell readings let the self-test catch **one weak cell**, which a single pack voltage would hide. That serves the "battery tested under load" part of D-15.
-- The MAX17320's self-discharge detection and authentication would let the device refuse a counterfeit or damaged pack. The recorded fatal-failure history in REQUIREMENTS makes that worth having.
+- The MAX17320's self-discharge detection and authentication would let the device refuse a counterfeit or damaged pack. The same self-discharge detection is the battery health check that §8A requires after an over-temperature event.
 - The pack (and the cells) need UN 38.3 transport testing; a device shipped with its battery inside goes as UN 3481 [BK].
-- High-drain cells are typically rated about 500 cycles to 80% capacity [BK]. Charged daily, plan on battery replacement every 2–3 years.
+- High-drain cells are typically rated about 500 cycles to 80% capacity [BK]. Charged daily, plan on battery replacement every 2–3 years; time spent hot shortens that.
 
 ### Charging through sealed dock contacts (D-46)
 
@@ -462,6 +499,7 @@ Implications of 2 cells:
   - Withstand reversed or excess dock voltage, and static discharge, without damage.
   - Corrosion-resistant plating; sweat and road salt are the realistic exposure [EST].
 - **Size and mass, device side [EST]:** about 2 cm³ and 5 g including alignment magnets and input protection, against about 1 cm³ and 2 g for a USB-C socket and its seal. **D-46 costs about 1 cm³ and 3 g**, plus a dock that is not carried (about $50–150 for prototypes, $15–30 at qty 100 [EST]).
+- **A dock in a vehicle** will be as hot as the cabin; the battery-charging temperature rule in §8A applies there too.
 
 ### Candidates
 
@@ -473,16 +511,17 @@ Implications of 2 cells:
 | −20 °C, 10% charge (table above) | fails in the pessimistic case | **just works** | works with margin | unknown |
 | Mass of cells | 70 g | **92 g** (46 g typical each, datasheet copy) | 140 g | about 60–90 g [EST] |
 | Pack with gauge, protection, charger, holder | about 75 g / 28 cm³ | **about 97 g / 38 cm³** | about 148 g / 56 cm³ [EST] | about 70–100 g [EST] |
+| Storage heat | as B [UNVERIFIED for P45B] | below 35 °C shipping; no short-term maximum published; class figure 60 °C for 1 month | as B | pouch cells swell more readily when hot [BK] |
 | Price, cells [EST] | about $6–8 | about $10 / $7 for two | about $12–16 | about $15–30 |
 | Main risk | Voltage collapse at −20 °C | Thin cold margin | Mass | Quality and traceability |
 
 ### Recommendation
 
-**Option B (2 × P28A-class 18650 in series)** for both sets, with **MAX17320**-class protection and gauge and a **BQ25887**-class charger, charged through sealed dock contacts. Option C is the fallback if cold tests fail, at about 50 g and 18 cm³ more.
+**Option B (2 × P28A-class 18650 in series)** for both sets, with **MAX17320**-class protection and gauge and a **BQ25887**-class charger, charged through sealed dock contacts. Option C is the fallback if cold tests fail, at about 50 g and 18 cm³ more (Q-39). Ask Molicel for the P28A's short-term storage rating (§8A).
 
 ### Test
 
-Charge time to 1,950 V and lowest cell voltage, from 10% charge, at −20 °C after a 4-hour cold soak, for packs B and C.
+Charge time to 1,950 V and lowest cell voltage, from 10% charge, at −20 °C after a 4-hour cold soak, for packs B and C. Capacity, internal resistance and thickness before and after 100 h at 60 °C at full charge, unpowered.
 
 ---
 
@@ -531,7 +570,7 @@ Option A (ADS1292R), with option C as the upgrade if A's impedance resolution pr
 
 ### Processing need
 
-About 120,000 multiply-adds per second and about 10.5 KB of RAM for the analysis: under 1% of a 100 MHz Cortex-M with a floating-point unit [CALC]. The event record (1 KB/s, 1.8 MB per 30 minutes) calls for an external flash chip of 16 MB or more [CALC; e.g. Winbond W25Q128 class, BK].
+About 120,000 multiply-adds per second and about 10.5 KB of RAM for the analysis: under 1% of a 100 MHz Cortex-M with a floating-point unit [CALC]. The event record (1 KB/s, 1.8 MB per 30 minutes) calls for an external flash chip of 16 MB or more [CALC; e.g. Winbond W25Q128 class, BK]. The temperature log of §8A is tiny by comparison (a few kilobytes a year [EST]).
 
 ### Ferrocene qualification (unchanged from version 0.1)
 
@@ -563,7 +602,7 @@ Cost of D-39 against a Cortex-M0+ supervisor: **about 0 g and 0 cm³**, about $1
 | Sleep current | not stated | not stated | **1.4 µA** deep sleep with RAM kept |
 | Price [EST] | $10–15 / $7–9 | $6–10 / $4–6 | $6–9 / $4–6 |
 
-**Warning about ready-made serial firmware.** The modules that used to come with a ready-made "AT-command" serial firmware are being withdrawn: u-blox issued an end-of-life notice for NINA-B31x on 16 February 2026, and the ANNA-B112-00B has been replaced. Plan for **project-written module firmware** that does only three things: advertise readiness, hand over event records, and accept configuration that the main controller then checks.
+**Warning about ready-made serial firmware.** The modules that used to come with a ready-made "AT-command" serial firmware are being withdrawn: u-blox issued an end-of-life notice for NINA-B31x on 16 February 2026, and the ANNA-B112-00B has been replaced. Plan for **project-written module firmware** that does only three things: advertise readiness, hand over event records, and accept configuration that the main controller then checks (Q-40).
 
 **What "modular approval" does and does not cover.** The module's radio approval can be reused only if the product follows the grant's conditions (antenna, layout keep-out, power). The finished device still needs its own emissions testing and the medical electromagnetic-compatibility standard (IEC 60601-1-2) [BK].
 
@@ -593,9 +632,9 @@ Unchanged from version 0.1.
 | **Linear sum** | | **0.87%** (plus about 2 V offset) |
 | **Root-sum-square** | | **0.41%** |
 
-- **Verdict:** achievable with the right resistor class, but only just in the worst case over life. Drift is the largest term; board contamination is the hidden one (at 10 GΩ leakage it alone is 0.4%).
+- **Verdict:** achievable with the right resistor class, but only just in the worst case over life. Drift is the largest term; board contamination is the hidden one (at 10 GΩ leakage it alone is 0.4%). Time spent hot in storage adds to drift [BK]; the temperature log of §8A will show how much a given unit has had.
 - **The two channels should use different resistor and reference families**, so they cannot drift together and still agree.
-- **Test:** both chains against a calibrated HV meter at 200, 1,150 and 1,950 V; at −20, +25 and +70 °C; and after 1,000 h at 85 °C and 85% humidity unpowered.
+- **Test:** both chains against a calibrated HV meter at 200, 1,150 and 1,950 V; at −20, +25 and +70 °C; and after 1,000 h at 85 °C and 85% humidity unpowered (a standard damp-heat test, not a car-storage figure).
 
 ---
 
@@ -603,13 +642,174 @@ Unchanged from version 0.1.
 
 | Item | Target and basis | Candidate class | Size / mass [EST] | Risk |
 |---|---|---|---|---|
-| Speaker + amplifier | ≥ 85 dB(A) at 1 m [EST basis: roadside traffic about 70–80 dB(A) [BK], plus about 10 dB] | Sealed 20–28 mm micro-speaker with vent membrane; 2–3 W class-D amplifier [BK] | 5 cm³ / 6 g | Loudness versus sealing |
+| Speaker + amplifier | ≥ 85 dB(A) at 1 m [EST basis: roadside traffic about 70–80 dB(A) [BK], plus about 10 dB] | Sealed 20–28 mm micro-speaker with vent membrane; 2–3 W class-D amplifier [BK] | 5 cm³ / 6 g | Loudness versus sealing; heat limits not checked (§8A) |
 | Supervisor's own alarm (D-26) | ≥ 85 dB at 10 cm, driven only by the supervisor | Piezo transducer [BK] | 1 cm³ / 2 g | None significant |
-| Display | Readable in sunlight, tiny power | Reflective "memory LCD" (Sharp LS013B7DH05 / LS027B7DH01 class) [BK, lifecycle UNVERIFIED] | 3–6 cm³ / 4–10 g | Slow at −20 °C [BK] |
+| Display | Readable in sunlight, tiny power | Reflective "memory LCD" (Sharp LS013B7DH05 / LS027B7DH01 class): **operating −20 to +70 °C** (Sharp brochure); storage range not found [UNVERIFIED] | 3–6 cm³ / 4–10 g | Slow at −20 °C [BK]; liquid crystal can be permanently changed outside its rating (Sharp specification) |
 | Cancel control | Usable with gloves; 15 mm or larger; IP67 | Sealed tactile switch under a guarded cap [BK] | 1 cm³ / 2 g | Stuck-button logic in D-31 |
-| Enclosure | IP65; 1.5 m drop; −20 to +50 °C | Glass-filled nylon or PC/ABS, 2–2.5 mm walls, rubber bumper, one gasket; HV section potted or behind barriers | 100–150 g | **The 300 g capacitor must be held so a drop does not tear its leads** (Appendix A asks for a shock rating) |
-| Pads and connector | Pre-connected; pad connector made to order (Appendix B) | Commercial pad pairs for fit and impedance tests only | Pads 80–100 g and 50–60 cm³ [EST; a Philips HeartStart adult set, 85 cm² conductor area and 1.2 m lead, is listed at 82 g packaged singly, 106 g per set in a 5-pack] | Pads are regulated as strictly as the device; storage heat (§1) |
+| Enclosure | IP65; 1.5 m drop; −20 to +50 °C working; storage per §8A | Glass-filled nylon or PC/ABS, 2–2.5 mm walls, rubber bumper, one gasket; HV section potted or behind barriers | 100–150 g | **The 300 g capacitor must be held so a drop does not tear its leads** (Appendix A asks for a shock rating) |
+| Pads and connector | Pre-connected; pad connector made to order (Appendix B) | Commercial pad pairs for fit and impedance tests only | Pads 80–100 g and 50–60 cm³ [EST; a Philips HeartStart adult set, 85 cm² conductor area and 1.2 m lead, is listed at 82 g packaged singly, 106 g per set in a 5-pack] | Pads are regulated as strictly as the device; **pads set the storage-heat limit (§8A)** |
 | Charging contacts (D-46) | Sealed, dead when undocked | Flat contact pads on the device, spring contacts in the dock | 2 cm³ / 5 g | Corrosion; see §5 |
+| Temperature sensing and log (D-48, new) | Requirements in §8A | Thermistors at cells, capacitor and pads; MCU internal sensor; passive heat-indicator label [BK that such labels exist] | about 1 cm³ / 1 g in all | Must keep logging when the device is "off" |
+
+---
+
+## 8A. Heat: part limits, parked cars and the proposed envelope (new in version 0.3)
+
+D-48 says the device is carried all day and left in a vehicle for short periods, not kept on a dashboard; it records its own temperature, and after overheating reports "not ready" until it has cooled and passed a self-test. This section gathers the evidence needed to turn that into numbers.
+
+### H1. Heat limits of every temperature-sensitive part
+
+"Long-term" and "short-term" are the makers' own words. All sources were checked 27 Nov 2026; links are in the research notes. Where the figure came from a search-result extract of the maker's document rather than the document itself, the source column says "extract".
+
+| Part | Long-term storage | Short-term storage (time limit) | Operating | What the maker says heat does | Source |
+|---|---|---|---|---|---|
+| **Pads (the project's are made to order, D-42; commercial pads are the evidence)** | | | | | |
+| ZOLL CPR-D-padz | **0 to 35 °C** | **−30 to 65 °C** (time limit not found [UNVERIFIED]) | 0 to 50 °C | Storing outside the recommended conditions may damage pads and batteries or shorten their useful life (ZOLL AED Plus manual) | ZOLL pad instructions for use (extract); US device database lists 0–35 °C |
+| Philips SMART Pads II (FRx) | 0 to 50 °C | FRx device with battery and pads: **−20 to 60 °C for up to 1 week** (storage and shipping) | FRx: 0 to 50 °C standby and operating; −20 to 50 °C for up to 20 min after leaving 20 °C | — | Philips product page; Philips technical manual (extract, full table not seen); FRx brochure (read) |
+| Philips HS1/OnSite pads (M5071A) | **10 to 43 °C** | none found | — | — | Philips product page (extract) |
+| HeartSine Pad-Pak (pads and battery in one cartridge) | 0 to 50 °C (standby) | 350P/360P: −10 to 50 °C **for up to 2 days** in transport; return to 0–50 °C for 24 h before use. 450P: 0–50 °C only | 0 to 50 °C | Long-term storage outside 10–50 °C "may adversely affect the performance" (older HeartSine note) | HeartSine/Stryker data sheets (extract) |
+| Stryker LIFEPAK CR2 (device with battery and electrodes) | **15 to 35 °C** (one Stryker FAQ says 15–25 °C) | **−30 to 60 °C, maximum exposure one week** | 0 to 50 °C | Long-term storage at the upper end of the range shortens battery and electrode life | Stryker EMEA data sheet and support article (extract) |
+| Avive Connect (device, pads included) | **5 to 40 °C** | **−20 to 60 °C for up to 14 days** | 0 to 50 °C; battery charging 0–45 °C | Return to 0–50 °C for 24 h after being outside it | Avive help centre (extract) |
+| Schiller FRED PA-1 (device) | −20 to 50 °C (storage and transport) | — | −5 to 40 °C | — | Schiller technical data (extract) |
+| **Battery cells** | | | | | |
+| Molicel P28A (the study's cell) | **below 35 °C** for shipping; **below 23 °C recommended** long term; shelf life 1 year | **none published** in the copy found | charge 0–60 °C; discharge −40 to 60 °C | — | Molicel specification (third-party copy) |
+| Samsung INR18650-25R (same class, for reference) | 1.5 years at up to 25 °C | 3 months at up to 45 °C; **1 month at up to 60 °C** (≥ 90% capacity recovered) | charge 0–45 °C [BK]; discharge to 60 °C | Capacity lost when stored hot is partly permanent | Samsung SDI specification, 2014 (third-party copy) |
+| A123 ANR26650M1B (LFP, heat-tolerant alternative) | — | storage **−40 to 70 °C** (2022 maker sheet; an older A123 sheet says −40 to 60 °C) | −30 to 60 °C; charge 0–60 °C | — | Lithium Werks data sheet (read) |
+| Saft MP 174565 xtd (heat-tolerant Li-ion, listed for medical devices) | recommended +15 to 30 °C | allowable **−40 to 85 °C** | charge −30 to 85 °C; discharge −40 to 85 °C | The sheet shows the cell thickening after a year on charge at 60 °C and after 100 cycles at 85 °C | Saft data sheet (read) |
+| **Battery electronics** | | | | | |
+| TI BQ25887 charger | — | — | −40 to 85 °C | not limiting | TI page (version 0.2) |
+| ADI MAX17320 gauge and protector | [BK: −55/−65 to 150 °C, typical for chips] | — | [BK: −40 to 85 °C] | not limiting | not re-checked [UNVERIFIED] |
+| **Capacitor** | | | | | |
+| Project capacitor (Appendix A) | | **70 °C** (D-41) | −20 to 65 °C working | Film shrinkage and capacitance loss when hot; life halves per 10 °C under voltage [BK, Digi-Key forum] | D-41 |
+| TDK B32365 | | −20 to 70 °C | −20 to 55 °C | — | TDK data sheet |
+| CRE DMJ-PC | | −40 to 85 °C | −25 to 60 °C (125 µF) / −25 to 70 °C (200 µF, 2.2 kV) | — | CRE page |
+| **The rest** | | | | | |
+| Sharp memory LCD | not found [UNVERIFIED] | not found | **−20 to 70 °C** | Outside the rated range the liquid crystal can change permanently | Sharp brochure; Sharp specification on Avnet (summary) |
+| Micro-speaker and piezo | [BK: −40 to 85 °C typical] | | | Standard magnets lose strength above about 80 °C [BK] | not checked [UNVERIFIED] |
+| Enclosure plastics | [BK: PC/ABS softens around 95–115 °C; glass-filled nylon far higher] | | | not limiting below 85 °C | [BK] |
+| Gasket (silicone) | [BK: −50 to 200 °C] | | | Heat increases permanent squash ("compression set"), which can loosen the seal over years | [BK] |
+| Adhesive tape (3M VHB 5952 as an example) | **93 °C** long term (holds a load for 10,000 minutes) | higher for a few hours | | not limiting if a tape of this class is chosen | 3M technical data sheet (extract) |
+| Bluetooth module, front-end chip, processors | | | −40 to 85 °C or more | not limiting | §6, §7 |
+
+### H2. Which part sets each limit (the weakest links)
+
+| Limit | Weakest link | Figure | Runner-up |
+|---|---|---|---|
+| Continuous storage (any length of time) | **Pads** | 35–40 °C (ZOLL 35, Stryker 35, Avive 40) | Battery: 23–30 °C *recommended* for long storage, 45 °C allowed for 3 months (class figure); heat shortens its 2–3-year service life rather than ending it |
+| Excursion of hours to days | **Pads and battery together** | 60 °C (Philips and Stryker: 1 week; Avive: 14 days; cell class: 1 month) | ZOLL pads allow 65 °C |
+| Above which damage is possible | **Battery and pads are already outside every published rating above 60–65 °C**; at 70 °C the capacitor (D-41) and display (operating limit) also reach theirs | 70 °C | — |
+| Above which every part is outside its rating | All | above 70 °C | — |
+
+**Plainly:** the 70 °C capacitor is no longer the weak link, and could not have been with an 85 °C rating either. The device as a whole is a **60 °C device for hours, and a 35–40 °C device for months**, because that is what the pads and the battery are rated for.
+
+### H3. What commercial AEDs accept (benchmark)
+
+| Product | Normal storage | Short-term allowance |
+|---|---|---|
+| Stryker LIFEPAK CR2 | 15–35 °C | −30 to 60 °C, up to 1 week |
+| Philips HeartStart FRx | 0–50 °C standby | −20 to 60 °C, up to 1 week (extract) |
+| Avive Connect | 5–40 °C | −20 to 60 °C, up to 14 days |
+| ZOLL AED Plus | device −30 to 60 °C (spec sheet extract); its pads 0–35 °C long term, −30 to 65 °C short term | — |
+| HeartSine 350P/360P | 0–50 °C | −10 to 50 °C, up to 2 days |
+| Schiller FRED PA-1 | −20 to 50 °C | — |
+
+**The market's norm is 35–50 °C for normal storage and 60 °C for up to a week.** No commercial AED found claims more than 60–65 °C. A device that matches 60 °C would be level with the best of them.
+
+### H4. How hot parked cars get (published measurements)
+
+| Finding | Figure | Source |
+|---|---|---|
+| How fast a cabin heats | Average rise of about **22 °C (40 °F) in one hour**, whatever the outside temperature between 22 and 36 °C; **80% of the rise in the first 30 minutes**; cracked windows barely help | McLaren, Null and Quinn, *Pediatrics* 2005 (Stanford release and abstract) |
+| Cabin air, hot climate, 1 hour in sun | **47 °C** average (116 °F), on days above 35 °C in Tempe, Arizona | Vanos and others, *Temperature* 2018 (ASU release) |
+| Cabin air, same, 1 hour in shade | **38 °C** (100 °F) | same |
+| Dashboard surface, 1 hour in sun | **69 °C** average (157 °F); **89 °C** (192 °F) in one car | same |
+| Dashboard surface, 1 hour in shade | **48 °C** (118 °F) | same |
+| Steering wheel / seat, sun | 53 °C / 51 °C (127 / 123 °F) | same |
+| Cabin above outside air | more than 20 °C above ambient in sun; a black car about 5 °C hotter than a white one; a window open 2.5 cm lowers it only about 3 °C | Dadour and others, *Forensic Science International* 2011 (abstract) |
+| Hottest interior reading in a European study | **up to 89 °C** in summer (where in the car is not stated in the abstract) | Marty, Sigrist and Wyler, *Am J Forensic Med Pathol* 2001 (abstract) |
+| Peak over a 12-hour day, no direct sun on the items | **62 °C** (143.6 °F) in a black sedan; the glovebox did most harm to stored adrenaline, the trunk least | Lodz pilot study on adrenaline auto-injectors, *J Allergy Clin Immunol Pract* 2018 (reports) |
+| Emergency-vehicle storage compartments | up to **56.8 °C** (South Africa, a response car); −9 to **46.8 °C** over 102,524 readings (UK air ambulance service) | South African Journal of Pre-hospital Emergency Care, 2021; Essex & Herts Air Ambulance study, 2022–2023, published by Cambridge University Press (extracts) |
+
+**Checking the earlier notes.** Version 0.2 said "cabin air 47–70 °C and dashboard 70–100 °C". **Cabin air 47 °C is confirmed** (one hour in sun in a hot climate), and a full hot day reaches about 60–65 °C (62 °C measured). **I found no source for cabin air of 70 °C** [UNVERIFIED]; the 89 °C "interior" figure does not say whether it was air or a surface. **Dashboard 70 °C is confirmed as the average after one hour in sun, and 89 °C as a measured maximum; I found no source for 100 °C** [UNVERIFIED]. Corrected figures: **cabin air about 38 °C (shade) to 47 °C (sun) after one hour in a hot climate, about 60–65 °C at the peak of a hot day; dashboard about 48 °C (shade) to 69 °C (sun) on average, 89 °C at the measured maximum.** Trunk and glovebox: **no published temperature measurement found** [UNVERIFIED]; the adrenaline study suggests the glovebox runs at least as hot as the cabin and the trunk cooler.
+
+**How long the peak lasts.** The cabin reaches most of its rise within 30–60 minutes and then follows the sun; in a hot climate it stays near its peak through the afternoon, several hours [EST from the 80%-in-30-minutes finding and the sun's path].
+
+**How fast the device follows.** The device's thermal time constant is about **25 minutes** in still air [CALC, §4]. So a 30-minute stop lets the inside of the device make only about 70% of the cabin's rise, a 1-hour stop about 90% [CALC: 1 − e^(−30/25) = 0.70; 1 − e^(−60/25) = 0.91]. **This lag only applies in shade**: a device lying in direct sun absorbs sunlight itself and can approach dashboard temperatures [EST].
+
+### H5. Proposed envelope: three options
+
+All temperatures are **measured inside the device**, by the sensors of H6. Each option has four bands.
+
+| Band | **Option A: commercial benchmark** (no new parts) | **Option B: A plus an insulated car pouch** | **Option C: heat-tolerant parts** |
+|---|---|---|---|
+| 1. Normal: no limit | up to **40 °C** | up to 40 °C | up to 40 °C |
+| 2. Excursion: stays ready, time logged | 40–**60 °C**, up to **8 h** at a time above 50 °C; and a lifetime allowance for the pad set (question N) | same limits as A; the pouch makes the device reach them about four times more slowly | 40–**65 °C**, same time rules |
+| 3. Too hot: "not ready" | **60–70 °C**. Ready again once every sensor has been below 45 °C for 30 minutes and the daily self-test and battery load test pass | same as A | **65–70 °C**, same recovery |
+| 4. Damage possible: "service needed" | **above 70 °C** | same as A | above 70 °C |
+| Weakest link at the band 2 / band 3 boundary | Pads and cell (60 °C × 1 week; cell class 60 °C × 1 month) | same | Pads (ZOLL-class 65 °C) |
+| Weakest link at band 4 | Capacitor (D-41) and display at 70 °C; cell and pads already outside their ratings | same | LFP cell storage, capacitor and display all 70 °C |
+| Parts change | none | a pouch kept in the vehicle, not carried; about 50–100 g and $10–30 [EST]; not counted in the 700 g | 2 × LFP 26650 cells instead of 2 × 18650; pads specified to 65 °C short term |
+| Weight on the belt (lower-risk set, with pads) | **903 g, 0.89 L** | **903 g, 0.89 L** | **975 g, 0.97 L** (+72 g, +0.08 L) [CALC: cells 152 g instead of 92 g; about +36 cm³ of cell volume, carried through packing and shell] |
+| Other costs | — | The responder must put the device in the pouch | Cold-weather charging arithmetic must be redone for LFP (lower voltage, different cold behaviour) [UNVERIFIED]; less energy (17 Wh against 20 Wh) [CALC: 2 × 8.58 Wh] |
+
+**Why 8 hours.** One working shift. The published allowances at 50–60 °C are 2 days (HeartSine), 1 week (Philips, Stryker) and 14 days (Avive) per event. A device in a patrol car meets this repeatedly over years, so the study takes a much shorter limit per event and adds a lifetime allowance for the pads [EST].
+
+**Why not a dashboard option.** Surviving a dashboard in sun (69 °C on average, 89 °C measured) would need every part rated to about 90 °C. A cell exists (Saft MP xtd, to 85 °C), but each can deliver only 5 A continuously; supplying the charger's 7.6 A average and 15 A peaks would take four of them, about **464 g of cells** [CALC: 7.6 A ÷ 5 A → 2 strings × 2 in series = 4 × 116 g]. No pad maker publishes anything above 65 °C. **No option offers it.**
+
+**About the lithium-ion safety question.** Heat in bands 3 and 4 is a damage risk, not normally a fire risk: thermal runaway of a healthy cell starts well above 100 °C [BK]. The risks that matter are:
+1. **Charging a hot cell**, which ages it fastest and, in a damaged cell, can start a failure [BK]. Hence the 45 °C charging limit (H6).
+2. **Using a cell that heat has already damaged** (swollen, leaking charge, higher resistance). The Saft data sheet itself shows cells thickening after long heat. Hence the battery health check after band 4, and replacement if it fails.
+3. **A cell outside its discharge rating** (above 60 °C) delivering 8–9 A to charge the capacitor in a rescue. The study does not presume the answer; it is question M.
+
+### H6. Car situations: inside or outside each option
+
+Device temperatures are this study's estimates from H4 and the 25-minute (option B: about 90-minute) time constant [EST]. Option B's pouch: 10 mm of foam around the device roughly quadruples the time constant [CALC: foam conductance 0.035 W/m·K × 0.05 m² ÷ 0.01 m = 0.175 W/K, in series with 0.49 W/K to air → 0.13 W/K; 720 J/K ÷ 0.13 W/K = 93 minutes].
+
+| Situation | Device likely reaches | A | B | C |
+|---|---|---|---|---|
+| Worn on a belt, or indoors | 20–37 °C | Normal | Normal | Normal |
+| Door pocket, footwell or under a seat, 25–30 °C day, car in sun, 1 hour | cabin about 47–52 °C (+22 °C); device about 45–50 °C | Excursion, ready | about 40 °C, normal | Excursion, ready |
+| Same, 35–40 °C desert day, 1 hour | cabin about 47 °C average; device about 45 °C | Excursion, ready | about 38–40 °C | Excursion, ready |
+| Same, whole afternoon (4 h or more) in desert heat | cabin about 60–65 °C at peak; device close to it | **May go "not ready"**; no damage expected | Delayed by about 1.5–2 h; may still go "not ready" | Ready up to 65 °C; "not ready" above |
+| Emergency-vehicle compartment, hot day | up to about 57 °C (measured) | Excursion, ready | Excursion or normal | Excursion, ready |
+| Car parked in shade, 38 °C day, even on the dashboard | cabin about 38 °C, dashboard about 48 °C | Normal or excursion | Normal | Normal or excursion |
+| Glovebox | no measurement found; assume at least cabin air [UNVERIFIED] | as the cabin rows | as the cabin rows | as the cabin rows |
+| Trunk | no measurement found; probably no hotter than the cabin [UNVERIFIED] | as the cabin rows | as the cabin rows | as the cabin rows |
+| **Dashboard or rear shelf in direct sun, 30–40 °C day, 1 hour or more** | dashboard surface 69 °C average, 89 °C measured | **Outside: "service needed"** | **Outside** (the pouch slows it, but direct sun for hours defeats it) | **Outside** |
+| Dashboard in direct sun on a mild 20 °C day | cabin about 42 °C; dashboard perhaps 50–60 °C [EST] | Excursion; possibly "not ready" | Excursion | Excursion |
+
+**Plainly:** under every option, normal patrol-car use (door pocket, seat, footwell, compartment, shade) keeps the device ready on all but the hottest afternoons, and even then it only goes "not ready" for a while. **The dashboard or rear shelf in sun is outside every option**, as D-48 already says.
+
+### H7. What the device must do to enforce the envelope (requirements, not circuits)
+
+**R-H1. Where temperature is measured.**
+- At each battery cell (the gauge's own temperature inputs).
+- On the capacitor body.
+- Next to the stored pads (the pads' temperature cannot be measured directly; this is the proxy).
+- On the main board (the processor's own sensor is enough).
+- At least one of these is read independently by the supervisor (D-26, D-39), so a failed main controller cannot hide an overheat.
+- Accuracy ±2 °C from 0 to 80 °C; readable from −40 to +100 °C so that an over-limit event is measured, not just "off the scale" [EST].
+
+**R-H2. Logging that never stops.**
+- Sample every sensor at least every 5 minutes below 40 °C and every minute above 40 °C [EST].
+- Keep, in memory that survives power loss: the highest reading per sensor; time spent in each band per event; running totals per pad set and per battery; the time of each event.
+- Logging runs in **every** state the device can be in, including what the user thinks of as "off". There is no off switch that stops it.
+- **If logging is ever interrupted** (battery cut off by its protector, or removed), the device treats the gap as unknown history: "not ready" until a full self-test passes, and the gap is recorded.
+- **Power cost [EST]:** about 10–20 µW (a sleeping processor with its clock running, waking briefly to read the sensors): about **0.24–0.48 mWh a day**, about 1% of the 27–39 mWh-a-day standby budget (§9).
+- **Independent witness:** a passive, non-electronic heat-indicator label next to the pads that changes colour permanently at 60 °C and at 70 °C, so an inspector can see an overheat the electronics missed [BK that such labels exist; no part checked].
+
+**R-H3. The "not ready" rules** (thresholds per the option chosen, question K):
+- Band 3 → "not ready" at once, with the reason shown and sent over Bluetooth ("too hot, let it cool"). Back to "ready" after every sensor has read below 45 °C for 30 minutes [EST] and the daily low-voltage self-test and the battery load test pass.
+- Band 4 → "service needed". Back to "ready" only after: cooling as above; the full-energy self-test; a battery health check (internal resistance against the cell's own earlier value, and a 24–48 hour self-discharge check, which the MAX17320 class provides); and a pad resistance check. The record recommends replacing the pads, and replacing the battery if the health check fails.
+- Excursion beyond the per-event time or the lifetime pad allowance → "not ready: replace pads".
+- D-50 still applies: a "not ready" device switched on in an emergency still attempts the rescue, subject to the charge rules below and question M.
+
+**R-H4. Charging limits.**
+- **Battery charging** only between **0 and 45 °C** cell temperature, with reduced current below 10 °C [EST]. The P28A allows 0–60 °C, but heat plus full charge is the fastest way to age a cell [BK], and Avive gives 0–45 °C as its charging range. The BQ25887 charger's JEITA function provides this kind of rule.
+- **Capacitor charging** only while the capacitor is at or below its **working rating** (65 °C in Appendix A today; 60 or 55 °C if question L changes it) and the cells are within their **discharge rating** (60 °C). What a rescue does outside these limits is question M.
+- **Weekly full-energy self-test** only with the capacitor at or below 50 °C and the cells at or below 45 °C, consistent with D-49's rule that the full-energy test waits for heat [EST].
+
+**R-H5. Reporting.** Every band change and every refusal to charge is recorded in the event log and reported to the agency over Bluetooth (D-09, D-45), so a fleet manager can see which vehicles cook their devices.
 
 ---
 
@@ -617,62 +817,60 @@ Unchanged from version 0.1.
 
 ### Assumptions
 
-- **Packing factor 0.5** (decision set) or **0.6** (smallest set) [EST; real handhelds run 0.4–0.6, and 2 kV spacing pushes toward the lower end].
-- The shell is added to the inside volume. When the inside grows, the shell's volume and mass grow with its surface area, that is with (inside volume)^⅔ [CALC].
+- **Packing factor 0.5** (lower-risk set) or **0.6** (smallest set) [EST; real handhelds run 0.4–0.6, and 2 kV spacing pushes toward the lower end].
+- The shell is added to the inside volume. When the inside grows, the shell's volume and mass grow with its surface area, that is with (inside volume)^⅔, scaled from version 0.1's shell [CALC].
 - Pads are included in the verdict (D-43).
+- Version 0.3 follows every decision as it now stands: 70 °C capacitor storage and 65 °C working (Appendix A), D-42 to D-46, pads included, and the D-48 temperature sensing (envelope option A, which needs no new parts).
 
-### Before the 27 November decisions (version 0.1, kept for comparison)
+### Versions 0.1, 0.2 and 0.3 side by side [CALC]
 
-| Block | Lower-risk: cm³ | Lower-risk: g | Smallest: cm³ | Smallest: g |
-|---|---:|---:|---:|---:|
-| Capacitor | 180 | 250 | 150 | 210 |
-| Charger | 20 | 35 | 15 | 25 |
-| Bridge + gate drive + reed relays | 35 | 50 | 25 | 30 |
-| Discharge load | 10 | 25 | 10 | 21 |
-| Battery + gauge + charger | 38 (2 × 18650) | 97 | 28 (1 × 21700) | 75 |
-| Front end + protection | 20 | 25 | 15 | 20 |
-| Controllers, Bluetooth, flash, sensing | 10 | 12 | 8 | 8 |
-| Speaker, alarm, display, button, LEDs | 12 | 20 | 8 | 15 |
-| Boards, wiring, fasteners | (in packing) | 45 | (in packing) | 35 |
-| HV potting / barriers | (in packing) | 35 | (in packing) | 25 |
-| **Parts subtotal** | **325** | **594** | **259** | **464** |
-| Inside volume | 650 | | 432 | |
-| Shell and gasket | +110 | 140 | +90 | 100 |
-| **Device without pads** | **0.76 L** | **734 g** | **0.52 L** | **564 g** |
-| Pads | +60 | +100 | +50 | +80 |
-| **Device with pads** | **0.82 L** | **834 g** | **0.57 L** | **644 g** |
+**(a) Lower-risk set**: every decision followed, the lower-risk choice wherever a choice remains, and the **expected** capacitor. **(b) Smallest plausible set**: every decision followed, the smallest credible choice everywhere, and the **low** capacitor.
 
-### After the 27 November decisions [CALC from the blocks; block values EST as in §§1–8]
+| | v0.1 (a) | v0.1 (b) | v0.2 (a) | v0.2 (b) | **v0.3 (a)** | **v0.3 (b)** |
+|---|---:|---:|---:|---:|---:|---:|
+| Capacitor | 180 cm³ / 250 g (2.0 kV) | 150 / 210 | 210 / 300 (2.2 kV, 85 °C storage, 65 °C working) | 170 / 225 | **210 / 300** (70 °C storage, 65 °C working) | **170 / 225** |
+| Parts subtotal | 325 cm³ / 594 g | 259 / 464 | 357 / 653 | 292 / 509 | **358 / 654** | **293 / 510** |
+| Inside volume | 650 | 432 | 714 | 487 | **716** | **488** |
+| Shell and gasket | +110 / 140 g | +90 / 100 | +117 / 149 | +97 / 108 | **+117 / 149** | **+98 / 109** |
+| Device without pads | 0.76 L / 734 g | 0.52 / 564 | 0.83 / 802 | 0.58 / 617 | **0.83 L / 803 g** | **0.59 L / 619 g** |
+| Pads | +60 / 100 | +50 / 80 | +60 / 100 | +50 / 80 | +60 / 100 | +50 / 80 |
+| **Device with pads** | **0.82 L / 834 g** | **0.57 L / 644 g** | **0.89 L / 902 g** | **0.63 L / 697 g** | **0.89 L / 903 g** | **0.64 L / 699 g** |
+| Against 700 g / 0.7 L | +134 g / +0.12 L | −56 g / −0.13 L | +202 g / +0.19 L | −3 g / −0.07 L | **+203 g / +0.19 L** | **−1 g / −0.06 L** |
 
-**(a) Decision set**: every decision followed, the lower-risk choice wherever a choice remains, and the **expected** capacitor. **(b) Smallest plausible set**: every decision followed, the smallest credible choice everywhere, and the **low** capacitor.
+### Version 0.3 blocks [CALC from the blocks; block values EST as in §§1–8]
 
-| Block | (a) cm³ | (a) g | (b) cm³ | (b) g | What changed |
+| Block | (a) cm³ | (a) g | (b) cm³ | (b) g | Change from version 0.2 |
 |---|---:|---:|---:|---:|---|
-| Capacitor (D-41) | 210 | 300 | 170 | 225 | §1 expected / low |
+| Capacitor (D-41, revised) | 210 | 300 | 170 | 225 | none (§1) |
 | Charger | 20 | 35 | 15 | 25 | — |
 | Bridge + gate drive + reed relays | 35 | 50 | 25 | 30 | — |
 | Discharge load | 10 | 25 | 10 | 21 | — |
-| Battery, gauge, charger, dock contacts (D-44, D-46) | 39 | 100 | 39 | 100 | (b) now 2 × 18650; both + contacts |
+| Battery, gauge, charger, dock contacts (D-44, D-46) | 39 | 100 | 39 | 100 | — |
 | Front end + protection | 20 | 25 | 15 | 20 | — |
-| Controllers, Bluetooth module, flash, sensing (D-39, D-45) | 11 | 13 | 10 | 10 | antenna keep-out; module in (b) |
+| Controllers, Bluetooth module, flash, voltage sensing (D-39, D-45) | 11 | 13 | 10 | 10 | — |
+| Temperature sensors and heat label (D-48) | 1 | 1 | 1 | 1 | **new** |
 | Speaker, alarm, display, button, LEDs | 12 | 20 | 8 | 15 | — |
-| Boards, wiring, fasteners | (in packing) | 50 | (in packing) | 38 | + capacitor mount for drop |
+| Boards, wiring, fasteners | (in packing) | 50 | (in packing) | 38 | — |
 | HV potting / barriers | (in packing) | 35 | (in packing) | 25 | — |
-| **Parts subtotal** | **357** | **653** | **292** | **509** | |
-| Inside volume = parts ÷ packing factor | 714 | | 487 | | ÷ 0.5; ÷ 0.6 |
-| Shell and gasket (scaled with surface) | +117 | 149 | +97 | 108 | ×1.065; ×1.083 |
-| **Device without pads** | **0.83 L** | **802 g** | **0.58 L** | **617 g** | |
-| Pads, pre-connected | +60 | +100 | +50 | +80 | unchanged |
-| **Device with pads (D-43)** | **0.89 L** | **902 g** | **0.63 L** | **697 g** | |
+| **Parts subtotal** | **358** | **654** | **293** | **510** | |
+| Inside volume = parts ÷ packing factor | 716 | | 488 | | ÷ 0.5; ÷ 0.6 |
+| Shell and gasket (scaled with surface) | +117 | 149 | +98 | 109 | |
+| **Device without pads** | **0.83 L** | **803 g** | **0.59 L** | **619 g** | |
+| Pads, pre-connected | +60 | +100 | +50 | +80 | |
+| **Device with pads (D-43)** | **0.89 L** | **903 g** | **0.64 L** | **699 g** | |
 
-**Sensitivity of the result to the capacitor and battery [CALC]:**
+**Low, expected and high capacitor in each set [CALC]:**
 
-| Variant | With pads |
-|---|---|
-| (a) with the **low** capacitor | 0.80 L, 816 g |
-| (a) with the **high** capacitor | 1.02 L, 1,028 g |
-| (a) with 2 × 21700 cells instead of 2 × 18650 | 0.93 L, 955 g |
-| (b) with the **expected** capacitor | 0.71 L, 784 g |
+| Capacitor case | (a) with pads | (b) with pads |
+|---|---|---|
+| Low (170 cm³ / 225 g) | 0.80 L / 817 g | **0.64 L / 699 g** |
+| Expected (210 / 300) | **0.89 L / 903 g** | 0.71 L / 783 g |
+| High (270 / 410) | 1.03 L / 1,030 g | 0.82 L / 907 g |
+| Expected at 60 °C working (190 / 270), question L | 0.85 L / 868 g | 0.67 L / 748 g |
+| Expected at 2,500 cycles (170 / 240), Q-38 | 0.80 L / 832 g | 0.64 L / 714 g |
+| 60 °C working *and* 2,500 cycles (155 / 217) [CALC: 1.49 × 1.23 = 1.84 J/cc] | 0.77 L / 805 g | 0.61 L / 687 g |
+| (a) with 2 × 21700 cells instead of 2 × 18650 (Q-39) | 0.93 L / about 956 g | — |
+| Envelope option C (2 × LFP 26650) | 0.97 L / 975 g | 0.70 L / 769 g |
 
 ### What each decision cost [CALC]
 
@@ -680,14 +878,16 @@ Each decision applied alone to the version 0.1 set, carried through the packing 
 
 | Decision | Lower-risk set | Smallest set | Why |
 |---|---:|---:|---|
-| **D-41** capacitor 2.2 kV, 85 °C storage, 65 °C working | **+67 cm³, +63 g** | **+38 cm³, +23 g** | larger, heavier capacitor (expected / low case) and a stronger mount |
+| **D-41** capacitor 2.2 kV, 65 °C working, **70 °C storage** (revised) | **+67 cm³, +63 g** | **+38 cm³, +23 g** | Larger, heavier capacitor (expected / low case) and a stronger mount. **The same as with 85 °C storage**: storage heat was never what cost the weight; the 2.2 kV rating and 65 °C working were |
+| — of which: storage 85 °C → 70 °C | about 0 | about 0 | §1, item 4 |
 | **D-44** two cells | 0 | **+19 cm³, +25 g** | the lower-risk set already had two cells; the smallest set had one |
 | **D-45** separate Bluetooth module | +2 cm³, +1 g | +4 cm³, +3 g | module and antenna keep-out |
 | **D-46** dock contacts instead of USB-C | +2 cm³, +3 g | +2 cm³, +3 g | contacts, alignment magnets, input protection |
+| **D-48** temperature sensing, logging, heat label (option A) | +2 cm³, +1 g | +2 cm³, +1 g | a few sensors and a label; logging costs power, not grams |
 | **D-39** two Cortex-M33s | about 0 | about 0 | costs a few dollars, not grams |
 | **D-15** weekly full, daily low-voltage self-test | 0 | 0 | *saves* about +60 cm³ / +110 g of capacitor that twice-daily tests would have needed (the high case) |
 | D-42 made-to-order parts allowed | 0 | 0 | no size effect; one-off design charges (cost table) |
-| **Total of the decisions** | **+71 cm³, +68 g** | **+62 cm³, +53 g** | sum matches the tables above within rounding |
+| **Total of the decisions** | **+73 cm³, +69 g** | **+64 cm³, +55 g** | sum matches the tables above within rounding |
 | **D-43** pads counted in the target | +60 cm³, +100 g against the target | +50 cm³, +80 g | bookkeeping: the pads were always carried, now they count |
 
 ### Against targets and commercial units
@@ -696,38 +896,42 @@ Each decision applied alone to the version 0.1 set, carried through the packing 
 |---|---:|---:|---|
 | Target (REQUIREMENTS, D-43) | 0.7 L | 700 g with pads | 150 J |
 | Stretch target | 0.5 L | 500 g | 150 J |
-| **(a) Decision set** | **0.89 L** | **902 g** | 150 J |
-| **(b) Smallest plausible** | **0.63 L** | **697 g** | 150 J |
-| Version 0.1 lower-risk / smallest | 0.82 / 0.57 L | 834 / 644 g | 150 J |
+| **(a) Lower-risk set, version 0.3** | **0.89 L** | **903 g** | 150 J |
+| **(b) Smallest plausible, version 0.3** | **0.64 L** | **699 g** | 150 J |
+| Version 0.2 (a) / (b) | 0.89 / 0.63 L | 902 / 697 g | 150 J |
+| Version 0.1 (a) / (b) | 0.82 / 0.57 L | 834 / 644 g | 150 J |
 | St John Pocket AED P3 | 0.68 L | < 700 g incl. pads | 150 J |
 | Schiller FRED easyport plus | 0.99 L | 780 g | up to 200 J |
 | Avive Connect | 1.19–1.51 L | 953 g | 150 J |
 | CellAED | 0.31 L | ~300 g | ~75–85 J |
 
 **Plainly:**
-- **700 g with pads: not met by the decision set.** It is **202 g over (29%)** and **0.19 L over (27%)**. It would weigh a little less than the Avive Connect (953 g) and more than the Schiller (780 g).
-- **The smallest set meets it by 3 g and 0.07 L.** That has no margin: it needs the low capacitor *and* every other block at its smallest. With the expected capacitor it is 784 g, 84 g over.
+- **700 g with pads: not met by the lower-risk set.** It is **203 g over (29%)** and **0.19 L over (27%)**. It would weigh a little less than the Avive Connect (953 g) and more than the Schiller (780 g).
+- **The smallest set meets it by 1 g and 0.06 L.** That has no margin: it needs the low capacitor *and* every other block at its smallest. With the expected capacitor it is 783 g, 83 g over.
+- **The heat decision changed the result by about nothing** (+1 g for the sensors). The "about 840 g / 640 g" estimate recorded after the revision is not supported by this study's method.
 - **500 g / 0.5 L: not reachable.** The capacitor, battery and shell alone are about 430 g in the smallest set.
-- The honest expectation for a first prototype is **780–900 g**. Reaching 700 g is a goal for a refined second design, through the levers below.
+- The honest expectation for a first prototype is still **780–900 g**.
 
-### Levers that could close the gap, ranked by grams saved
+### Levers that could close the gap, re-ranked by grams saved
 
-Starting from the decision set (902 g, 0.89 L). Savings are for the finished device [CALC/EST as marked].
+Starting from the lower-risk set (903 g, 0.89 L). Savings are for the finished device with pads [CALC from the roll-up, or EST as marked]. **Levers 1, 2 and 3 all act on the same capacitor and do not simply add**: together they cannot take it much below the low case.
 
-| Rank | Lever | Saves | Cost in risk or function | Needs a decision changed? |
+| Rank | Lever | Saves | Cost in risk or function | Needs an owner decision? |
 |---:|---|---:|---|---|
-| 1 | **Capacitor at the low end**: a maker shows GA-class density (about 1.66 J/cc) at 2.2 kV *with* 85 °C storage and 65 °C working | **about 86 g, 89 cm³** [CALC] | None in function; it depends on what makers can prove. Ask every maker for density and mass against Appendix A | No |
-| 2 | **Thinner, ribbed shell** (about 110 g instead of 149 g) | about 40 g [EST] | 1.5 m drop and IP65 harder to pass | No |
-| 3 | **Smaller-block choices everywhere else** (surface-mount SiC bridge, lighter boards, potting, charger, front end, user interface: the smallest-set values) | about 70 g, 60 cm³ [CALC: block differences] | Surface-mount switches' pulse rating unproven; less insulation margin; quieter speaker | No |
-| 4 | **Tighter packing** (0.6 instead of 0.5) with insulating barriers or potting rather than air gaps | about 25 g, 125 cm³ [CALC] | Depends on the spacing the standard requires at 2 kV (not yet bought); potting adds some mass back | No |
-| 5 | **Lighter pads** (smaller pouch, shorter lead) | about 20 g [EST] | Lead must still reach for front-and-back child placement; pads are a regulated part | No |
-| 6 | **Capacitor working rating 55–60 °C instead of 65 °C**, with the device pausing to cool if it is ever too hot to charge | about 40–60 g [CALC: removes part of the 19% density penalty] | A long rescue on a very hot day might need a pause. Storage stays 85 °C | Specification change within D-41; **owner question** |
-| 7 | **Return to a 70 °C-storage capacitor** (TDK class) with a "never on the dashboard" rule | about 60 g [CALC: expected case back to about 180 cm³ / 250 g] | Reverses D-41's reason | **Revisits D-41**; owner question |
-| 8 | **One cell, accepting slower charging in the cold** | about 25 g, 19 cm³ [CALC] | Charge may outlast the analysis below about 0 °C; the arithmetic in §5 says a nearly flat single cell fails at −20 °C | **Revisits D-44**; owner question |
-| 9 | **Smaller capacitor** (for example 80 µF) | about 60 g [EST: 20% less capacitor] | Leaves the Philips-equivalent design point that D-41 kept for the bench-equivalence approval route; the waveform model would need re-running | **Revisits D-41 and D-23**; owner question |
-| 10 | **Stop charging during analysis** (smaller discharge load) | about 10–15 g [EST] | Adds about 6 s of hands-off time per cycle | **Revisits D-29**; not recommended |
+| 1 | **Capacitor at the low end**: a maker shows GA-class density (about 1.66 J/cc) at 2.2 kV with 65 °C working | **86 g, 89 cm³** | None in function; depends on what makers can prove. Ask every maker against Appendix A | No |
+| 2 | **Capacitor working rating 55 °C** (TDK class) | **86 g, 89 cm³** (the same part as lever 1) | About 1 °C of margin at a 50 °C ambient; in long rescues on very hot days the device pauses to cool | **Yes: question L** |
+| 2b | Capacitor working rating 60 °C | 35 g, 44 cm³ | About 6 °C of margin; a device that is already hot waits before charging (question M) | **Yes: question L** |
+| 3 | **Cycle-life requirement 2,500 instead of 5,000** | **71 g, 89 cm³** | Fits personal-issue devices (twice the typical profile); a pool device shared across shifts would wear out its capacitor early | **Yes: Q-38** |
+| 4 | **Smaller-block choices everywhere else** (surface-mount SiC bridge, lighter boards, potting, charger, front end, user interface: the smallest-set values) | about 70 g, 60 cm³ [CALC: block differences] | Surface-mount switches' pulse rating unproven; less insulation margin; quieter speaker | No |
+| 5 | **Smaller capacitor** (for example 80 µF) | about 60 g [EST: 20% less capacitor] | Leaves the Philips-equivalent design point that D-41 kept for the bench-equivalence approval route; the waveform model would need re-running | **Yes: revisits D-41 and D-23** |
+| 6 | **Thinner, ribbed shell** (about 110 g instead of 149 g) | about 40 g [EST] | 1.5 m drop and IP65 harder to pass | No |
+| 7 | **Tighter packing** (0.6 instead of 0.5) with insulating barriers or potting rather than air gaps | about 25 g, 125 cm³ [CALC] | Depends on the spacing the standard requires at 2 kV (not yet bought); potting adds some mass back | No |
+| 8 | **One cell, accepting slower charging in the cold** | about 25 g, 19 cm³ [CALC] | The arithmetic in §5 says a nearly flat single cell fails at −20 °C | **Yes: revisits D-44** |
+| 9 | **Lighter pads** (smaller pouch, shorter lead) | about 20 g [EST] | Lead must still reach for front-and-back child placement; pads are a regulated part | No |
+| 10 | **Stop charging during analysis** (smaller discharge load) | about 10–15 g [EST] | Adds about 6 s of hands-off time per cycle | **Yes: revisits D-29**; not recommended |
+| — | ~~70 °C-storage capacitor~~ (version 0.2's lever 7) | **taken by D-41; saved about 0 g** | Version 0.2's "about 60 g" assumed a 55 °C working rating as well; that part of it is now lever 2 | done |
 
-Levers 1–5 together (about 240 g) would bring the decision set to about 660–700 g. That is essentially the smallest set: **700 g needs nearly all of them to succeed.** Levers 6–10 each need the owner; they are listed as questions in §11, not assumed.
+**What the levers add up to.** The levers that need no decision (1, 4, 6, 7, 9; about 240 g) bring the lower-risk set to about the smallest set, **about 700 g**: so 700 g still needs nearly all of them to succeed. If makers cannot reach the low case, the decision levers 2 or 3 are the way to buy the same grams; with 60 °C working *and* 2,500 cycles the lower-risk set would be about 805 g and the smallest set about 687 g.
 
 ### Cost estimate [EST]
 
@@ -735,7 +939,7 @@ All prices are estimates; see the access note at the top.
 
 | | Qty 1 (prototype) | Qty 100, per unit |
 |---|---:|---:|
-| Capacitor (made to order, 2.2 kV, 85 °C) | $200–600 (sample, quote) | $100–250 |
+| Capacitor (made to order, 2.2 kV, 70 °C storage) | $180–550 (sample, quote) | $95–230 |
 | Charger incl. transformer samples | $100–200 | $25–40 |
 | Bridge, gate drive, relays | $350–550 | $200–330 |
 | Discharge load | $20–40 | $15–25 |
@@ -743,13 +947,15 @@ All prices are estimates; see the access note at the top.
 | Dock contacts, device side | $5–15 | $2–5 |
 | Front end + protection | $60–100 | $30–50 |
 | Controllers, Bluetooth module, flash, sensing chains | $60–100 | $35–60 |
+| Temperature sensors and heat-indicator labels (D-48) | $5–15 | $2–5 |
 | User interface | $50–80 | $25–40 |
 | Boards (HV-rated, 4-layer), small batch | $300–800 per batch | $20–40 |
 | Enclosure (3D print or machined; tooling later) | $300–1,500 | $15–40 (after $10–40k tooling) |
 | Pads (commercial replacements, for fit and impedance only) | $50–80 | — |
-| **Parts for one first prototype** | **about $1,540–4,140** | **about $490–920 per unit** |
-| One-off design and qualification charges for made-to-order parts (capacitor, transformer, gate-drive isolation, pad connector) | $3,000–10,000 | — |
+| **Parts for one first prototype** | **about $1,525–4,105** | **about $487–905 per unit** |
+| One-off design and qualification charges for made-to-order parts (capacitor, transformer, gate-drive isolation, pad connector) | $2,800–9,500 | — |
 | Charging dock (not carried) | $50–150 | $15–30 |
+| Option B: insulated car pouch (not carried) | $10–30 | $5–15 |
 
 Test equipment and engineering time are **not** included.
 
@@ -758,14 +964,15 @@ Test equipment and engineering time are **not** included.
 | State | Draw | Notes |
 |---|---:|---|
 | Standby (worn, ready, Bluetooth module advertising every 1–2 s) | 0.5–1 mW | Supervisor awake periodically, gauge, regulators, module |
+| Temperature logging (D-48), in every state | 0.01–0.02 mW | §8A, R-H2: about 0.24–0.48 mWh a day |
 | Weekly full-energy self-test (D-15), averaged | 0.42 mW | [CALC: 253 J ÷ 7 days] |
 | Daily low-voltage check (D-15), averaged | about 0.17 mW | [CALC: about 15 J a day: about 2 J into the capacitor at 10% voltage, plus electronics awake and a battery load test, EST] |
-| **Standby including self-tests** | **1.1–1.6 mW: 0.027–0.039 Wh a day** | [CALC]. Lithium-ion self-discharge (about 2–3% a month [BK]) is of the same order |
+| **Standby including self-tests and logging** | **1.1–1.6 mW: 0.027–0.039 Wh a day** | [CALC]. Logging adds about 1%. Lithium-ion self-discharge (about 2–3% a month [BK], faster when hot) is of the same order |
 | Rescue, not charging | 0.4–0.6 W | |
 | Charging | 44–50 W for 7 s | §2 |
 | Rescue average with D-29 | about 2.5–2.8 W | 30 min ≈ 1.3–1.4 Wh |
 
-Off the dock, a full 20 Wh pack would cover standby and self-tests for many months and still hold enough for several long rescues [CALC: 0.04 Wh a day plus self-discharge, against 1.3 Wh per long rescue]. The device should still go on the dock every shift.
+Off the dock, a full 20 Wh pack would cover standby, self-tests and logging for many months and still hold enough for several long rescues [CALC: 0.04 Wh a day plus self-discharge, against 1.3 Wh per long rescue]. The device should still go on the dock every shift.
 
 ---
 
@@ -773,20 +980,22 @@ Off the dock, a full 20 Wh pack would cover standby and self-tests for many mont
 
 | Rank | Risk or unknown | Why it matters | What would resolve it (later, under the lab safety policy) |
 |---:|---|---|---|
-| 1 | **Capacitor: density, mass and hot life at 2.2 kV / 85 °C** | Sets about a third of the mass; spread between low and high cases is 185 g | Quotes from 3–4 makers against Appendix A, with their test evidence; then the project's own 85 °C storage and 50 °C cycling checks |
-| 2 | **Battery and pads in a hot car** (new) | D-41 protects the capacitor, but cells and pad gel are typically limited to about 50–60 °C storage [BK] | Read the chosen cells' and pads' storage ratings; decide a storage rule (owner question) |
-| 3 | **The 700 g target** | The decision set is 29% over | The levers in §9; maker quotes for the capacitor |
-| 4 | **Front end under the charger and after the shock** | The analysis runs during charging (D-29) | Measure ECG and impedance noise with the charger running, first at ≤ 50 V output |
-| 5 | **Switch pulse ratings at milliseconds** | No datasheet states them | Single 10 ms, 65 A pulses into 25 Ω; then 20 shocks in 1,300 s |
-| 6 | **Gate-drive insulation at 2.2 kV working** | No catalogue part qualifies | Appendix B; partial-discharge and humidity tests on the delivered parts |
-| 7 | **Battery in the cold** | 2 × 18650 just manages −20 °C in the pessimistic case | Charge time and minimum cell voltage at −20 °C from 10% charge, packs B and C |
-| 8 | **Spacing required by the standard at 2 kV** | Could push the packing factor below 0.5 | Buy IEC 60601-1 and 60601-2-4 |
-| 9 | **Voltage sensors over temperature and life** | D-28 is tight against drift | Both chains against a calibrated reference at three voltages and three temperatures |
-| 10 | **Internal heating in a long rescue at 50 °C** | Capacitor at about 54 °C against a 65 °C rating | Thermocouples during 14 dumps at 132 s spacing in a 50 °C chamber |
-| 11 | **Discharge-resistor repeat rating and 5,000-pulse life** | The EY part is marketed for infrequent pulses | Maker's statement; then 100 dumps at 132 s spacing |
-| 12 | **1.5 m drop with a 300 g capacitor** | Lead or mount failure | Drop test with a mass-equivalent dummy capacitor (no HV) |
-| 13 | **Bluetooth module approval conditions** | Reusing the approval depends on following the grant's conditions | Read the FCC grant and integration guide of the chosen module |
-| 14 | **Ferrocene scope detail** | CPU option and library certification scope | Ask Ferrous Systems for the 26.11.0 qualification report |
+| 1 | **Capacitor: density, mass and hot-working life at 2.2 kV** | Sets about a third of the mass; spread between low and high cases is 185 g; the working-temperature penalty is this study's scaling, not a maker's curve | Quotes from 3–4 makers against Appendix A at 55, 60 and 65 °C working, with their test evidence |
+| 2 | **The 700 g target** | The lower-risk set is 29% over; the heat decision did not help | The levers in §9; maker quotes; questions L and Q-38 |
+| 3 | **Pads' and cell's real heat limits for this device** | They set the envelope (§8A), but the project's pads do not exist yet and Molicel publishes no short-term storage figure for the P28A | Ask Molicel; write the pad specification to the envelope; test pads and cells at 60 °C |
+| 4 | **Heat-damaged battery in service** | A cell aged or swollen by heat is the realistic lithium-ion hazard | The R-H3 battery health check; capacity, resistance and thickness tests after hot storage (§5) |
+| 5 | **Front end under the charger and after the shock** | The analysis runs during charging (D-29) | Measure ECG and impedance noise with the charger running, first at ≤ 50 V output |
+| 6 | **Switch pulse ratings at milliseconds** | No datasheet states them | Single 10 ms, 65 A pulses into 25 Ω; then 20 shocks in 1,300 s |
+| 7 | **Gate-drive insulation at 2.2 kV working** | No catalogue part qualifies | Appendix B; partial-discharge and humidity tests on the delivered parts |
+| 8 | **Battery in the cold** | 2 × 18650 just manages −20 °C in the pessimistic case | Charge time and minimum cell voltage at −20 °C from 10% charge, packs B and C |
+| 9 | **Spacing required by the standard at 2 kV** | Could push the packing factor below 0.5 | Buy IEC 60601-1 and 60601-2-4 |
+| 10 | **How fast the device really heats in a car** | The 25-minute time constant is still-air arithmetic; sunlight on the case is not modelled | Log a dummy device (no high voltage) in a parked car beside air and dashboard sensors |
+| 11 | **Voltage sensors over temperature and life** | D-28 is tight against drift | Both chains against a calibrated reference at three voltages and three temperatures |
+| 12 | **Internal heating in a long rescue at 50 °C** | Capacitor at about 54 °C against a 65 °C rating (less margin if question L lowers it) | Thermocouples during 14 dumps at 132 s spacing in a 50 °C chamber |
+| 13 | **Discharge-resistor repeat rating and 5,000-pulse life** | The EY part is marketed for infrequent pulses | Maker's statement; then 100 dumps at 132 s spacing |
+| 14 | **1.5 m drop with a 300 g capacitor** | Lead or mount failure | Drop test with a mass-equivalent dummy capacitor (no HV) |
+| 15 | **Bluetooth module approval conditions** | Reusing the approval depends on following the grant's conditions | Read the FCC grant and integration guide of the chosen module |
+| 16 | **Ferrocene scope detail** | CPU option and library certification scope | Ask Ferrous Systems for the 26.11.0 qualification report |
 
 ---
 
@@ -794,56 +1003,58 @@ Off the dock, a full 20 Wh pack would cover standby and self-tests for many mont
 
 ### Answered on 27 November 2026
 
-| Version 0.1 question | Answer | Recorded as |
+| Question | Answer | Recorded as |
 |---|---|---|
-| 1. Car heat | Made-to-order capacitor with 85 °C storage | D-41 (Q-23) |
-| 2. Off-the-shelf parts only | Catalogue where possible; made to order with a published specification where not | D-42 (Q-24) |
-| 3. Voltage margin | 2,200 V parts, keep 100 µF | D-41 (Q-25) |
-| 4. Self-test frequency | Weekly full energy, daily low-voltage | D-15 (Q-26) |
-| 5. Cold-weather charging | Two cells | D-44 (Q-27) |
-| 6. Bluetooth code | Separate pre-certified module | D-45 (Q-28) |
-| 7. Supervisor technology | Cortex-M33 class, different maker | D-39 (Q-29) |
-| 8. Does 700 g include pads? | Yes | D-43 (Q-30) |
-| 10. IP65 and charging | Sealed contacts and a dock | D-46 (Q-31) |
+| Car heat (version 0.1, Q-23) | First a made-to-order capacitor with 85 °C storage; then revised to about **70 °C storage** | D-41 (revised) |
+| Hot cars beyond the capacitor (version 0.2, question E; Q-37) | **Left in a vehicle for short periods, not on a dashboard**; the device records its temperature and reports "not ready" after overheating; weight comes before extreme heat tolerance. The numbers are proposed in §8A and wait on question K | D-48 |
+| Off-the-shelf parts only (Q-24) | Catalogue where possible; made to order with a published specification where not | D-42 |
+| Voltage margin (Q-25) | 2,200 V parts, keep 100 µF | D-41 |
+| Self-test frequency (Q-26) | Weekly full energy, daily low-voltage | D-15 |
+| Cold-weather charging (Q-27) | Two cells | D-44 |
+| Bluetooth code (Q-28) | Separate pre-certified module | D-45 |
+| Supervisor technology (Q-29) | Cortex-M33 class, different maker | D-39 |
+| Does 700 g include pads? (Q-30) | Yes | D-43 |
+| IP65 and charging (Q-31) | Sealed contacts and a dock | D-46 |
 
-### Still open from version 0.1
+### Still open, restated with version 0.3's numbers
 
-These two were not among the questions answered on 27 November; they are not in DECISIONS.md.
-
-- **A. Sensor accuracy over life (D-28).** 1% + 7 V holds at manufacture with good parts, but resistor drift uses about a third of the allowance over years. Accept periodic recalibration at service, or specify costlier low-drift dividers?
-- **B. MAX30001G's 0–70 °C range** rules out the most capable compression-sensing chip against the −20 °C target. Confirm that the full temperature range comes first?
+- **Q-36. The 700 g target.** With every decision as it stands, the lower-risk set is about **903 g with pads (203 g, 29% over)** and the smallest plausible set about **699 g (1 g under)**, which needs the low capacitor. **The "about 840 g / 640 g" figures written into Q-36 are not supported:** dropping 85 °C storage saved about 0 g (§1). Weight priority over heat is noted. Options: (a) keep 700 g as the goal for a refined design and accept a first prototype of about 800–900 g; (b) answer one of the decision levers below (L, Q-38) to buy 35–86 g now; (c) set a different target, for example 850 g.
+- **Q-38. How heavily is one device used?** Appendix A asks for 5,000 full-energy cycles (25 rescues a year for 10 years, plus self-tests, plus 20%). A typical user needs about 1,220. **Asking for 2,500 instead would save about 71 g** (lower-risk set 832 g) [CALC, §1]. Which is closer to how agencies will use it: personal issue, or a pool unit shared across shifts?
+- **Q-39. Battery size in the cold.** Two 18650 cells just manage a full-speed charge at −20 °C when nearly flat. If the cold tests confirm the margin is too thin: move to two 21700 cells (about +53 g; lower-risk set about 956 g), or accept a slower charge when the battery is both cold and low?
+- **Q-40. Bluetooth module firmware.** The ready-made serial firmwares are being withdrawn. Accept that the project writes the module's small firmware itself (in Rust where the tools allow; the radio's lowest layer is always the chip maker's closed code), running only on the module, outside D-24? Or leave Bluetooth out of the first prototype? (No weight effect: about 1 g.) Note that R-H5 reports heat events over Bluetooth; without it, they would only be read at service.
+- **A. Sensor accuracy over life (D-28)** (from version 0.1). 1% + 7 V holds at manufacture with good parts, but resistor drift uses about a third of the allowance over years, and time spent hot adds drift. Accept periodic recalibration at service, or specify costlier low-drift dividers?
+- **B. MAX30001G's 0–70 °C range** (from version 0.1) rules out the most capable compression-sensing chip against the −20 °C target. Confirm that the full temperature range comes first?
+- **H. Publishing the made-to-order specifications** (from version 0.2). Appendices A and B are requirements only, not designs. Confirm they may be published in the public repository now, or hold them for the patent review (D-13)?
+- **J. Decisions that could be revisited for weight** (listed so they are visible, not recommended): one cell instead of two (D-44, about 25 g); a smaller capacitor than 100 µF (D-41/D-23, about 60 g, leaves the Philips-equivalent design point); stopping charging during analysis (D-29, 10–15 g, costs about 6 s of hands-off time). Do you want any of these studied further?
 
 ### New questions raised by this revision
 
-- **C. The 700 g target.** The set that follows your decisions comes to about 900 g with pads; 700 g needs almost every part at its optimistic value. Which do you prefer?
-  - (a) keep 700 g as the goal for a refined design, and accept that the first prototype will be about 800–900 g;
-  - (b) revisit one of the decisions below to buy grams now;
-  - (c) set a different target.
-- **D. Capacitor working temperature.** Specify the capacitor for **65 °C working** (expected about 300 g), or **55–60 °C working** with the device pausing to cool if it is too hot to charge (saves perhaps 40–60 g)? Storage stays 85 °C either way.
-- **E. Hot cars beyond the capacitor.** The battery and pads are typically limited to about 50–60 °C storage [BK], so an 85 °C capacitor does not on its own make the device dashboard-proof. Options: (a) a "never leave on the dashboard" rule anyway; (b) look for cells and pads rated higher (unknown cost); (c) an insulated carry case for the car. Which?
-- **F. Battery size in the cold.** Two 18650 cells just manage a full-speed charge at −20 °C when nearly flat. If the cold tests confirm that margin is too thin: move to two 21700 cells (about +50 g), or accept a slower charge (a few seconds' wait for the shock) when the battery is both cold and low?
-- **G. How hard will one device be used?** The capacitor life requirement (5,000 cycles) assumes up to 25 rescues a year, as for a unit shared across shifts. If devices are personal issue and used a few times a year, the requirement could relax to about 2,500 cycles, which may allow a smaller capacitor. Which is closer to how agencies will use it?
-- **H. Publishing the made-to-order specifications.** D-42 says each made-to-order part gets a published specification. The sheets in Appendices A and B are requirements only (what the part must do and what proof to ask for), not designs. Confirm they may be published now in the public repository, or hold them for the patent review (D-13)?
-- **I. Bluetooth module firmware.** The ready-made serial firmwares are being withdrawn. Accept that the project writes the module's small firmware itself (in Rust where the tools allow; the radio's lowest layer is always the chip maker's closed code), running only on the module, outside D-24?
-- **J. Decisions that could be revisited for weight** (listed so they are visible, not recommended): one cell instead of two (D-44, about 25 g); a 70 °C-storage capacitor with a dashboard rule (D-41, about 60 g); a smaller capacitor than 100 µF (D-41/D-23, about 60 g, leaves the Philips-equivalent design point). Do you want any of these studied further?
+- **K. Which heat envelope?** (§8A, H5)
+  - **A.** Normal to 40 °C; up to 60 °C for 8 hours and still ready; "not ready" from 60 to 70 °C; "service needed" above 70 °C. No new parts, no weight.
+  - **B.** As A, plus an insulated pouch kept in the vehicle (not carried), which slows heating about fourfold. About $10–30; the responder has to use it.
+  - **C.** As A but ready up to 65 °C, using heat-tolerant (LFP) cells and pads specified to 65 °C. About **+72 g** and 0.08 L; cold-weather performance must be re-checked.
+  - None of them survives a dashboard in sun.
+- **L. Capacitor working temperature.** (Formerly version 0.2's question D.) Keep **65 °C** working (300 g expected; about 10 °C of margin on a 50 °C day), or **60 °C** (saves about 35 g; about 6 °C of margin), or **55 °C** (saves about 86 g; about 1 °C of margin, so in long rescues on very hot days the device would pause to cool)? Storage stays 70 °C. Makers will be asked to quote all three.
+- **M. Rescue with a hot device.** D-50 says a "not ready" device still attempts a rescue. If the capacitor is above its working rating, or the cells above their 60 °C discharge rating, should the device (a) still charge and shock, accepting some wear and a small added risk from the battery, up to the 70 °C absolute limit; (b) guide CPR only until it has cooled below the limits, then shock; or (c) something else? This is a safety trade, and a clinician's view may help.
+- **N. Pad heat allowance.** Should pads be flagged for replacement after a lifetime total of time spent hot, for example **7 days above 50 °C**, the shortest per-event allowance a commercial maker gives at 60 °C [EST], or only on their expiry date and the pad resistance check?
 
 ---
 
 ## What I could not verify
 
-- **Capacitor:** any mass or temperature rating for a 2.2 kV defibrillator film capacitor; a life-versus-temperature curve from any maker; whether GA's catalogue ratings are at 25 °C or at the working limit; dimensions of the CRE 200 µF / 2,200 V part. The voltage exponent (6.6) is fitted to one maker's family; published values run from 5 to 13.
-- **Battery:** the P28A's and P45B's internal resistance at −20 °C (the multiplier of 3–5 is background knowledge); the P28A's storage temperature range; whether the datasheet copies are official.
-- **Bluetooth:** the FCC ID of the Ezurio BL54L15 and the Raytac AN54L15Q (only the BGM220S grant was seen); the BGM220S temperature range and serial co-processor mode; module lifecycles beyond the makers' pages.
-- **2-cell parts:** BQ25887 stock; the BQ28Z610's end-of-life status.
-- **Dock contacts:** a specific part number with a published IP rating for the device side.
-- **Pads:** mass of an unpackaged pad pair; storage temperature limits of commercial pads.
-- **Carried over from version 0.1:** prices and stock (distributor pages blocked automated access); switch pulse ratings at shock length; ADS1292R respiration resolution; ADAS1000 lifecycle; base MAX30001 temperature range; STM32U585, NXP MCX-A and Sharp memory LCD lifecycles; Ferrocene's `cortex-m33` CPU scope; spacing at 2 kV (standard not bought).
+- **Pads:** the time limit on ZOLL's −30 to 65 °C short-term storage; the full Philips FRx storage table (only an extract of the 1-week, −20 to 60 °C figure was seen; the PDF manuals did not open); Schiller's pad storage range; the CellAED's storage range (not searched). Several pad and AED figures come from search-result extracts of maker documents, not the documents themselves; each is marked "extract" in §8A. Mass of an unpackaged pad pair.
+- **Battery:** the P28A's and P45B's short-term storage maximum (Molicel's copy gives only "below 35 °C for shipping" and "below 23 °C long term"); whether the datasheet copies are official; the cold internal-resistance multiplier (3–5, background knowledge); LFP behaviour at −20 °C for this charger; the MAX17320's temperature ranges (not re-checked this pass).
+- **Cars:** no published measurement of **trunk or glovebox** temperatures was found; no source for **cabin air of 70 °C** or a **dashboard of 100 °C** (the version 0.2 notes); the full text of the Vanos 2018, Grundstein 2009, Dadour 2011 and Marty 2001 papers (only abstracts and press releases were reachable); how long cabins stay near their peak (estimated).
+- **Device heating:** the 25-minute time constant and the pouch's fourfold slowing are still-air arithmetic; heating by direct sun on the case is not modelled.
+- **Display and the rest:** the Sharp memory LCD's storage range; speaker and piezo heat ratings; enclosure plastic and gasket figures (background knowledge only); a specific passive heat-indicator label.
+- **Capacitor:** any mass or temperature rating for a 2.2 kV defibrillator film capacitor beyond CRE's; a life-versus-temperature curve from any maker; whether GA's catalogue ratings are at 25 °C or at the working limit; dimensions of the CRE 200 µF / 2,200 V part. The voltage exponent (6.6) is fitted to one maker's family; published values run from 5 to 13.
+- **Carried over from version 0.2:** the FCC IDs of the Ezurio BL54L15 and Raytac AN54L15Q; the BGM220S temperature range and serial co-processor mode; BQ25887 stock; the BQ28Z610's end-of-life status; a device-side sealed contact part number; prices and stock (distributor pages blocked automated access); switch pulse ratings at shock length; ADS1292R respiration resolution; ADAS1000 lifecycle; base MAX30001 temperature range; STM32U585, NXP MCX-A and Sharp memory LCD lifecycles; Ferrocene's `cortex-m33` CPU scope; spacing at 2 kV (standard not bought).
 
 ---
 
 ## Appendix A. Specification sheet: made-to-order energy-storage capacitor
 
-**Status: draft requirements for a part to be purchased (D-41, D-42). Not a design.** It says what the part must do and what proof the maker must supply. How the maker achieves it is the maker's business. Figures marked [EST] are this study's targets and may move after maker feedback; figures marked [CALC] follow from the working in §1.
+**Status: draft requirements for a part to be purchased (D-41, D-42). Not a design.** It says what the part must do and what proof the maker must supply. How the maker achieves it is the maker's business. Figures marked [EST] are this study's targets and may move after maker feedback; figures marked [CALC] follow from the working in §1. **Version 0.3: storage lowered to 70 °C (D-41, revised); makers asked to quote three working temperatures (question L).**
 
 ### A1. Electrical
 
@@ -862,7 +1073,7 @@ These two were not among the questions answered on 27 November; they are not in 
 | Repetition | Up to **20 full-energy discharges at about 65 s spacing**, then one every 2 minutes indefinitely, at 50 °C ambient | IEC 60601-2-4 style "20 shocks in 1,300 s" check; D-29 cycle of 132 s |
 | Internal loss (ESR) | Dissipation factor ≤ 0.010 at 120 Hz (ESR about 0.13 Ω at 100 µF) at 25 °C; ≤ 2× initial at end of life | [CALC: ESR = 0.01 / (2π × 120 × 100 µF) = 0.133 Ω]; TDK B32365 states tan δ < 0.010 |
 | Internal inductance (ESL) | ≤ 200 nH [EST] | Irrelevant to millisecond pulses above this level; keeps fault ringing low |
-| Leakage / self-discharge | Insulation resistance × capacitance ≥ 10,000 s at 25 °C and ≥ 1,000 s at 65 °C [EST] (for 100 µF: ≥ 100 MΩ and ≥ 10 MΩ) | Keeps leakage below the voltage-sensing divider's current; a charge is held for under a minute normally |
+| Leakage / self-discharge | Insulation resistance × capacitance ≥ 10,000 s at 25 °C and ≥ 1,000 s at the working-temperature limit [EST] (for 100 µF: ≥ 100 MΩ and ≥ 10 MΩ) | Keeps leakage below the voltage-sensing divider's current; a charge is held for under a minute normally |
 | Voltage recovery (dielectric absorption) | ≤ 0.2% of the pre-discharge voltage (about 4 V) 1 minute after discharge to below 10 V and opening the circuit [EST] | SAFETY.md: recovered charge is a hazard; polypropylene is typically far below this [BK] |
 | Internal bleed resistor | None, unless agreed | The device has its own discharge path and backup bleeder |
 
@@ -879,20 +1090,21 @@ Usage profile (from §1), over a **10-year** service life:
 | Daily low-voltage checks (365 × 10), at no more than about 10% of full voltage | 3,650 |
 
 Requirements:
-- **≥ 5,000 full-energy cycles** (charge to 2,008 V, hold up to 30 s, discharge as A1) **at 50 °C ambient**. [CALC: 4,120 × 1.2, rounded]
+- **≥ 5,000 full-energy cycles** (charge to 2,008 V, hold up to 30 s, discharge as A1) **at 50 °C ambient**. [CALC: 4,120 × 1.2, rounded.] *Pending Q-38: the maker is also asked to quote a part for ≥ 2,500 cycles.*
 - ≥ 4,000 low-voltage cycles (negligible wear expected; stated for completeness).
 - End-of-life criteria: capacitance loss ≤ 5% (the conventional pulse-capacitor end-of-life point), dissipation factor ≤ 2× initial, no open circuit, no short circuit, no case deformation.
-- The maker states the cycle life at 25 °C, 50 °C and 65 °C, and the model it uses to scale between them.
+- The maker states the cycle life at 25 °C, 50 °C and at the working-temperature limit, and the model it uses to scale between them.
 - Shelf life ≥ 10 years at 25 °C without re-forming.
 
 ### A3. Environmental
 
 | Item | Requirement | Basis |
 |---|---|---|
-| Working temperature | **−20 to +65 °C** ambient at the part | 50 °C device rating + about 4 K internal rise (§4) + margin |
-| Storage temperature, unpowered | **−40 to +85 °C** | D-41 |
-| Hot storage over life | ≥ 4,000 h cumulative at 85 °C, unpowered, within end-of-life limits | [CALC/EST: 10 summers × 100 days × 4 h] |
-| Temperature cycling | ≥ 1,000 cycles −40 / +85 °C, unpowered, within limits | [EST: about one hot-cold swing a day over three years of car storage] |
+| Working temperature | **−20 to +65 °C** ambient at the part. *Pending question L, the maker is asked to quote three variants: +65, +60 and +55 °C working, each with its size, mass and cycle life* | 50 °C device rating + about 4 K internal rise (§4) + margin; the device will not charge the capacitor above its rated working temperature (§8A, R-H4) |
+| Storage temperature, unpowered | **−40 to +70 °C** | D-41 (revised); the device's envelope puts its absolute limit at 70 °C (§8A) |
+| Hot storage over life | ≥ **2,000 h cumulative at 70 °C**, unpowered, within end-of-life limits | [EST: 10 summers × 50 days × 4 h, all assumed at the 70 °C ceiling, which is conservative because most of the time will be cooler] |
+| Behaviour above the storage limit (information only, not a pass/fail requirement) | The maker states what happens after 24 h at 85 °C unpowered: capacitance, dissipation factor, insulation resistance, any case change | So the device's "service needed" rule (§8A) knows whether a hot-car event above 70 °C ends the capacitor's life |
+| Temperature cycling | ≥ 1,000 cycles −40 / +70 °C, unpowered, within limits | [EST: about one hot-cold swing a day over three years of car storage] |
 | Humidity | Climatic category 40/93/56 or better | TDK B32365's category; the device itself is sealed to IP65 |
 | Mechanical shock | Survive the device's 1.5 m drop onto concrete: maker to state a shock rating; target ≥ 500 g, 1 ms half-sine, 3 axes, both directions [EST; final level from IEC 60601-1-12 once bought] | REQUIREMENTS drop target; [UNVERIFIED level] |
 | Vibration | Vehicle and carried use: maker to state random-vibration rating; target to IEC 60601-1-12 emergency-services levels once bought [UNVERIFIED] | Patrol car, belt-worn |
@@ -904,23 +1116,26 @@ Requirements:
 - **Pressure interrupter or equivalent:** the maker states whether the part has one, or demonstrates by test that internal faults cannot burst the case.
 - **Materials:** case and fill flame-retardant (UL 94 V-0 or equivalent); RoHS and REACH declarations.
 - **Leads:** insulated flexible leads rated ≥ 2 × VR, with strain relief and a stated pull strength. (TDK's standard lead is 15 kV DC, 150 °C silicone.)
+- **Temperature sensing:** the part must allow a temperature sensor to be held against its case (a flat area or stated location), because the device reads the capacitor's temperature (§8A, R-H1).
 - **Marking and traceability:** part number, capacitance, VR, date code and serial number; lot records kept for the life of the device. A medical-device customer will need this.
 
 ### A5. Mechanical envelope target
 
-| Item | Target | Stretch |
+| Item | Target (65 °C working) | Stretch |
 |---|---|---|
 | Volume | ≤ 210 cm³ | ≤ 175 cm³ |
 | Mass | ≤ 300 g | ≤ 230 g |
 | Shape | Rectangular or oval prism, about 33 × 60 × 105 mm or smaller; maker may propose | GA 320DQ4130 footprint (33 × 55 × 99 mm) |
 | Mounting | Suitable for clamping or potting; maker states allowable clamping force | — |
 
+For the 60 °C and 55 °C working variants this study expects about 190 cm³ / 270 g and 170 cm³ / 225 g (§1); makers' figures replace these.
+
 ### A6. Test evidence to request from the maker
 
-1. Datasheet and outline drawing with **measured mass and dimensions**.
-2. Life test report: cycles to the A2 end-of-life criteria at 25 °C and 50 °C (and 65 °C if available), with the discharge conditions used.
-3. Unpowered storage report: capacitance, dissipation factor and insulation resistance before and after ≥ 1,000 h at 85 °C.
-4. Temperature cycling and damp-heat results.
+1. Datasheet and outline drawing with **measured mass and dimensions**, for each working-temperature variant quoted.
+2. Life test report: cycles to the A2 end-of-life criteria at 25 °C and 50 °C (and at the working limit if available), with the discharge conditions used.
+3. Unpowered storage report: capacitance, dissipation factor and insulation resistance before and after ≥ 1,000 h at **70 °C**; and the 24 h, 85 °C information test (A3).
+4. Temperature cycling (−40 / +70 °C) and damp-heat results.
 5. Fault-discharge (shorted-output) test results at the A1 fault current.
 6. Destructive end-of-life test showing the failure mode (A4).
 7. Dielectric-absorption (voltage recovery) measurement.
@@ -932,7 +1147,7 @@ Requirements:
 
 ## Appendix B. Requirement lists for the other made-to-order parts
 
-Requirements only, as in Appendix A. No construction details.
+Requirements only, as in Appendix A. No construction details. Unchanged from version 0.2 except the pad connector's storage temperature (B3), which followed the capacitor's, and the pointer in B4.
 
 ### B1. Charging transformer
 
@@ -966,10 +1181,10 @@ Requirements only, as in Appendix A. No construction details.
 - **Sealing:** IP65 on the device side both mated and unmated.
 - **Mating cycles:** ≥ 500 [EST: pad replacement every 2–4 years plus inspections].
 - **Polarised, with a pad-present sense**, so the device knows pads are connected.
-- **Temperature:** working −20 to +65 °C; storage −40 to +85 °C (to match Appendix A).
+- **Temperature:** working −20 to +65 °C; storage **−40 to +70 °C** (to match Appendix A; version 0.2 said 85 °C).
 - **Mass target:** ≤ 10 g device side [EST].
 - **Evidence to request:** dielectric test, current pulse test, contact-resistance stability under vibration, ingress test, cycling test.
 
 ### B4. Pads (noted, not specified here)
 
-D-42 also lists the pads as made to order. Pads are a regulated product in their own right. A separate study should set gel area (55–70 cm² each, D-05), lead length for front-and-back child placement, shelf life, and the storage temperature (see question E).
+D-42 also lists the pads as made to order. Pads are a regulated product in their own right. A separate study should set gel area (55–70 cm² each, D-05), lead length for front-and-back child placement, shelf life, and the storage temperature. **The pads set the device's heat limits** (§8A): the pad specification must match the envelope the owner chooses (question K), which on commercial evidence means about 35–40 °C long term and 60 °C (option A) or 65 °C (option C) for short periods.
