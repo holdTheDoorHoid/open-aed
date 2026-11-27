@@ -17,7 +17,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-06 | **Fully automatic:** the device analyses and, if a shock is advised, warns, counts down and delivers it without a button press. | **Confirmed by owner, 26 Nov 2026** (changed from semi-automatic) | Owner decision. Removes the delay and hesitation of a button press. It raises the bar on the software: with no human confirming, a wrong shock decision is delivered, so the stand-clear warning, countdown, a way to cancel, and the independent second check all become essential. |
 | D-07 | **Rechargeable** lithium-ion battery. | **Confirmed by owner, 26 Nov 2026** | A belt-worn unit is charged like a radio; this is the biggest single size saving. |
 | D-08 | Firmware is written in **Rust**. | Provisional | Owner's standing preference; memory safety suits safety-critical code. |
-| D-09 | First version has **Bluetooth only**; cellular and location are deferred. | **Confirmed by owner, 26 Nov 2026** | Internet-capable devices take on FDA cybersecurity requirements. |
+| D-09 | **Bluetooth is left out of the first prototype.** Event records and heat history come off by cable through the dock contacts; space is left for a module later. Cellular and location remain deferred. | **Confirmed by owner, 27 Nov 2026** (changed from Bluetooth-only) | The modules with ready-made software have been discontinued, so the project would have to write and secure the module's firmware. Internet-capable devices also take on FDA cybersecurity requirements. |
 | D-10 | **No circuit above 50 volts** is built or powered until a reviewed lab safety policy exists. | Provisional | The stored energy can kill the builder. See SAFETY.md. |
 | D-11 | Measures that predict shock success are **recorded but never used** to decide a shock. | Provisional | The one human trial showed no benefit. |
 | D-12 | The project does **not distribute assembled units, boards or kits**. | Provisional | Doing so may make the project a "manufacturer" in law and invites use on people. Needs a lawyer before it could change. |
@@ -43,23 +43,26 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-31 | **Cancel is ignored during the switch-on self-test.** A button held down throughout is reported as a stuck-button fault. | **Confirmed by owner, 27 Nov 2026** | A stray press while drawing the device must not disable it. |
 | D-32 | **Pads are sensed up to about 250 ohms.** Above the 175 ohm shock range the device still analyses and says "press pads firmly", but shocks only once the resistance is in range; otherwise CPR continues. Widening the shock range itself is to be studied once the standard is bought. | **Confirmed by owner, 27 Nov 2026** | Finding F-8: pads that are on but read slightly high must not leave the responder with only "attach pads". |
 | D-33 | **Emptying the capacitor runs in the background.** The responder gets the next instruction at once; the device confirms empty, will not recharge until it is, and faults if it cannot confirm. | Provisional | Waiting for the capacitor to empty delayed the responder by up to a second on every cycle for no safety gain. |
-| D-34 | **Moving the adult/child switch during an analysis** recharges for the new mode without stopping the analysis. After a shock is advised, a switch change still cancels it. | Provisional (Q-19) | A switch moved as pads go on is most likely a correction; sending the patient to two minutes of CPR first would cost more. |
+| D-34 | **Moving the adult/child switch during an analysis** recharges for the new mode without stopping the analysis. After a shock is advised, a switch change still cancels it. | **Confirmed by owner, 27 Nov 2026** | A switch moved as pads go on is most likely a correction; sending the patient to two minutes of CPR first would cost more. |
 | D-35 | **Rhythm-analysis tuning on public data uses a fixed patient split**, recorded in `firmware/crates/aed-eval/splits/`. The held-back half was scored once on 27 Nov 2026 and is now spent as a clean test. | Provisional | So results are not flattered by tuning and testing on the same patients. |
 | D-36 | **The device will sense compressions through the pads' resistance** and use that, not the heart signal alone, to tell compressions from a rhythm. | Provisional | Finding F-12, and the research finding that pad resistance gives compression rate with no extra sensor. |
 | D-37 | **A shock is never delivered while compressions are sensed.** Sensed movement after "shock advised" holds the shock back; the device re-analyses once, then falls back to CPR. | Provisional (Q-33) | One touch should not cost a patient two minutes, but a loop with neither CPR nor shocks must be impossible. |
 | D-38 | **If compression sensing fails, the device continues on the heart signal alone**, records it and flags it at the next self-test. It says nothing aloud. | **Confirmed by owner, 27 Nov 2026** | A single failure must not block every shock. The cost is that finding F-12 returns while sensing is down. |
 | D-39 | **Both controllers are Cortex-M33-class processors from different makers.** | **Confirmed by owner, 27 Nov 2026** | The safety-qualified Rust compiler covers this family (vendor documents, 27 Nov 2026); a smaller supervisor chip would fall outside the qualification. |
 | D-40 | **Device recordings and evaluation data are never committed**; evaluation tools skip cleanly without them. The Cardially dataset is never used for tuning. | Provisional | Licences, privacy, and keeping a clean external test. |
-| D-41 | **The storage capacitor is made to order, rated for at least 2,200 V and for about 70 °C storage**, staying at the Philips-style point of about 100 µF. The 85 °C requirement is dropped. | **Confirmed by owner, 27 Nov 2026** (revised the same day: 85 °C lowered) | Owner: as rugged as feasible without blowing the weight budget. An 85 °C storage rating would not have made the device safe in a hot car, because the battery and pad gel are limited to about 60 °C. **Correction:** an earlier note here said the 85 °C rating cost about 60 g. The reworked parts study (version 0.3) found that it cost about nothing; the weight comes from the capacitor's working temperature and voltage rating, not its storage rating. Lowering it does widen the choice of makers. |
+| D-41 | **The storage capacitor is made to order: about 100 µF, at least 2,200 V, about 70 °C storage, charged only up to 60 °C, and good for at least 2,500 full charges.** | **Confirmed by owner, 27 Nov 2026** (revised: 85 °C lowered; 60 °C working and 2,500 charges set) | Owner: as rugged as feasible without blowing the weight budget. An 85 °C storage rating would not have made the device safe in a hot car, because the battery and pad gel are limited to about 60 °C. **Correction:** an earlier note here said the 85 °C rating cost about 60 g. The reworked parts study (version 0.3) found that it cost about nothing; the weight comes from the capacitor's working temperature and voltage rating, not its storage rating. Lowering it does widen the choice of makers. |
 | D-42 | **Catalogue parts wherever they exist; made-to-order parts where they do not**, each with a published specification so anyone can order the same part. | **Confirmed by owner, 27 Nov 2026** (relaxes "off-the-shelf only") | The capacitor, charging transformer, switch drive, pad connector and pads cannot be bought from a catalogue. |
-| D-43 | **The 700 g target includes the pads.** | **Confirmed by owner, 27 Nov 2026** | What the responder carries is what counts. After the capacitor and battery decisions (D-41, D-44) the parts study (version 0.3) puts the lower-risk set at about 903 g with pads and the smallest plausible set at about 699 g. The target is at risk; see Q-36. |
+| D-43 | **The 700 g target includes the pads, and is the goal for the finished design.** A first prototype of 780–900 g is accepted. | **Confirmed by owner, 27 Nov 2026** | What the responder carries is what counts. After the capacitor and battery decisions (D-41, D-44) the parts study (version 0.3) puts the lower-risk set at about 903 g with pads and the smallest plausible set at about 699 g. The target is at risk; see Q-36. |
 | D-44 | **Two battery cells.** | **Confirmed by owner, 27 Nov 2026** | Full-speed charging at −20 °C; about 20 g heavier. |
-| D-45 | **Bluetooth is a separate pre-certified module** with its own processor. | **Confirmed by owner, 27 Nov 2026** | Keeps radio code off the processor that decides to shock (D-24). |
+| D-45 | **When Bluetooth is added it will be a separate pre-certified module** with its own processor. | **Confirmed by owner, 27 Nov 2026** (deferred by D-09) | Keeps radio code off the processor that decides to shock (D-24). |
 | D-46 | **Charging is through sealed contacts and a dock**, not a USB socket. | **Confirmed by owner, 27 Nov 2026** | Sealing to IP65. |
-| D-47 | **Once the chest is confirmed still, the rhythm analysis starts after a quarter-second guard** instead of a full settling second; its filters keep running through CPR. | **Confirmed by owner, 27 Nov 2026**; implemented | Recovers 0.8 s of the pause added by compression sensing (finding F-14). |
-| D-48 | **Ruggedness goal: carried all day, and left in a vehicle for short periods.** Not designed to live on a dashboard. The device measures and records its own temperature at all times, including when off. Proposed limits, from the pad and battery makers' published figures: normal up to 40 °C; stays ready up to 60 °C for up to 8 hours at a time; "not ready" above 60 °C until it has cooled and passed a self-test; "service needed" above 70 °C. Battery charging only between 0 and 45 °C. | **Confirmed by owner, 27 Nov 2026** (the numbers are provisional, Q-43) | Owner decision. Ruggedness is traded to protect the weight target, not the other way round. |
-| D-49 | **Self-test schedule details:** tests run on the charging dock; only the full-energy test waits for cold, heat or a low battery; a test missed by more than a day shows "not ready"; a failed daily check is retried after an hour and a failed weekly test after a day; if the capacitor cannot be confirmed empty after a test the device alarms and runs no more automatic tests until serviced. | Provisional (Q-42) | Chosen conservatively by Claude while implementing D-15. |
-| D-50 | **A device showing "not ready" still attempts a rescue.** Its switch-on self-test decides: if that passes it shocks with every usual check; if not it guides CPR. | Provisional (Q-42) | A responder holding a "not ready" device must still get whatever help it can safely give. |
+| D-47 | **Once the chest is confirmed still, the rhythm analysis starts after a quarter-second guard** instead of a full settling second; its filters keep running through CPR. The guard stays. | **Confirmed by owner, 27 Nov 2026**; implemented | Recovers 0.8 s of the pause added by compression sensing (finding F-14). |
+| D-48 | **Ruggedness goal: carried all day, and left in a vehicle for short periods**, with an insulated pouch kept in the vehicle. Not designed to live on a dashboard. The device measures and records its own temperature at all times, including when off. Limits: normal up to 40 °C; stays ready up to 60 °C for up to 8 hours at a time; "not ready" above 60 °C until it has cooled and passed a self-test; "service needed" above 70 °C. Battery charging only between 0 and 45 °C; capacitor charging only up to 60 °C. | **Confirmed by owner, 27 Nov 2026** (figures to be confirmed against final part datasheets) | Owner decision. Ruggedness is traded to protect the weight target, not the other way round. |
+| D-49 | **Self-test schedule details:** tests run on the charging dock; only the full-energy test waits for cold, heat or a low battery; a test missed by more than a day shows "not ready"; a failed daily check is retried after an hour and a failed weekly test after a day; if the capacitor cannot be confirmed empty after a test the device alarms and runs no more automatic tests until serviced. | **Confirmed by owner, 27 Nov 2026** | Chosen conservatively by Claude while implementing D-15. |
+| D-50 | **A device showing "not ready" still attempts a rescue.** Its switch-on self-test decides: if that passes it shocks with every usual check; if not it guides CPR. It does not announce "not ready" aloud during the rescue. | **Confirmed by owner, 27 Nov 2026** | A responder holding a "not ready" device must still get whatever help it can safely give. |
+| D-51 | **A device switched on while too hot guides CPR and analyses, but will not charge until its temperature is back inside the limits.** Then it charges and shocks as normal. | **Confirmed by owner, 27 Nov 2026** | Charging a hot battery or capacitor risks damage and the wrong energy; the responder still gets CPR guidance at once. |
+| D-52 | **The device adds up the time its pads spend above 50 °C and calls for new pads** after about 7 days in total. The figure comes from the pad maker. | **Confirmed by owner, 27 Nov 2026** | Pad makers allow only short spells at 60 °C; heat-damaged pads would otherwise go unnoticed. |
+| D-53 | **The device counts full charges and calls for service as the capacitor approaches its 2,500-charge life.** A heavy-duty capacitor for very busy services is noted as a later option. | **Confirmed by owner, 27 Nov 2026** | Sizing for typical use saves about 71 g. |
 
 ## Owner questions
 
@@ -123,43 +126,28 @@ Answered on 27 November 2026, except where marked.
 | Q-34 | Compression sensing failed? | Carry on, record only | D-38 |
 | Q-35 | Reference test equipment? | **Deferred by owner**: decide when the lab safety policy exists | |
 
+## Questions from the parts study revisions, settling and self-test work
+
+Answered on 27 November 2026.
+
+| No. | Question | Answer | Recorded as |
+|---|---|---|---|
+| Q-19 | Adult/child switch moved during analysis? | Recharge and keep analysing | D-34 |
+| Q-36 | Weight target? | 700 g with pads for the finished design; heavier first prototype accepted | D-43 |
+| Q-37, Q-43 | Hot cars and heat envelope? | Ready to 60 °C, "not ready" 60–70 °C, plus a vehicle pouch | D-48 |
+| Q-38 | Expected usage? | 2,500 full charges; heavy-duty option later | D-41, D-53 |
+| Q-40 | Bluetooth firmware? | Leave Bluetooth out of the first prototype | D-09 |
+| Q-41 | Quarter-second guard? | Keep it | D-47 |
+| Q-42 | "Not ready" device in a rescue? | Switch-on self-test decides; nothing said aloud | D-49, D-50 |
+| Q-44 | Capacitor charging temperature? | Up to 60 °C | D-41 |
+| Q-45 | Hot device in a rescue? | Guide CPR, shock once cooled | D-51 |
+| Q-46 | Pad heat allowance? | Track it and call for new pads | D-52 |
+
 ## Still open
 
-- **Q-19** (owner): adult/child switch moved during an analysis. D-34 stands meanwhile.
 - **Q-20, Q-21, Q-33** (clinician): the last-seconds blind spot, how strict the countdown is, and movement during the countdown.
 - **Q-35** (owner, later): how to obtain the reference test equipment.
-
-## Questions from the revised parts study (27 November 2026)
-
-**Q-36. The 700 g target is at risk.** Parts study version 0.3: the lower-risk part set is about 903 g with pads and 0.89 L; the smallest plausible set is about 699 g and 0.64 L, and only if a capacitor maker delivers the most optimistic estimate (783 g with the expected one). Lowering the storage rating to 70 °C saved nothing, contrary to an earlier estimate. The levers that need no decision from you (a better capacitor, smaller choices elsewhere, a thinner shell, tighter packing) could together bring the lower-risk set to about 700 g, but none is certain. Options: (a) keep 700 g as the goal for the finished design and accept a first prototype of 780–900 g; (b) raise the target to about 850 g; (c) take one of the capacitor levers in Q-38 or Q-44.
-
-**Q-37. Hot cars.** *Answered in principle 27 Nov 2026 (D-48).* The numbers are in Q-43.
-
-**Q-38. How heavily is one device used?** The capacitor specification asks for at least 5,000 full charges, sized for a heavy user at 25 rescues a year for 10 years. A typical user needs about 1,200. Asking for 2,500 instead would save about 71 g.
-
-**Q-39. If cold-weather tests show too little margin,** move from two smaller cells to two larger ones (about 50 g more)?
-
-**Q-40. The Bluetooth modules that came with ready-made firmware have been discontinued,** so the project would write the module's own small firmware. That code stays off the safety processor, but it is still code to write and maintain. Accept, or leave Bluetooth out of the first prototype?
-
-## Questions from the settling and self-test work (27 November 2026)
-
-**Q-41. The quarter-second guard.** Removing it would save another 0.25 s of hands-off time. On made-up signals no guard length ever produced a wrong "shockable". On real development recordings the count of wrong shock decisions moved between 8 and 12 across guard lengths with no pattern, so the data cannot say which is safer. Keep 0.25 s (assumed), or remove it?
-
-**Q-42. Self-test schedule details.** Confirm D-49 and D-50, in particular: should a device that shows "not ready" still shock if its switch-on self-test passes (assumed yes), and should it say "not ready" aloud at switch-on (assumed no)?
-
-## Questions from parts study version 0.3 (27 November 2026)
-
-**Q-43. Which heat envelope?** What limits the device is the pads and the battery, at about 60 °C, not the capacitor.
-- **A (assumed in D-48):** no extra parts. Ready up to 60 °C; "not ready" from 60 to 70 °C until cooled and re-tested. Covers a door pocket, footwell, under a seat, an emergency-vehicle compartment, or a car in shade. A whole afternoon shut in a car in desert heat may put it "not ready" for a while with no damage expected.
-- **B:** A plus an insulated pouch kept in the vehicle, which slows heating about fourfold. About $10–30, no weight carried.
-- **C:** heat-tolerant battery cells and pads specified to 65 °C. About 72 g heavier.
-- No option survives a dashboard in direct sun, which reaches about 69 °C on average and 89 °C at worst.
-
-**Q-44. Capacitor working temperature.** The capacitor may be charged up to its working temperature. 65 °C is assumed. 60 °C would save about 35 g and 55 °C about 86 g, at the price of the device refusing to charge when its inside is hotter than that, for example straight out of a hot car.
-
-**Q-45. Should a device that is "not ready" because it got hot still try to shock?** D-50 says a "not ready" device still attempts a rescue if its switch-on self-test passes. Heat is different: charging a hot battery or capacitor risks damage. Assumed: it guides CPR and will not charge until its temperature is back inside the limits.
-
-**Q-46. A lifetime heat allowance for the pads?** Pad makers allow only short excursions to 60 °C (one to two weeks in total). Proposal: the device adds up time spent above 50 °C and calls for new pads after about 7 days in total.
+- **Q-39** (after bench tests): two larger battery cells if cold-weather tests show too little margin.
 
 ## Things that need a professional, not a guess
 

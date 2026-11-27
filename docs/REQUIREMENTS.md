@@ -10,7 +10,7 @@ Trained responders: police officers, paramedics, medical professionals. They car
 
 | Target | Value | Why |
 |---|---|---|
-| Weight, first prototype goal | 700 g or less, **including pads** (D-43) | Matches the smallest full-energy units on sale (St John Pocket AED P3, Schiller FRED easyport plus at 780 g) |
+| Weight, finished design | 700 g or less, **including pads** (D-43). A first prototype of 780–900 g is accepted. | Matches the smallest full-energy units on sale (St John Pocket AED P3, Schiller FRED easyport plus at 780 g) |
 | Volume, first prototype goal | 0.7 litre or less | Same |
 | Stretch goal | 500 g and 0.5 litre | Not reachable with parts available today (parts study version 0.3) |
 | Not a goal | 300 g, like the CellAED | That device reached its size by cutting shock energy and shock count, and its maker has had regulatory trouble. Catalogue parts do not get there at full energy. |
@@ -69,8 +69,8 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 | Dust and water | IP65 or better |
 | Drop | 1.5 m onto concrete |
 | Operating temperature | −20 to +50 °C target (commercial AEDs are rated 0 to 50 °C) |
-| Storage heat | **Left in a vehicle for short periods, not kept on a dashboard** (D-48). Proposed limits: long-term storage up to about 40 °C (set by the pads); stays ready up to 60 °C for up to 8 hours at a time; "not ready" above 60 °C until cooled and re-tested; "service needed" above 70 °C. The pads and battery set these limits. The device records its own temperature at all times. |
-| Charging temperature | Battery charging only between 0 and 45 °C. Capacitor charging only at or below its working temperature. |
+| Storage heat | **Left in a vehicle for short periods, with an insulated pouch kept in the vehicle; not kept on a dashboard** (D-48). Long-term storage up to about 40 °C (set by the pads); stays ready up to 60 °C for up to 8 hours at a time; "not ready" above 60 °C until cooled and re-tested; "service needed" above 70 °C. The device records its own temperature at all times, adds up pad heat exposure and calls for new pads (D-52). |
+| Charging temperature | Battery charging only between 0 and 45 °C. Capacitor charging only up to 60 °C. A device switched on while hotter than that guides CPR and analyses, and shocks once it has cooled (D-51). |
 
 ## Readiness and self-test
 
@@ -92,8 +92,8 @@ Field surveys found 15–21% of public AEDs not ready when inspected, and an ana
 - Firmware in Rust. (D-08) A safety-qualified Rust compiler (Ferrocene) exists and has been qualified to the medical software standard at its strictest class since January 2025. **Unresolved:** two research threads disagree on whether that qualification covers the small microcontroller family this device would use. Check with the vendor before choosing the processor.
 - No single fault may cause or block a shock. Published designs converge on three independent checks before energy is released: the main processor, a separate supervisor, and a hardware interlock.
 - The storage capacitor discharges itself by default whenever it is not actively being held for a shock, with a permanent backup bleed resistor as well.
-- Catalogue parts wherever they exist; made-to-order parts where they do not, each with a published specification (D-42). The storage capacitor is made to order: about 100 µF, at least 2,200 V, rated for about 70 °C storage (D-41).
+- Catalogue parts wherever they exist; made-to-order parts where they do not, each with a published specification (D-42). The storage capacitor is made to order: about 100 µF, at least 2,200 V, about 70 °C storage, charged only up to 60 °C, at least 2,500 full charges (D-41, D-53).
 
 ## Connectivity
 
-Bluetooth, on a separate pre-certified module (D-45), for setup and downloading event records in the first version. Cellular and location reporting are deferred: any internet-capable device takes on the FDA's cybersecurity requirements. (D-09)
+None in the first prototype (D-09). Event records and heat history come off by cable through the dock contacts. Space is left for a separate pre-certified Bluetooth module later (D-45). Cellular and location reporting are deferred: any internet-capable device takes on the FDA's cybersecurity requirements.
