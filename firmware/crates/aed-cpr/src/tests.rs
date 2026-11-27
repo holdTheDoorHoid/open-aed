@@ -335,11 +335,11 @@ fn saturation_is_unknown_at_once_and_the_filters_settle_before_hands_off() {
 fn out_of_range_and_stuck_readings_are_unknown() {
     let mut det = detector();
     run(&Signal::quiet(), 3.0, &mut det);
-    det.push(ImpedanceSample::Milliohms(300_000));
+    det.push(ImpedanceSample::Milliohms(320_000));
     assert_eq!(det.state(), ChestState::Unknown);
     assert_eq!(det.signal(), ImpedanceSignal::OutOfRange);
     assert!(det.signal().is_channel_problem());
-    det.push(ImpedanceSample::Milliohms(10_000));
+    det.push(ImpedanceSample::Milliohms(15_000));
     assert_eq!(det.signal(), ImpedanceSignal::OutOfRange);
 
     let mut det = detector();

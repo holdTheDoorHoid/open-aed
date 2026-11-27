@@ -36,7 +36,7 @@
 //! Pad impedance in milliohms, 125 samples a second
 //! ([`aed_types::IMPEDANCE_SAMPLE_RATE_HZ`]), or "saturated". The whole
 //! resistance, not just the change: the detector checks that it stays in
-//! the 25 to 250 Ω pad-sensing range. What it assumes about the electronics
+//! 20 to 300 Ω (a margin around the 25 to 250 Ω pad-sensing range). What it assumes about the electronics
 //! is written down on [`settings::FrontEndAssumptions`].
 //!
 //! # Latency and hysteresis

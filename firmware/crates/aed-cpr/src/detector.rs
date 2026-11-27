@@ -4,7 +4,7 @@
 //! How it works, in plain words:
 //!
 //! 1. **Is the signal usable?** A sample that is saturated, outside the
-//!    25 to 250 Ω pad range, or that has not changed at all for
+//!    20 to 300 Ω range (a margin around the pad range), or that has not changed at all for
 //!    [`Settings::stuck_ms`] makes the answer `Unknown` at once. After the
 //!    signal comes back the detector waits [`Settings::settle_ms`] before it
 //!    will say anything else.

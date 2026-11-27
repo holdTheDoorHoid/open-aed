@@ -47,12 +47,15 @@ pub struct FrontEndAssumptions;
 /// The detector's settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
-    /// Lowest baseline pad impedance accepted, milliohms. Below this the
-    /// pads are shorted or touching: no reading. 25 Ω, the bottom of the
-    /// pad-sensing range (aed-types `MIN_PATIENT_OHMS`).
+    /// Lowest pad impedance accepted, milliohms; below it the reading
+    /// counts as out of range (pads shorted or touching). 20 Ω: 5 Ω below
+    /// the 25 Ω bottom of the pad-sensing range (aed-types
+    /// `MIN_PATIENT_OHMS`), so that compressions and noise on a patient at
+    /// the edge of the range do not read as "out of range". Whether the
+    /// pads count as on is decided by the rescue sequence, not here.
     pub baseline_min_mohm: u32,
-    /// Highest baseline pad impedance accepted, milliohms. 250 Ω, the top of
-    /// the pad-sensing range (decision D-32).
+    /// Highest pad impedance accepted, milliohms. 300 Ω: a margin above the
+    /// 250 Ω top of the pad-sensing range (decision D-32), for the same reason.
     pub baseline_max_mohm: u32,
     /// Corner of the high-pass filter (fourth order), Hz. It removes the
     /// baseline (the patient's own resistance) and slow drift. Breaths are
@@ -157,8 +160,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            baseline_min_mohm: 25_000,
-            baseline_max_mohm: 250_000,
+            baseline_min_mohm: 20_000,
+            baseline_max_mohm: 300_000,
             highpass_hz: 0.5,
             highpass_fourth_order: false,
             lowpass_hz: 6.0,
