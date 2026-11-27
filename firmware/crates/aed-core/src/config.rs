@@ -42,10 +42,49 @@ pub struct Config {
     pub disarm_time_limit_ms: u32,
     /// Below this voltage the capacitor counts as empty. Provisional: 50 V,
     /// matching the project's "no circuit above 50 volts" line (D-10).
+    ///
+    /// A controller only counts the capacitor as empty when its reading is
+    /// below this voltage by at least its own sensor's allowed error (see
+    /// [`Config::reads_empty`]), so a sensor that reads low cannot report an
+    /// empty capacitor that is really above this voltage.
     pub empty_voltage: Volts,
-    /// How close a voltage reading must be to count as "at the planned voltage",
-    /// and how closely the two controllers' readings must agree. Provisional: 50 V.
-    pub voltage_tolerance: Volts,
+    /// How close one controller's own voltage reading must be to the planned
+    /// voltage for the capacitor to count as charged, and to stay armed:
+    /// within this percentage of the planned voltage plus
+    /// [`Config::at_plan_abs_volts`]. Used by the main controller (charged,
+    /// and drifting off target during the countdown), by the supervisor (its
+    /// reading against the plan before a permit) and by the self-test.
+    ///
+    /// It must be at least the sensor error allowed by
+    /// [`Config::agree_percent`] and [`Config::agree_abs_volts`], or an
+    /// in-tolerance sensor would cause false faults. Together with that
+    /// sensor error it also bounds how far the true voltage can be from the
+    /// plan when a shock fires, which sets the delivered energy.
+    /// Provisional: 2 % (see `at_plan_abs_volts` for the reasoning).
+    pub at_plan_percent: u8,
+    /// The fixed part of the "at the planned voltage" window, volts.
+    /// Provisional: 20 V. With 2 % this gives 59 V at 1,950 V (adult),
+    /// 43 V at 1,150 V (child) and 28 V at 400 V (self-test): 10 V more than
+    /// the error of a sensor accurate to ±2 % ± 10 V, the accuracy these
+    /// defaults assume.
+    pub at_plan_abs_volts: Volts,
+    /// The error each of the two independent voltage sensors is allowed,
+    /// as a percentage of the reading (plus [`Config::agree_abs_volts`]).
+    ///
+    /// "Each sensor may be off by `agree_percent` % + `agree_abs_volts` V."
+    /// The supervisor counts its reading and the main controller's as agreeing
+    /// while they differ by no more than twice that allowance (taken at the
+    /// higher reading), so two sensors with opposite errors inside their
+    /// allowance always agree. A bigger difference, lasting longer than
+    /// [`Config::disagreement_persist_ms`], is a fault.
+    ///
+    /// Provisional: 2 % + 15 V. ASSUMES each real sensor is accurate to
+    /// ±2 % ± 10 V; the extra 5 V per sensor covers rounding and the
+    /// main controller's reading being up to one heartbeat old while the
+    /// capacitor charges. Not from any part's datasheet: no sensor is chosen.
+    pub agree_percent: u8,
+    /// The fixed part of each sensor's allowed error, volts. Provisional: 15 V.
+    pub agree_abs_volts: Volts,
     /// Above this voltage the capacitor is over-charged and is emptied at once.
     /// Provisional: 2,200 V (the design point is about 1,700 to 2,000 V).
     pub overvoltage_limit: Volts,
@@ -66,9 +105,24 @@ pub struct Config {
     /// before the device acts on it. The shock plan itself always uses a fresh,
     /// un-smoothed reading. Provisional: 200 ms.
     pub pad_debounce_ms: u32,
-    /// Longest an analysis may take. If no decision arrives in time the device
-    /// treats it as "not sure" and goes to CPR. Provisional: 12 s.
+    /// Longest an analysis may take. "Not sure" answers do not end an analysis
+    /// (movement is the usual cause, so the device keeps looking); if neither
+    /// "shock" nor "no shock" has arrived by this limit the analysis is
+    /// inconclusive and the device goes to CPR without a shock.
+    ///
+    /// Provisional: 12 s. The rhythm analysis needs about 6 to 7 s of clean
+    /// signal (1 s settling, a 4 s window, 3 agreeing windows), so with 12 s
+    /// a shock can still be advised if compressions stop up to about 5 s
+    /// after "Analysing" (simulated: 6.0 s late for 400 µV VF, 7.0 s for
+    /// 800 µV, 7.5 s for 1,500 µV; the requirement was at least 3 s). The
+    /// cost: when the signal never becomes clean (fine VF, interference, a
+    /// responder who keeps going), the hands-off pause before "Start CPR"
+    /// lasts the whole 12 s. A longer limit tolerates later stops but makes
+    /// that pause longer.
     pub analysis_time_limit_ms: u32,
+    /// While analysing, after a "not sure" answer the device repeats "Do not
+    /// touch the patient", at most once per this interval. Provisional: 3 s.
+    pub hands_off_reminder_ms: u32,
     /// At the moment of delivery the latest "shockable" decision must be no older
     /// than this. If it is older, no shock is given. Must be longer than the
     /// interval between the rhythm analyser's decisions. Provisional: 5 s.
@@ -102,7 +156,10 @@ impl Default for Config {
             max_charged_ms: 25_000,
             disarm_time_limit_ms: 3_000,
             empty_voltage: Volts(50),
-            voltage_tolerance: Volts(50),
+            at_plan_percent: 2,
+            at_plan_abs_volts: Volts(20),
+            agree_percent: 2,
+            agree_abs_volts: Volts(15),
             overvoltage_limit: Volts(2_200),
             heartbeat_period_ms: 50,
             heartbeat_timeout_ms: 250,
@@ -110,6 +167,7 @@ impl Default for Config {
             disagreement_persist_ms: 500,
             pad_debounce_ms: 200,
             analysis_time_limit_ms: 12_000,
+            hands_off_reminder_ms: 3_000,
             confirmation_max_age_ms: 5_000,
             delivery_timeout_ms: 1_000,
             self_test_voltage: Volts(400),
@@ -134,8 +192,22 @@ pub enum ConfigError {
     MaxChargedTooShort,
     /// The heartbeat timeout is not longer than the heartbeat period.
     HeartbeatTimeoutTooShort,
-    /// The "empty" voltage is not clearly below the self-test voltage.
+    /// The self-test voltage is so low that a reading that counts as
+    /// "charged to the test voltage" could come from a capacitor that is
+    /// really empty, once sensor error is allowed for.
     SelfTestVoltageTooLow,
+    /// The two sensors' allowed error is zero: two real sensors never read
+    /// exactly the same, so every rescue would fault.
+    SensorAllowanceZero,
+    /// The two sensors' allowed error is so wide that a dead sensor reading
+    /// zero would still "agree" with a capacitor charged to the self-test
+    /// voltage, so the cross-check would catch nothing; or so wide that no
+    /// reading could ever count as empty.
+    SensorAllowanceTooWide,
+    /// The "at the planned voltage" window is narrower than one sensor's
+    /// allowed error, so a sensor within its allowance would cause false
+    /// "charge off target" faults.
+    AtPlanNarrowerThanSensorError,
     /// The self-test voltage is above the overvoltage limit.
     SelfTestVoltageTooHigh,
     /// The CPR period is not longer than the analysis time limit (sanity check).
@@ -162,6 +234,7 @@ impl Config {
             self.permit_window_ms,
             self.disagreement_persist_ms,
             self.analysis_time_limit_ms,
+            self.hands_off_reminder_ms,
             self.confirmation_max_age_ms,
             self.delivery_timeout_ms,
             self.self_test_link_wait_ms,
@@ -182,12 +255,28 @@ impl Config {
         if self.heartbeat_timeout_ms <= self.heartbeat_period_ms {
             return Err(ConfigError::HeartbeatTimeoutTooShort);
         }
-        if self.self_test_voltage.0
-            <= self
-                .empty_voltage
-                .0
-                .saturating_add(self.voltage_tolerance.0)
+        if self.agree_percent == 0 && self.agree_abs_volts.0 == 0 {
+            return Err(ConfigError::SensorAllowanceZero);
+        }
+        // A dead sensor (reading 0 V) must disagree with a capacitor at the
+        // self-test voltage, or the self-test's agreement check proves nothing.
+        // And even a perfect reading of 0 V must count as empty.
+        if self.readings_agree(Volts(0), self.self_test_voltage) || !self.reads_empty(Volts(0)) {
+            return Err(ConfigError::SensorAllowanceTooWide);
+        }
+        if self.at_plan_percent < self.agree_percent
+            || self.at_plan_abs_volts < self.agree_abs_volts
         {
+            return Err(ConfigError::AtPlanNarrowerThanSensorError);
+        }
+        // The lowest reading that counts as charged to the self-test voltage,
+        // less one sensor's allowed error, must still be above "empty".
+        let lowest_charged = self
+            .self_test_voltage
+            .0
+            .saturating_sub(self.at_plan_allowance(self.self_test_voltage).0);
+        let lowest_true = lowest_charged.saturating_sub(self.sensor_allowance(Volts(lowest_charged)).0);
+        if lowest_true <= self.empty_voltage.0 {
             return Err(ConfigError::SelfTestVoltageTooLow);
         }
         if self.self_test_voltage >= self.overvoltage_limit {
@@ -205,6 +294,63 @@ impl Config {
         60_000u32
             .checked_div(u32::from(self.metronome_per_min))
             .unwrap_or(600)
+    }
+}
+
+/// `percent` % of `v` plus `abs`, in volts, rounded up and capped at the
+/// largest voltage the type can hold. Never panics.
+fn allowance(v: Volts, percent: u8, abs: Volts) -> Volts {
+    let part = (u32::from(v.0) * u32::from(percent)).div_ceil(100);
+    let total = part.saturating_add(u32::from(abs.0));
+    Volts(u16::try_from(total).unwrap_or(u16::MAX))
+}
+
+impl Config {
+    /// The error one voltage sensor is allowed at reading `v`:
+    /// [`Config::agree_percent`] % of it plus [`Config::agree_abs_volts`].
+    #[must_use]
+    pub fn sensor_allowance(&self, v: Volts) -> Volts {
+        allowance(v, self.agree_percent, self.agree_abs_volts)
+    }
+
+    /// True if two independent readings of the same capacitor agree: they
+    /// differ by no more than two sensors' allowed error (taken at the higher
+    /// reading), so two sensors with opposite errors inside their allowance
+    /// always agree.
+    #[must_use]
+    pub fn readings_agree(&self, a: Volts, b: Volts) -> bool {
+        let budget = u32::from(self.sensor_allowance(a.max(b)).0).saturating_mul(2);
+        u32::from(a.0.abs_diff(b.0)) <= budget
+    }
+
+    /// How far a reading may be from the planned voltage `plan` and still
+    /// count as "at the planned voltage": [`Config::at_plan_percent`] % of
+    /// the plan plus [`Config::at_plan_abs_volts`].
+    #[must_use]
+    pub fn at_plan_allowance(&self, plan: Volts) -> Volts {
+        allowance(plan, self.at_plan_percent, self.at_plan_abs_volts)
+    }
+
+    /// True if one controller's own reading counts as at the planned voltage.
+    #[must_use]
+    pub fn is_at_plan(&self, reading: Volts, plan: Volts) -> bool {
+        within(reading, plan, self.at_plan_allowance(plan))
+    }
+
+    /// True if one controller's own reading counts as charged to `plan`
+    /// (no lower than the bottom of the "at the planned voltage" window).
+    #[must_use]
+    pub fn reached_plan(&self, reading: Volts, plan: Volts) -> bool {
+        reading.0 >= plan.0.saturating_sub(self.at_plan_allowance(plan).0)
+    }
+
+    /// True if a reading shows the capacitor empty even if the sensor reads
+    /// low by its full allowed error: reading plus allowance below
+    /// [`Config::empty_voltage`].
+    #[must_use]
+    pub fn reads_empty(&self, reading: Volts) -> bool {
+        u32::from(reading.0) + u32::from(self.sensor_allowance(reading).0)
+            < u32::from(self.empty_voltage.0)
     }
 }
 

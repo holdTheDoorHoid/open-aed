@@ -142,9 +142,6 @@ pub struct CampaignSummary {
     /// Shocks fired on a non-shockable rhythm within the analyser's
     /// detection latency of the rhythm changing (a known limitation).
     pub late_rhythm_change_shocks: usize,
-    /// Runs where a frozen main controller left the capacitor charged
-    /// (finding: charger latched on; see the report).
-    pub frozen_main_left_charged: usize,
     /// Runs where the device stayed silent after switch-on (finding: the
     /// self-test charge step waits the full charge time limit).
     pub silent_at_power_on: usize,
@@ -185,7 +182,6 @@ fn tally(sum: &mut CampaignSummary, seed: u32, r: &RunResult) {
         .final_states
         .entry(format!("{:?}", r.final_state))
         .or_insert(0) += 1;
-    let frozen = r.injected.iter().any(|&(_, f)| f == Fault::MainFreeze);
     let in_range = (25.0..=175.0).contains(&r.scenario.pad_ohms);
     if crate::plant::rhythm_is_shockable(r.scenario.rhythm) && r.injected.is_empty() && in_range {
         sum.shockable_clean_runs += 1;
@@ -218,14 +214,11 @@ fn tally(sum: &mut CampaignSummary, seed: u32, r: &RunResult) {
     for v in &r.violations {
         let late = v.rule == Rule::FiredOnNonShockableRhythm
             && v.rhythm_changed_ms_before.is_some_and(|ms| ms <= DETECTION_LATENCY_MS);
-        let frozen_charged = frozen && v.rule == Rule::CapacitorLeftCharged;
         if v.rule == Rule::SilentAtPowerOn {
             sum.silent_at_power_on += 1;
         } else if late {
             sum.late_rhythm_change_shocks += 1;
             sum.late_seeds.push((seed, v.detail.clone()));
-        } else if frozen_charged {
-            sum.frozen_main_left_charged += 1;
         } else {
             *sum
                 .violations
@@ -302,11 +295,6 @@ pub fn campaign_text(s: &CampaignSummary) -> String {
     for (seed, what) in &s.late_seeds {
         let _ = writeln!(out, "    seed {seed}: {what}");
     }
-    let _ = writeln!(
-        out,
-        "  Known finding, frozen main left capacitor charged: {}",
-        s.frozen_main_left_charged
-    );
     let _ = writeln!(
         out,
         "  Known finding, device silent for over 8 s after switch-on: {}",

@@ -15,8 +15,11 @@
 //!
 //! The rules it keeps (each has a test that names it):
 //!
-//! * Only a `Shockable` decision can start charging. "Not sure"
-//!   (`Indeterminate`) and `NonShockable` both lead to CPR.
+//! * Only a `Shockable` decision can start charging. `NonShockable` ends the
+//!   analysis with "No shock advised" and CPR. "Not sure" (`Indeterminate`)
+//!   does not end it: the device repeats "Do not touch the patient" and keeps
+//!   analysing until it gets `Shockable` or `NonShockable`, or the analysis
+//!   time limit runs out ("inconclusive": no shock, CPR).
 //! * Analysis keeps running while charging and counting down. Any decision
 //!   other than `Shockable`, pads coming off, cancel, or a change of the
 //!   adult/child switch abandons the shock: the capacitor is emptied and the
@@ -35,7 +38,7 @@
 //!   confirmed empty, that is its own, more serious fault.
 //! * Every state except AttachPads and Fault has a time limit.
 
-use crate::config::{within, Config, ConfigError};
+use crate::config::{Config, ConfigError};
 use crate::events::{Event, EventRecord, EVENT_CAPACITY};
 use crate::hal::{BatteryStatus, MainHardware, ShockStatus};
 use crate::link::{MainStatus, SupervisorFault, SupervisorReport};
@@ -223,6 +226,8 @@ pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner> {
     mode_at_arming: PatientMode,
     battery_low_announced: bool,
     analysis_result: Option<RhythmDecision>,
+    not_sure_seen: bool,
+    hands_off_reminded_at: Option<Millis>,
     last_decision: Option<(RhythmDecision, Millis)>,
     veto: bool,
     target: Volts,
@@ -269,6 +274,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             mode_at_arming: PatientMode::Adult,
             battery_low_announced: false,
             analysis_result: None,
+            not_sure_seen: false,
+            hands_off_reminded_at: None,
             last_decision: None,
             veto: false,
             target: Volts(0),
@@ -380,10 +387,18 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         self.events.push(now, Event::Decision(decision));
         self.last_decision = Some((decision, now));
         if self.state == RescueState::Analysing {
-            // "Not sure" or "no shock" always wins over "shock" within one analysis.
-            if self.analysis_result.is_none() || decision != RhythmDecision::Shockable {
-                self.analysis_result = Some(decision);
-            }
+            // Answers not yet acted on: "no shock" wins over everything, and
+            // "not sure" wins over "shock".
+            let pending = self.analysis_result;
+            self.analysis_result = Some(match (pending, decision) {
+                (Some(RhythmDecision::NonShockable), _) | (_, RhythmDecision::NonShockable) => {
+                    RhythmDecision::NonShockable
+                }
+                (Some(RhythmDecision::Indeterminate), _) | (_, RhythmDecision::Indeterminate) => {
+                    RhythmDecision::Indeterminate
+                }
+                (_, RhythmDecision::Shockable) => RhythmDecision::Shockable,
+            });
         } else if decision != RhythmDecision::Shockable {
             self.veto = true;
         }
@@ -540,32 +555,55 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
         } else if cancel {
             hw.prompt(Prompt::AnalysisCancelled);
             self.go(RescueState::Cpr, hw, now);
-        } else if let Some(decision) = self.analysis_result {
-            if decision == RhythmDecision::Shockable {
-                self.start_charging(hw, now);
-            } else {
-                hw.prompt(Prompt::NoShockAdvised);
+        } else {
+            match self.analysis_result.take() {
+                Some(RhythmDecision::Shockable) => {
+                    self.start_charging(hw, now);
+                    return;
+                }
+                Some(RhythmDecision::NonShockable) => {
+                    hw.prompt(Prompt::NoShockAdvised);
+                    self.go(RescueState::Cpr, hw, now);
+                    return;
+                }
+                Some(RhythmDecision::Indeterminate) => {
+                    // Not final: movement is the likely cause. Ask again for
+                    // hands off (not too often) and keep analysing.
+                    self.not_sure_seen = true;
+                    let due = self
+                        .hands_off_reminded_at
+                        .is_none_or(|t| now.since(t) >= self.config.hands_off_reminder_ms);
+                    if due {
+                        self.hands_off_reminded_at = Some(now);
+                        hw.prompt(Prompt::DoNotTouchPatient);
+                    }
+                }
+                None => {}
+            }
+            if self.time_in_state_ms(now) > self.config.analysis_time_limit_ms {
+                // Neither "shock" nor "no shock" in time. Never leave the
+                // responder waiting: say so and go to CPR (which says "Start CPR").
+                self.events.push(
+                    now,
+                    if self.not_sure_seen {
+                        Event::AnalysisInconclusive
+                    } else {
+                        Event::AnalysisTimedOut
+                    },
+                );
+                hw.prompt(Prompt::AnalysisInconclusive);
                 self.go(RescueState::Cpr, hw, now);
             }
-        } else if self.time_in_state_ms(now) > self.config.analysis_time_limit_ms {
-            self.events.push(now, Event::AnalysisTimedOut);
-            hw.prompt(Prompt::NoShockAdvised);
-            self.go(RescueState::Cpr, hw, now);
         }
     }
 
     fn start_charging(&mut self, hw: &mut impl MainHardware, now: Millis) {
         let target = self.planner.charge_voltage(self.mode);
-        let lowest_sensible = self
-            .config
-            .empty_voltage
-            .0
-            .saturating_add(self.config.voltage_tolerance.0);
-        let highest_sensible = self
-            .config
-            .overvoltage_limit
-            .0
-            .saturating_sub(self.config.voltage_tolerance.0);
+        // The whole "at the planned voltage" window must lie above "empty"
+        // and below the overvoltage limit.
+        let window = self.config.at_plan_allowance(target).0;
+        let lowest_sensible = self.config.empty_voltage.0.saturating_add(window);
+        let highest_sensible = self.config.overvoltage_limit.0.saturating_sub(window);
         if target.0 <= lowest_sensible || target.0 >= highest_sensible {
             self.begin_fault(FaultKind::PlanMismatch, hw, now);
             return;
@@ -620,12 +658,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
     ) {
         if let Some(exit) = self.armed_check(now, cancel, voltage) {
             self.handle_armed_exit(exit, hw, now);
-        } else if voltage.0
-            >= self
-                .target
-                .0
-                .saturating_sub(self.config.voltage_tolerance.0)
-        {
+        } else if self.config.reached_plan(voltage, self.target) {
             self.events.push(now, Event::Charged(voltage));
             self.go(RescueState::Countdown, hw, now);
         } else if self.time_in_state_ms(now) > self.config.charge_time_limit_ms {
@@ -644,7 +677,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             self.handle_armed_exit(exit, hw, now);
             return;
         }
-        if !within(voltage, self.target, self.config.voltage_tolerance) {
+        if !self.config.is_at_plan(voltage, self.target) {
             self.begin_fault(FaultKind::ChargeOffTarget, hw, now);
             return;
         }
@@ -681,11 +714,9 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
                 self.abort(AbortReason::PlanRefused(e), hw, now);
             }
             Ok(plan) => {
-                if !within(
-                    plan.charge_voltage,
-                    self.target,
-                    self.config.voltage_tolerance,
-                ) {
+                // Both are nominal numbers from the planner, not readings,
+                // so they must match exactly.
+                if plan.charge_voltage != self.target {
                     self.begin_fault(FaultKind::PlanMismatch, hw, now);
                     return;
                 }
@@ -748,7 +779,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
     }
 
     fn tick_disarming(&mut self, hw: &mut impl MainHardware, now: Millis, voltage: Volts) {
-        if voltage < self.config.empty_voltage {
+        if self.config.reads_empty(voltage) {
             self.events.push(now, Event::CapacitorEmptied(voltage));
             match self.after_disarm {
                 AfterDisarm::Cpr => self.go(RescueState::Cpr, hw, now),
@@ -798,6 +829,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
             RescueState::Analysing => {
                 self.analyzer.reset();
                 self.analysis_result = None;
+                self.not_sure_seen = false;
+                self.hands_off_reminded_at = None;
                 self.last_decision = None;
                 self.armed_since = None;
                 self.counters.analyses = self.counters.analyses.saturating_add(1);
@@ -920,14 +953,19 @@ impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P> {
     }
 
     /// Re-assert every output for the current state, every tick. Hold before
-    /// charging; stop charging before releasing.
+    /// charging (and charge only once the supervisor reports it holds too);
+    /// stop charging before releasing.
     fn apply_outputs(&mut self, hw: &mut impl MainHardware) {
         match self.state {
             // The self-test sequencer drives the outputs itself.
             RescueState::SelfTest => {}
             RescueState::Charging | RescueState::Countdown => {
                 hw.set_discharge_hold(true);
-                hw.set_charger(Some(self.target));
+                // The charger cannot run until the supervisor holds too
+                // (interlock rule), so ask for it only once the supervisor
+                // reports that it is holding.
+                let supervisor_holding = self.link.is_some_and(|l| l.report.holding);
+                hw.set_charger(supervisor_holding.then_some(self.target));
             }
             RescueState::Delivering => {
                 hw.set_discharge_hold(true);

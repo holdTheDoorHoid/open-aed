@@ -5,6 +5,9 @@
 //! ignored so the suite stays green while still listing them; run them with
 //! `cargo test -p aed-sim --test findings -- --ignored --nocapture`.
 //! The fixes belong in other crates (or in hardware design decisions), not here.
+//! A finding's test is un-parked (no longer ignored) once it is fixed: F-1,
+//! F-2 and F-3 are fixed; their wider tests are in `late_hands_off.rs`,
+//! `voltage_sensors.rs` and `frozen_main.rs`.
 //! SIMULATION ONLY.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
@@ -12,18 +15,18 @@ mod common;
 
 use aed_core::{PermitRefusal, Prompt, RescueState};
 use aed_rhythm::synth::Rhythm;
-use aed_sim::runner::is_instruction;
+use aed_sim::runner::silence_grace_ms;
 use aed_sim::{by_name, run, Action, Rule, Scenario, Trigger};
 use common::{fail, run_scenario};
 
-/// Finding 1. A responder who takes 2.5 s to stop compressions after
-/// "Analysing. Do not touch the patient." makes the first analysis window
-/// contain compression artifact. The analyser answers `Indeterminate` for
-/// it, and `Rescue` acts on the FIRST answer, so the device says "No shock
-/// advised" and starts two minutes of CPR on a patient in VF. Because every
-/// later analysis starts the same way, the patient is never shocked.
+/// Finding 1 (FIXED). A responder who takes 2.5 s to stop compressions
+/// after "Analysing. Do not touch the patient." makes the first analysis
+/// window contain compression artifact, and the analyser answers
+/// `Indeterminate`. `Rescue` used to act on that first answer ("No shock
+/// advised", two minutes of CPR, every cycle). Now "not sure" is not final
+/// while analysing: the device repeats "Do not touch the patient" and keeps
+/// analysing until the signal is clean or the analysis time limit runs out.
 #[test]
-#[ignore = "FINDING: compressions during the first 1.5 s of analysis turn VF into 'no shock advised' (aed-core rescue.rs tick_analysing / aed-rhythm warm-up)"]
 fn vf_is_shocked_even_if_compressions_stop_late() {
     let r = run_scenario(&by_name("slow-hands-off").unwrap());
     if r.shocks.is_empty() {
@@ -51,13 +54,13 @@ fn measure_how_late_compressions_may_stop() {
     }
 }
 
-/// Finding 2. Two healthy voltage sensors with opposite 2 % gain errors
-/// (+2 %/+10 V and −2 %/−10 V) differ by about 98 V at 1,950 V. The
-/// supervisor's disagreement limit is `Config::voltage_tolerance` = 50 V
-/// (2.6 % of the charge voltage), so it latches `VoltageDisagreement` during
-/// charging and the device faults: no shock for the rest of the rescue.
+/// Finding 2 (FIXED). Two healthy voltage sensors with opposite 2 % gain
+/// errors (+2 %/+10 V and −2 %/−10 V) differ by about 98 V at 1,950 V. The
+/// old single 50 V `voltage_tolerance` made the supervisor latch
+/// `VoltageDisagreement`. The agreement budget now grows with the voltage
+/// (`Config::agree_percent` + `Config::agree_abs_volts`, per sensor, twice
+/// that between the two), separate from the "at the planned voltage" window.
 #[test]
-#[ignore = "FINDING: 50 V voltage_tolerance leaves no room for two independent sensors' errors (aed-core config.rs voltage_tolerance)"]
 fn two_percent_sensor_errors_do_not_disable_the_device() {
     let mut s = by_name("adult-vf").unwrap();
     s.plant.main_voltage_sensor.gain = 1.02;
@@ -70,15 +73,14 @@ fn two_percent_sensor_errors_do_not_disable_the_device() {
     }
 }
 
-/// Finding 3a. If the main controller freezes while charging or counting
-/// down, its last command to the charger stays latched ON. The supervisor
-/// correctly lets go of the discharge path, but the charger keeps pushing
-/// 30 W into the 2 kΩ discharge load, so the capacitor settles at about
-/// sqrt(30 W x 2,000 Ω) = 245 V indefinitely, and the load dissipates 30 W
-/// with no end. Nothing in the architecture says the charger is cut when
-/// the discharge path is active or when the supervisor lets go.
+/// Finding 3a (FIXED by a hardware rule). If the main controller freezes
+/// while charging or counting down, its last command to the charger stays
+/// latched ON. Without a rule, the charger keeps pushing 30 W into the 2 kΩ
+/// discharge load after the supervisor lets go, holding the capacitor at
+/// about sqrt(30 W x 2,000 Ω) = 245 V. The rule
+/// `aed_core::interlock::charger_may_run` (charger cut off whenever the
+/// discharge path is active) is now the plant's default.
 #[test]
-#[ignore = "FINDING: frozen main leaves charger on; capacitor stays at ~245 V (hardware design gap: charger enable not gated by supervisor/discharge path)"]
 fn frozen_main_leaves_capacitor_empty() {
     let r = run_scenario(&by_name("fault-main-freeze").unwrap());
     if !r.violations_of(Rule::CapacitorLeftCharged).is_empty() {
@@ -87,28 +89,36 @@ fn frozen_main_leaves_capacitor_empty() {
 }
 
 /// Companion to 3a: with the charger disabled in hardware whenever the
-/// discharge path is active, the capacitor empties. Evidence for the fix.
+/// discharge path is active (now the default), the capacitor empties.
 #[test]
 fn frozen_main_capacitor_empties_if_charger_is_gated_by_discharge_path() {
-    let mut s = by_name("fault-main-freeze").unwrap();
-    s.plant.charger_gated_by_discharge = true;
+    let s = by_name("fault-main-freeze").unwrap();
+    assert!(s.plant.charger_gated_by_discharge, "the hardware rule is the default");
     let r = run_scenario(&s);
     assert!(r.violations.is_empty(), "{:?}", r.violations);
     assert!(r.final_cap_v < f64::from(r.config.empty_voltage.0));
 }
 
-/// Finding 3b. A frozen main controller falls silent mid-countdown (last
-/// words "Three."). The supervisor has no way to speak, show anything or
-/// tell the responder to continue CPR.
+/// Finding 3b (FIXED). A frozen main controller falls silent mid-countdown
+/// (last words "Three."). The supervisor now has its own fault alarm (a
+/// buzzer and light it alone drives, `SupervisorHardware::set_fault_alarm`),
+/// on whenever it has a latched fault. The main controller still cannot
+/// speak, so the check is the supervisor's alarm, which the never-silent
+/// rule counts as "continue CPR".
 #[test]
-#[ignore = "FINDING: when main freezes the device goes silent; supervisor has no output to the responder (architecture gap)"]
 fn frozen_main_still_tells_responder_to_continue_cpr() {
     let r = run_scenario(&by_name("fault-main-freeze").unwrap());
-    if !r.last_prompt().is_some_and(is_instruction)
-        || r.last_prompt() == Some(Prompt::Countdown(3))
-    {
+    let frozen_at = r.main_frozen_at.unwrap();
+    let grace = silence_grace_ms(&r.config);
+    let told = r.supervisor_alarm_at.is_some_and(|t| t >= frozen_at && t - frozen_at <= grace);
+    if !told || !r.violations_of(Rule::LeftWithoutInstruction).is_empty() {
         fail(&r, "device silent after main froze");
     }
+    // The responder, told by the alarm, goes back to compressions.
+    assert!(r
+        .timeline
+        .iter()
+        .any(|e| e.t_ms > frozen_at && e.text.contains("Starts chest compressions")));
 }
 
 /// Finding 4. The analyser looks at a 4-second window, so it can keep
@@ -201,5 +211,43 @@ fn attached_pads_out_of_range_get_a_useful_instruction() {
         .any(|&(_, p)| matches!(p, Prompt::CheckPads | Prompt::StartCpr));
     if !useful {
         fail(&r, "only 'Attach pads' for 60 s with pads on at 190 ohms");
+    }
+}
+
+/// New finding from the F-2 work (SIMULATION, MODEL energies). With
+/// sensors accurate to ±2 % ± 10 V (what the default `Config` assumes),
+/// the "at the planned voltage" checks cannot stop a shock from a true
+/// voltage up to about 1,227 V in child mode (plan 1,150 V): a charger that
+/// regulates high, with both sensors reading low by their full allowance,
+/// still passes every check. At 25 to 35 Ω that delivers about 60.5 J,
+/// +21 % over the 50 J target, outside the ±15 % energy tolerance (at 25 Ω
+/// the planner is already at its shortest phase and +6 % on target). Adult
+/// mode and the bottom edge in child mode stay inside. The window cannot be
+/// narrowed without false faults from in-spec sensors, so this is an input
+/// to the sensor specification (about ±1 % ± 7 V would be needed) or to the
+/// child-mode waveform. Full table: `voltage_sensors.rs`,
+/// `delivered_energy_at_the_edges_of_the_allowed_voltage_window`.
+#[test]
+#[ignore = "FINDING: ±2 % ± 10 V sensors allow a child shock about +21 % over target at 25-35 Ω (sensor accuracy vs energy tolerance; aed-core config.rs at_plan_*, aed-waveform child charge)"]
+fn child_energy_at_the_top_of_the_voltage_window_is_within_tolerance() {
+    let config = aed_core::Config::default();
+    let plan = 1_150.0;
+    let a = f64::from(config.at_plan_allowance(aed_types::Volts(1_150)).0);
+    let top = (plan + a + 10.0) / 0.98 - 1.0;
+    let mut s = by_name("child-vf").unwrap();
+    s.duration_ms = 40_000;
+    s.pad_ohms = 25.0;
+    s.plant.charger_set_point_gain = top / plan;
+    let low = aed_sim::SensorModel {
+        gain: 0.98,
+        offset: -10.0,
+        stuck_at: None,
+    };
+    s.plant.main_voltage_sensor = low;
+    s.plant.supervisor_voltage_sensor = low;
+    let r = run_scenario(&s);
+    let j = r.shocks.first().map_or(0.0, aed_sim::ShockRecord::delivered_j);
+    if !(42.5..=57.5).contains(&j) {
+        fail(&r, &format!("child shock from {top:.0} V into 25 Ω delivered {j:.1} J (target 50 J ±15 %)"));
     }
 }

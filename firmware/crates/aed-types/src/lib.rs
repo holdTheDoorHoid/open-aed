@@ -70,8 +70,9 @@ impl PatientMode {
 
 /// The answer from rhythm analysis.
 ///
-/// `Indeterminate` is a first-class answer: the rescue sequence treats it
-/// exactly like `NonShockable` (continue CPR). It must never lead to a shock.
+/// `Indeterminate` is a first-class answer and must never lead to a shock.
+/// How the rescue sequence acts on each answer is described on
+/// [`RhythmAnalyzer`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RhythmDecision {
     /// A rhythm a shock can correct (ventricular fibrillation or rapid ventricular tachycardia).
@@ -107,6 +108,28 @@ pub enum PlanError {
 }
 
 /// Rhythm analysis as the rescue sequence sees it.
+///
+/// # How the rescue sequence treats each answer
+///
+/// **While analysing** (before any shock is advised):
+///
+/// * `Shockable` advises a shock: charging starts.
+/// * `NonShockable` is final: "No shock advised", then CPR.
+/// * `Indeterminate` ("not sure") is **not** final. Movement, such as
+///   compressions that went on into the analysis, is the usual cause, so the
+///   device asks again for hands off and keeps analysing. Only `Shockable`
+///   or `NonShockable` ends the analysis early. If neither arrives within
+///   the analysis time limit, the analysis is "inconclusive": no shock, and
+///   the responder is told to start CPR.
+/// * If `Indeterminate` and `Shockable` arrive together (before the device
+///   has acted on either), "not sure" wins: no charging on that answer.
+///
+/// **While armed** (charging, counting down, delivering): only `Shockable`
+/// keeps the shock going. Any other answer, `Indeterminate` included,
+/// abandons the shock at once and empties the capacitor, even if later
+/// answers say `Shockable` again.
+///
+/// **During CPR** answers are not used: the signal is full of compressions.
 pub trait RhythmAnalyzer {
     /// Feed one heart-signal sample (at [`ECG_SAMPLE_RATE_HZ`]).
     ///

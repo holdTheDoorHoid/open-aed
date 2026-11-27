@@ -7,8 +7,8 @@ mod common;
 
 use aed_core::{FaultKind, Prompt, RescueState, SupervisorFault};
 use aed_sim::runner::Source;
-use aed_sim::{catalogue, Rule};
-use common::{assert_expected, assert_invariants, assert_invariants_except, fail, run_named};
+use aed_sim::catalogue;
+use common::{assert_expected, assert_invariants, fail, run_named};
 
 fn standard(name: &str) -> aed_sim::RunResult {
     let r = run_named(name);
@@ -115,9 +115,42 @@ fn fine_vf() {
 
 #[test]
 fn slow_hands_off() {
-    // Invariants only here; the missed shock is demonstrated in findings.rs.
+    // Compressions run 2.5 s into the analysis: "not sure" at first, then
+    // the shock once the signal is clean (finding F-1, fixed).
     let r = standard("slow-hands-off");
-    println!("slow-hands-off shocks: {}", r.shocks.len());
+    assert!(r.said(Prompt::DoNotTouchPatient));
+    let shock_at = r.shocks.first().unwrap().at_ms;
+    assert!(
+        r.prompts
+            .iter()
+            .all(|&(t, p)| p != Prompt::NoShockAdvised || t > shock_at),
+        "'No shock advised' before the shock"
+    );
+}
+
+#[test]
+fn never_stops_compressing() {
+    // Every analysis is "not sure" until its time limit, then CPR: no shock,
+    // and the responder is never left without an instruction.
+    let r = standard("never-stops-compressing");
+    assert!(r.said(Prompt::DoNotTouchPatient));
+    assert!(r.said(Prompt::AnalysisInconclusive));
+    assert!(!r.said(Prompt::NoShockAdvised), "'not sure' must not be reported as 'no shock advised'");
+    let p: Vec<Prompt> = r.prompts.iter().map(|&(_, p)| p).collect();
+    for (i, x) in p.iter().enumerate() {
+        if *x == Prompt::AnalysisInconclusive {
+            assert_eq!(p.get(i + 1), Some(&Prompt::StartCpr), "inconclusive must be followed by Start CPR");
+        }
+    }
+    // Each analysis lasts the full time limit (the decision arrives on a 1 s step).
+    let limit = r.config.analysis_time_limit_ms;
+    for w in r.states.windows(2) {
+        if let [(t0, RescueState::Analysing), (t1, next)] = w {
+            assert_eq!(*next, RescueState::Cpr);
+            assert!((limit..=limit + 10).contains(&(t1 - t0)), "analysis took {} ms", t1 - t0);
+        }
+    }
+    assert!(r.entered(RescueState::Cpr));
 }
 
 #[test]
@@ -172,12 +205,13 @@ fn fault_discharge_stuck() {
 
 #[test]
 fn fault_main_freeze() {
-    let r = run_named("fault-main-freeze");
-    // Known finding (see findings.rs): the charger is latched on by the frozen
-    // controller, so the capacitor sits part-charged against the discharge load.
-    assert_invariants_except(&r, &[Rule::CapacitorLeftCharged]);
-    assert_expected(&r);
+    // Finding F-3 (fixed): the charger cannot run while the discharge path
+    // is active, so the supervisor letting go empties the capacitor; and the
+    // supervisor's own alarm tells the responder.
+    let r = standard("fault-main-freeze");
     assert_eq!(r.supervisor_fault, Some(SupervisorFault::HeartbeatLost));
+    assert!(r.final_cap_v < f64::from(r.config.empty_voltage.0));
+    assert!(r.supervisor_alarm_at.is_some(), "supervisor alarm never came on");
     // The supervisor lets go within the heartbeat timeout (+ one heartbeat period).
     let frozen_at = r.injected.first().unwrap().0;
     let released = r

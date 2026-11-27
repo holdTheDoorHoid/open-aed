@@ -22,6 +22,12 @@ pub enum Prompt {
     AnalysingDoNotTouch,
     /// The CPR period is over; stop compressions for analysis.
     StopCprAnalysing,
+    /// The analysis is "not sure" (usually movement): repeats the hands-off
+    /// instruction while the device keeps analysing.
+    DoNotTouchPatient,
+    /// The analysis could not reach an answer in time. No shock. Always
+    /// followed at once by "Start CPR."
+    AnalysisInconclusive,
     /// A shock is advised and the capacitor is charging.
     ShockAdvisedCharging,
     /// Charged; the automatic countdown is starting.
@@ -33,7 +39,7 @@ pub enum Prompt {
     /// A shock was advised but was not given (refused by the second check,
     /// the confirmation went stale, or the mode was changed).
     ShockNotDelivered,
-    /// The analysis did not advise a shock (includes "not sure").
+    /// The analysis found a rhythm that must not be shocked.
     NoShockAdvised,
     /// Start or continue chest compressions.
     StartCpr,
@@ -63,6 +69,8 @@ impl Prompt {
             Prompt::ReplacePads => "Pads out of date. Replace pads after use.",
             Prompt::AnalysingDoNotTouch => "Analysing. Do not touch the patient.",
             Prompt::StopCprAnalysing => "Stop CPR. Analysing. Do not touch the patient.",
+            Prompt::DoNotTouchPatient => "Do not touch the patient. Still analysing.",
+            Prompt::AnalysisInconclusive => "Unable to analyse. No shock.",
             Prompt::ShockAdvisedCharging => "Shock advised. Charging. Stand clear.",
             Prompt::StandClear => "Stand clear. Shocking in",
             Prompt::Countdown(n) => countdown_word(n),

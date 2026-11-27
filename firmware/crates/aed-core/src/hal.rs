@@ -13,8 +13,9 @@
 //!
 //! **Discharge by default.** The storage capacitor is connected to the
 //! internal discharge load unless BOTH controllers are actively holding the
-//! discharge path open. Either one letting go empties the capacitor. See
-//! [`crate::interlock`].
+//! discharge path open. Either one letting go empties the capacitor, and the
+//! charger cannot run while the discharge path is active (a hardware
+//! requirement). See [`crate::interlock`].
 
 use crate::link::{MainStatus, SupervisorReport};
 use crate::prompts::Prompt;
@@ -120,4 +121,12 @@ pub trait SupervisorHardware {
     fn receive_status(&mut self) -> Option<MainStatus>;
     /// Send a report back to the main controller.
     fn send_report(&mut self, report: &SupervisorReport);
+    /// Switch the supervisor's own fault alarm on (`true`) or off (`false`).
+    ///
+    /// A dedicated buzzer and light, wired to the supervisor alone and
+    /// labelled on the case (for example "Device fault. No shocks. Continue
+    /// CPR."), so that a device whose main controller has died is never
+    /// silent. The supervisor switches it on whenever it has a latched fault,
+    /// and if the main controller has never sent a message since switch-on.
+    fn set_fault_alarm(&mut self, on: bool);
 }

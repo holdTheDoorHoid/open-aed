@@ -143,4 +143,7 @@ impl SupervisorHardware for SupervisorView {
     fn send_report(&mut self, report: &SupervisorReport) {
         self.plant.borrow_mut().send_to_main(*report);
     }
+    fn set_fault_alarm(&mut self, on: bool) {
+        self.plant.borrow_mut().supervisor_alarm = on;
+    }
 }

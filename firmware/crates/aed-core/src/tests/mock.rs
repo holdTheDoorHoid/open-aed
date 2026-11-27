@@ -9,7 +9,7 @@
 //! the real circuit.
 
 use crate::hal::{BatteryStatus, MainHardware, PadCartridge, ShockStatus, SupervisorHardware};
-use crate::interlock::{bridge_may_fire, discharge_path_active};
+use crate::interlock::{bridge_may_fire, charger_may_run, discharge_path_active};
 use crate::link::{MainStatus, SupervisorReport};
 use crate::prompts::Prompt;
 use crate::rescue::{Rescue, RescueState};
@@ -179,6 +179,8 @@ pub struct Board {
     pub prompts: Vec<(u32, Prompt)>,
     pub beats: Vec<u32>,
     pub ready: bool,
+    /// The supervisor's own fault alarm.
+    pub sup_alarm: bool,
     pub shock_status: ShockStatus,
     pub requests: Vec<RequestRecord>,
     pub fires: Vec<FireRecord>,
@@ -222,6 +224,7 @@ impl Board {
             prompts: Vec::new(),
             beats: Vec::new(),
             ready: false,
+            sup_alarm: false,
             shock_status: ShockStatus::Idle,
             requests: Vec::new(),
             fires: Vec::new(),
@@ -244,7 +247,12 @@ impl Board {
             if self.cap_v < 0.5 {
                 self.cap_v = 0.0;
             }
-        } else if let Some(target) = self.charger {
+        }
+        // The charger runs only while the discharge path is not active.
+        if let Some(target) = self
+            .charger
+            .filter(|_| charger_may_run(true, self.discharging()))
+        {
             if !self.charger_broken {
                 let t = f32::from(target.0);
                 if self.charger_runaway {
@@ -411,6 +419,9 @@ impl SupervisorHardware for SupView<'_> {
         if self.0.report_wire_up {
             self.0.report_inbox = Some(*report);
         }
+    }
+    fn set_fault_alarm(&mut self, on: bool) {
+        self.0.sup_alarm = on;
     }
 }
 

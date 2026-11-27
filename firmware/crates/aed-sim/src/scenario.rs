@@ -56,6 +56,10 @@ pub struct Responder {
     /// If the pads come off and the device says to attach them, the responder
     /// puts them back after this long (ms). `None`: never.
     pub reattach_after_ms: Option<u32>,
+    /// The responder never stops compressions, whatever the device says
+    /// (models someone who cannot hear or does not follow the device).
+    /// Default false.
+    pub keeps_compressing: bool,
 }
 
 impl Default for Responder {
@@ -65,6 +69,7 @@ impl Default for Responder {
             reaction_ms: 700,
             compression_uv: 1_500.0,
             reattach_after_ms: None,
+            keeps_compressing: false,
         }
     }
 }
@@ -293,7 +298,14 @@ pub fn catalogue() -> Vec<Scenario> {
         )
         .with(|s| {
             s.responder.reaction_ms = 2_500;
-            s.expect = Expect::InvariantsOnly;
+        }),
+        Scenario::base(
+            "never-stops-compressing",
+            "Adult VF; the responder never stops compressions: no shock, 'unable to analyse', CPR.",
+        )
+        .with(|s| {
+            s.responder.keeps_compressing = true;
+            s.expect = Expect::NeverCharges;
         }),
         Scenario::base(
             "clock-drift",

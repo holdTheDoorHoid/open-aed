@@ -30,8 +30,11 @@ pub enum Event {
     },
     /// The rhythm analysis gave a decision.
     Decision(RhythmDecision),
-    /// No decision arrived within the analysis time limit (treated as "not sure").
+    /// No decision at all arrived within the analysis time limit. No shock; CPR.
     AnalysisTimedOut,
+    /// The analysis time limit ran out with only "not sure" answers (usually
+    /// movement or interference): the analysis was inconclusive. No shock; CPR.
+    AnalysisInconclusive,
     /// Pad contact became good (after the debounce time).
     PadsOn,
     /// Pad contact was lost (after the debounce time).

@@ -158,9 +158,10 @@ impl RhythmAnalyzer for Analyzer {
             let report = self.analyse();
             self.last = Some(report);
             // A shockable window that is not yet confirmed is "still
-            // analysing", not an answer: the rescue sequence treats any
-            // Indeterminate answer as "go to CPR", so reporting one here
-            // would end the analysis before a shock could ever be confirmed.
+            // analysing", not an answer. Reporting it as Indeterminate would
+            // make the rescue sequence repeat its hands-off prompt for no
+            // reason while analysing, and would abandon a shock already
+            // being prepared (while armed, any Indeterminate stops the shock).
             let awaiting_confirmation = report.verdict.decision == RhythmDecision::Shockable
                 && report.decision != RhythmDecision::Shockable;
             if awaiting_confirmation {

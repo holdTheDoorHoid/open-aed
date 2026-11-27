@@ -22,11 +22,22 @@
 //!    charged too long; the voltage goes over the limit; its reading and the
 //!    main controller's claim disagree; or cancel is pressed. The first four
 //!    are faults and are latched until power-off.
+//! 3. **Alarm.** It has its own fault alarm (a buzzer and light only it
+//!    drives), switched on whenever a fault is latched, so the device is
+//!    not silent if the main controller has died. It also sounds the alarm,
+//!    without latching a fault, if the main controller never sends a single
+//!    message within [`Config::self_test_link_wait_ms`] of switch-on.
+//!
+//! Voltage comparisons: its own reading must agree with the main
+//! controller's claim within two sensors' allowed error
+//! ([`Config::readings_agree`]) and be at the planned voltage
+//! ([`Config::is_at_plan`]) before a permit; the overvoltage limit is a hard
+//! limit on its own reading.
 //!
 //! It does NOT second-guess the heart rhythm (an open design question in
 //! ARCHITECTURE.md).
 
-use crate::config::{within, Config, ConfigError};
+use crate::config::{Config, ConfigError};
 use crate::events::{Event, EventRecord, SUPERVISOR_EVENT_CAPACITY};
 use crate::hal::SupervisorHardware;
 use crate::link::{MainStatus, SupervisorFault, SupervisorReport};
@@ -77,6 +88,8 @@ pub enum ReleaseReason {
 pub struct Supervisor {
     config: Config,
     started: bool,
+    started_at: Millis,
+    alarm: bool,
     last_status: Option<MainStatus>,
     last_status_at: Option<Millis>,
     countdown_since: Option<Millis>,
@@ -127,6 +140,8 @@ impl Supervisor {
         Ok(Supervisor {
             config,
             started: false,
+            started_at: Millis(0),
+            alarm: false,
             last_status: None,
             last_status_at: None,
             countdown_since: None,
@@ -156,6 +171,12 @@ impl Supervisor {
         self.permit_until.is_some()
     }
 
+    /// True while the supervisor's own fault alarm is on.
+    #[must_use]
+    pub const fn alarm_active(&self) -> bool {
+        self.alarm
+    }
+
     /// True while the supervisor holds the discharge path open.
     #[must_use]
     pub const fn holding(&self) -> bool {
@@ -173,6 +194,7 @@ impl Supervisor {
         let now = hw.now();
         if !self.started {
             self.started = true;
+            self.started_at = now;
             self.events.push(now, Event::PowerOn);
         }
 
@@ -247,6 +269,13 @@ impl Supervisor {
         hw.set_permit(self.permit_until.is_some());
         hw.set_discharge_hold(self.holding);
 
+        // The supervisor's own voice: on for any latched fault, and if the
+        // main controller has never been heard from at all.
+        let never_heard = self.last_status_at.is_none()
+            && now.since(self.started_at) > self.config.self_test_link_wait_ms;
+        self.alarm = self.fault.is_some() || never_heard;
+        hw.set_fault_alarm(self.alarm);
+
         self.send_report_if_due(hw, now, voltage);
     }
 
@@ -281,7 +310,7 @@ impl Supervisor {
         if voltage > self.config.overvoltage_limit {
             self.latch(now, SupervisorFault::Overvoltage);
         }
-        if voltage >= self.config.empty_voltage {
+        if !self.config.reads_empty(voltage) {
             let since = *self.charged_since.get_or_insert(now);
             if now.since(since) > self.config.max_charged_ms {
                 self.latch(now, SupervisorFault::ChargedTooLong);
@@ -295,7 +324,7 @@ impl Supervisor {
         let claim = self.last_status.map(|s| s.capacitor_voltage);
         match claim {
             Some(claimed) if self.holding && fresh => {
-                if within(voltage, claimed, self.config.voltage_tolerance) {
+                if self.config.readings_agree(voltage, claimed) {
                     self.disagree_since = None;
                 } else {
                     let since = *self.disagree_since.get_or_insert(now);
@@ -337,19 +366,11 @@ impl Supervisor {
         if voltage > self.config.overvoltage_limit {
             return Err(PermitRefusal::Overvoltage);
         }
-        if !within(
-            voltage,
-            status.capacitor_voltage,
-            self.config.voltage_tolerance,
-        ) {
+        if !self.config.readings_agree(voltage, status.capacitor_voltage) {
             return Err(PermitRefusal::VoltageDisagreesWithMain);
         }
         if status.planned_voltage.0 == 0
-            || !within(
-                voltage,
-                status.planned_voltage,
-                self.config.voltage_tolerance,
-            )
+            || !self.config.is_at_plan(voltage, status.planned_voltage)
         {
             return Err(PermitRefusal::VoltageNotAtPlan);
         }

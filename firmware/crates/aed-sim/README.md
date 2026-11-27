@@ -54,17 +54,18 @@ cargo test -p aed-sim --test findings -- --ignored --nocapture  # the known prob
 | `noisy` | VF with noise, mains hum and baseline wander |
 | `rapid-vt` | Rapid ventricular tachycardia |
 | `fine-vf` | Small VF, which the analysis deliberately answers "not sure" |
-| `slow-hands-off` | The responder takes 2.5 s to stop compressions |
+| `slow-hands-off` | The responder takes 2.5 s to stop compressions; the shock still comes (finding F-1, fixed) |
+| `never-stops-compressing` | The responder never stops compressions: every analysis is "not sure" until its time limit, then "Unable to analyse. No shock." and CPR; never a shock, never silent |
 | `clock-drift` | Controllers' clocks 2 % apart |
 | `slow-link` | 40 ms message delay, 5 % of messages lost |
-| `sensor-tolerance` | The two voltage sensors read 1 % high and 1 % low |
+| `sensor-tolerance` | The two voltage sensors read 1 % high and 1 % low (wider ±2 % ± 10 V cases are in `tests/voltage_sensors.rs`) |
 | `fault-<name>` | One per injectable fault, listed below |
 
-Injectable faults (each can be switched on at any time or a set time after the device enters a given state): main controller's voltage sensor wrong; supervisor's voltage sensor wrong; charger cannot reach its target; charger runs away past its target; discharge path stuck (will not empty); main controller freezes; message wire drops; pads fall off; cancel pressed; battery depleted; output bridge fails to fire. Sensors can also be given gain and offset errors or a stuck reading, each controller's clock a drift, and the message wire a delay and a loss rate.
+Injectable faults (each can be switched on at any time or a set time after the device enters a given state): main controller's voltage sensor wrong; supervisor's voltage sensor wrong; charger cannot reach its target; charger runs away past its target; discharge path stuck (will not empty); main controller freezes; message wire drops; pads fall off; cancel pressed; battery depleted; output bridge fails to fire. Sensors can also be given gain and offset errors or a stuck reading, the charger a regulation error (it charges to a multiple of the voltage asked for), each controller's clock a drift, and the message wire a delay and a loss rate. The responder can be made to never stop compressions.
 
 ## What it models
 
-- **The device.** A 100 µF capacitor (from the waveform design), a charger delivering a constant 30 W (a full adult charge takes about 6 s), a 2,000 Ω internal discharge load that empties the capacitor unless *both* controllers hold it open (the `aed-core` interlock rule), a slow leak, and the output bridge, which fires only when the interlock rule allows. The shock itself is the `aed-waveform` model, started from the voltage actually on the capacitor and delivered into the patient's actual resistance; whatever charge is left stays on the capacitor.
+- **The device.** A 100 µF capacitor (from the waveform design), a charger delivering a constant 30 W (a full adult charge takes about 6 s), a 2,000 Ω internal discharge load that empties the capacitor unless *both* controllers hold it open (the `aed-core` interlock rule), a slow leak, and the output bridge, which fires only when the interlock rule allows. The charger cannot run while the discharge path is active (the `aed-core` rule `charger_may_run`, a requirement on the future hardware); a switch (`charger_gated_by_discharge`) turns that rule off so a test can show what happens without it. The supervisor's own fault alarm (buzzer and light) appears in the timeline as the supervisor's alarm. The shock itself is the `aed-waveform` model, started from the voltage actually on the capacitor and delivered into the patient's actual resistance; whatever charge is left stays on the capacitor.
 - **Two separate controllers.** The real `Rescue` (with the real rhythm analysis and shock planner) and the real `Supervisor`. Each sees the device only through its own sensors and clock, and they talk only through a message wire.
 - **The patient.** A scripted rhythm, pad resistance (or pads off), optional interference, compression artifact while the responder is doing CPR.
 
@@ -76,11 +77,11 @@ Injectable faults (each can be switched on at any time or a set time after the d
 4. The true capacitor voltage never goes more than 50 V above the overvoltage limit.
 5. If the device ends in its Fault state, the capacitor is empty, unless the discharge path itself is stuck; in that case the device must report the more serious "could not empty" fault.
 6. The capacitor is not left charged at the end unless a shock is being prepared.
-7. The responder is never left without an instruction: any purely informational message ("Shock delivered.", "No shock advised.") is followed by an instruction within 4 s, and the device speaks within 8 s of switching on.
+7. The responder is never left without an instruction: any purely informational message ("Shock delivered.", "No shock advised.", "Unable to analyse. No shock.") is followed by an instruction within 4 s, and the device speaks within 8 s of switching on. The supervisor's fault alarm counts as an instruction ("continue CPR"; the simulated responder restarts compressions when it sounds). If the main controller freezes, the supervisor's alarm must come on within 4 s; there is no exemption for a frozen main controller.
 
 Rule 1 cannot hold for a rhythm change in the last few seconds before the shock: the analysis looks at a 4-second window. The random campaign counts those cases separately (see "Known problems").
 
-Other tests check that the modelled shock energy is within ±15 % of the target at 25, 50, 80, 125 and 175 Ω in both modes, and run a seeded random campaign of 300 scenarios (random rhythm, changes, resistance including just out of range, mode, responder, clocks, and one random fault at a random time in about half of them).
+Other tests check that the modelled shock energy is within ±15 % of the target at 25, 50, 80, 125 and 175 Ω in both modes, measure the delivered energy at the edges of the voltage window the checks allow (`tests/voltage_sensors.rs`; see known problem 9), check that a frozen main controller in charging, countdown or delivering leaves the capacitor empty, the charger off and the supervisor's alarm on (`tests/frozen_main.rs`), sweep how late compressions may stop (`tests/late_hands_off.rs`), and run a seeded random campaign of 300 scenarios (random rhythm, changes, resistance including just out of range, mode, responder, clocks, and one random fault at a random time in about half of them).
 
 ## Timings (simulated, provisional settings)
 
@@ -98,13 +99,14 @@ For context only (from the project's research notes): trained EMTs reach about 5
 
 ## Known problems found (integration findings)
 
-Each has an `#[ignore]`d test in `tests/findings.rs` that states the right behaviour and fails today. The fixes belong in other crates or in design decisions, not here.
+Each open one has an `#[ignore]`d test in `tests/findings.rs` that states the right behaviour and fails today. The fixes belong in other crates or in design decisions, not here. Fixed findings keep their test in `tests/findings.rs`, no longer ignored.
 
-1. Compressions that continue more than about 1.5 s into an analysis make the first answer "not sure", and the rescue sequence acts on that first answer: "No shock advised" on a patient in VF, every time.
-2. Two healthy voltage sensors with opposite 2 % errors trip the supervisor's 50 V disagreement limit and disable the device.
-3. A frozen main controller leaves the charger switched on; the supervisor empties the capacitor into the discharge load, but the charger keeps feeding it (about 245 V indefinitely). The device also goes silent, because the supervisor has no way to speak.
+1. FIXED. Compressions that continued more than about 1.5 s into an analysis made the first answer "not sure", and the rescue sequence acted on it: "No shock advised" on a patient in VF. Now "not sure" is not final while analysing. Measurements: `tests/late_hands_off.rs` (simulated: with the 12 s analysis limit a shock still comes when compressions stop up to 6.0 s late for 400 µV VF, 7.0 s for 800 µV, 7.5 s for 1,500 µV; the hands-off pause from the moment compressions stop stays about 16 to 17.5 s).
+2. FIXED. Two healthy voltage sensors with opposite 2 % errors tripped the supervisor's single 50 V disagreement limit. Now the agreement budget grows with the voltage and is separate from the "at the planned voltage" window. Tests: `tests/voltage_sensors.rs`.
+3. FIXED (needs a hardware rule). A frozen main controller left the charger switched on (about 245 V indefinitely) and the device went silent. Now the charger cannot run while the discharge path is active, and the supervisor has its own fault alarm. Tests: `tests/frozen_main.rs`.
 4. A rhythm change in the last ~4 s before the shock is not seen.
 5. The supervisor records a spurious "permit refused" after a good shock when the message wire is slow.
 6. After a pads-off abort the device says "Start CPR." and "Attach pads" at the same moment.
 7. A failing charger at switch-on keeps the device silent for about 12 s, because the 400 V self-test charge waits as long as a full charge.
 8. Pads that are on but read just outside 25–175 Ω get only "Attach pads" forever.
+9. NEW (from the F-2 work; not yet numbered in docs/FINDINGS.md). With sensors accurate to ±2 % ± 10 V, the "at the planned voltage" checks cannot stop a child-mode shock from a true voltage up to about 1,227 V (plan 1,150 V) if the charger regulates high and both sensors read low. At 25 to 35 Ω that is about 60.5 J, +21 % over the 50 J target (model). Adult mode stays within ±15 % at both edges (−10.5 % to +13.6 %). Narrowing the window would make in-spec sensors cause false faults, so this is an input to the sensor specification (about ±1 % ± 7 V would be needed) or to the child-mode waveform. Test: `child_energy_at_the_top_of_the_voltage_window_is_within_tolerance`.

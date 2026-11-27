@@ -6,7 +6,7 @@ use super::mock::{Board, MainView};
 use crate::config::{Config, ConfigError};
 use crate::events::{Event, EventRecord};
 use crate::hal::{BatteryStatus, PadCartridge};
-use crate::interlock::{bridge_may_fire, discharge_path_active};
+use crate::interlock::{bridge_may_fire, charger_may_run, discharge_path_active};
 use crate::link::{SupervisorFault, SupervisorReport};
 use crate::prompts::Prompt;
 use crate::selftest::{LinkSnapshot, SelfTest, SelfTestFailure, SelfTestPass, SelfTestProgress};
@@ -50,18 +50,42 @@ fn discharge_path_is_active_unless_both_controllers_hold() {
     assert!(!discharge_path_active(true, true));
 }
 
+#[test]
+fn charger_cannot_run_while_discharge_path_is_active() {
+    // Truth table of the hardware rule, through every combination of the
+    // two controllers' holds: the charger runs only when both hold and the
+    // main controller asks for it, so either controller letting go stops it.
+    for main_hold in [false, true] {
+        for supervisor_hold in [false, true] {
+            for enabled in [false, true] {
+                let discharging = discharge_path_active(main_hold, supervisor_hold);
+                assert_eq!(
+                    charger_may_run(enabled, discharging),
+                    enabled && main_hold && supervisor_hold,
+                    "main {main_hold} supervisor {supervisor_hold} enabled {enabled}"
+                );
+            }
+        }
+    }
+    assert!(!charger_may_run(true, true));
+    assert!(!charger_may_run(false, false));
+    assert!(charger_may_run(true, false));
+}
+
 // ----- self-test sequencer ---------------------------------------------------------
 
 /// How the fake supervisor behaves during a stand-alone self-test.
 #[derive(Clone, Copy)]
 struct FakeLink {
     alive: bool,
+    holding: bool,
     offset: i32,
     fault: Option<SupervisorFault>,
 }
 
 const GOOD_LINK: FakeLink = FakeLink {
     alive: true,
+    holding: true,
     offset: 0,
     fault: None,
 };
@@ -78,7 +102,7 @@ fn run_self_test(
     let mut peak = 0.0f32;
     for seq in 0..100_000u32 {
         board.now += 2;
-        board.sup_hold = true; // the supervisor holds while main claims SelfTest
+        board.sup_hold = link.holding; // the supervisor holds while main claims SelfTest
         board.step(2);
         peak = peak.max(board.cap_v);
         let snapshot = link.alive.then(|| LinkSnapshot {
@@ -86,7 +110,7 @@ fn run_self_test(
                 sequence: seq,
                 fault: link.fault,
                 permit: false,
-                holding: true,
+                holding: link.holding,
                 capacitor_voltage: Volts(
                     u16::try_from((board.cap_v.round() as i32 + link.offset).max(0)).unwrap(),
                 ),
@@ -161,6 +185,15 @@ fn self_test_failure_codes_are_distinct_per_check() {
                 ..GOOD_LINK
             },
             SelfTestFailure::SupervisorFaultLatched
+        ),
+        (
+            "supervisor not holding",
+            |_| {},
+            FakeLink {
+                holding: false,
+                ..GOOD_LINK
+            },
+            SelfTestFailure::SupervisorNotHolding
         ),
         (
             "charger",
@@ -247,6 +280,7 @@ fn only_pad_problems_are_advisory() {
         F::BatteryUnderLoad,
         F::SupervisorLinkDead,
         F::SupervisorFaultLatched,
+        F::SupervisorNotHolding,
         F::ChargeTimeout,
         F::Overvoltage,
         F::VoltageReadingsDisagree,
@@ -320,6 +354,62 @@ fn default_config_is_valid_and_matches_documented_values() {
     assert_eq!(c.charge_time_limit_ms, 12_000);
     assert_eq!(c.empty_voltage, Volts(50));
     assert_eq!(c.metronome_interval_ms(), 545);
+    assert_eq!(c.analysis_time_limit_ms, 12_000);
+    assert_eq!(c.hands_off_reminder_ms, 3_000);
+    assert_eq!((c.at_plan_percent, c.at_plan_abs_volts), (2, Volts(20)));
+    assert_eq!((c.agree_percent, c.agree_abs_volts), (2, Volts(15)));
+}
+
+/// A reading from a sensor with a gain error (percent) and an offset (volts).
+fn sensor(true_v: u16, percent: i32, offset: i32) -> Volts {
+    let v = i32::from(true_v) * (100 + percent) / 100 + offset;
+    Volts(u16::try_from(v.max(0)).unwrap())
+}
+
+#[test]
+fn two_sensors_with_opposite_errors_inside_their_allowance_agree_and_read_at_plan() {
+    // The accuracy the defaults assume: each sensor ±2 % ± 10 V. At the
+    // adult and child charge voltages and the self-test voltage, two
+    // sensors with opposite errors must agree and each must read "at plan".
+    let c = Config::default();
+    for v in [1_950, 1_150, 400] {
+        let high = sensor(v, 2, 10);
+        let low = sensor(v, -2, -10);
+        assert!(c.readings_agree(high, low), "{v} V: {high:?} vs {low:?}");
+        assert!(c.readings_agree(low, high));
+        for r in [high, low] {
+            assert!(c.is_at_plan(r, Volts(v)), "{v} V: {r:?} not at plan");
+            assert!(c.reached_plan(r, Volts(v)));
+        }
+    }
+}
+
+#[test]
+fn a_sensor_eight_percent_off_disagrees_at_the_charge_voltages() {
+    let c = Config::default();
+    for v in [1_950, 1_150] {
+        for off in [8, -8] {
+            assert!(
+                !c.readings_agree(sensor(v, off, 0), Volts(v)),
+                "{v} V, one sensor {off} %"
+            );
+        }
+    }
+    // A dead (or stuck-at-zero) sensor disagrees even at the self-test voltage.
+    assert!(!c.readings_agree(Volts(0), Volts(400)));
+}
+
+#[test]
+fn empty_is_only_reported_when_the_true_voltage_is_below_the_empty_voltage() {
+    // A sensor reading low by its whole allowance must still not report
+    // "empty" for a capacitor at or above 50 V.
+    let c = Config::default();
+    for true_v in 50..200 {
+        let low = sensor(true_v, -2, -15);
+        assert!(!c.reads_empty(low), "{true_v} V true reads {low:?} and counted as empty");
+    }
+    assert!(c.reads_empty(Volts(0)));
+    assert!(c.reads_empty(Volts(30)));
 }
 
 #[test]
@@ -382,6 +472,53 @@ fn contradictory_config_is_refused() {
             },
             ConfigError::CprPeriodTooShort,
         ),
+        (
+            Config {
+                hands_off_reminder_ms: 0,
+                ..base
+            },
+            ConfigError::ZeroTimeLimit,
+        ),
+        (
+            Config {
+                agree_percent: 0,
+                agree_abs_volts: Volts(0),
+                ..base
+            },
+            ConfigError::SensorAllowanceZero,
+        ),
+        (
+            // 50 % per sensor: a dead sensor would "agree" with anything.
+            Config {
+                agree_percent: 50,
+                at_plan_percent: 50,
+                ..base
+            },
+            ConfigError::SensorAllowanceTooWide,
+        ),
+        (
+            // 60 V per sensor: nothing could ever read as empty (< 50 V).
+            Config {
+                agree_abs_volts: Volts(60),
+                at_plan_abs_volts: Volts(60),
+                ..base
+            },
+            ConfigError::SensorAllowanceTooWide,
+        ),
+        (
+            Config {
+                at_plan_percent: 1,
+                ..base
+            },
+            ConfigError::AtPlanNarrowerThanSensorError,
+        ),
+        (
+            Config {
+                at_plan_abs_volts: Volts(10),
+                ..base
+            },
+            ConfigError::AtPlanNarrowerThanSensorError,
+        ),
     ];
     for (c, e) in cases {
         assert_eq!(c.validate(), Err(e));
@@ -401,6 +538,8 @@ fn every_prompt_has_short_plain_text() {
         Prompt::ReplacePads,
         Prompt::AnalysingDoNotTouch,
         Prompt::StopCprAnalysing,
+        Prompt::DoNotTouchPatient,
+        Prompt::AnalysisInconclusive,
         Prompt::ShockAdvisedCharging,
         Prompt::StandClear,
         Prompt::ShockDelivered,

@@ -221,6 +221,10 @@ pub struct RunResult {
     pub metronome_beats: u32,
     /// Messages lost on the wire.
     pub messages_dropped: u32,
+    /// When the supervisor's own fault alarm first came on, ms (`None`: never).
+    pub supervisor_alarm_at: Option<u32>,
+    /// When the main controller froze, ms (`None`: it did not).
+    pub main_frozen_at: Option<u32>,
     /// The configuration both controllers used.
     pub config: Config,
 }
@@ -267,6 +271,7 @@ pub const fn is_instruction(p: Prompt) -> bool {
             | Prompt::CheckPads
             | Prompt::AnalysingDoNotTouch
             | Prompt::StopCprAnalysing
+            | Prompt::DoNotTouchPatient
             | Prompt::ShockAdvisedCharging
             | Prompt::StandClear
             | Prompt::Countdown(_)
@@ -301,6 +306,9 @@ pub struct Simulation {
     sup_view: SupervisorView,
     config: Config,
     main_frozen: bool,
+    main_frozen_at: Option<u32>,
+    alarm_on: bool,
+    alarm_first_at: Option<u32>,
     script_done: Vec<bool>,
     timeline: Vec<Entry>,
     states: Vec<(u32, RescueState)>,
@@ -380,6 +388,9 @@ impl Simulation {
             supervisor,
             config,
             main_frozen: false,
+            main_frozen_at: None,
+            alarm_on: false,
+            alarm_first_at: None,
             script_done: vec![false; scenario.script.len()],
             timeline: Vec::new(),
             states: vec![(0, RescueState::SelfTest)],
@@ -645,19 +656,56 @@ impl Simulation {
 
         self.observe_main_events();
         self.observe_supervisor_events();
+        self.observe_supervisor_alarm();
         self.observe_capacitor();
         self.check_not_silent();
     }
 
+    /// The supervisor's own fault alarm: log it, and the responder treats it
+    /// as "device fault, continue CPR" (what its label says).
+    fn observe_supervisor_alarm(&mut self) {
+        let on = self.plant.borrow().supervisor_alarm;
+        if on == self.alarm_on {
+            return;
+        }
+        self.alarm_on = on;
+        if on {
+            let now = self.now();
+            self.alarm_first_at.get_or_insert(now);
+            self.log(
+                Source::Supervisor,
+                "FAULT ALARM ON: the supervisor's own buzzer and light \
+                 (\"Device fault. No shocks. Continue CPR.\")",
+            );
+            self.silence_reported = false;
+            self.responder_wants(true);
+        } else {
+            self.log(Source::Supervisor, "Fault alarm off");
+        }
+    }
+
     /// The responder must never be left with only an informational prompt
-    /// for longer than the grace time. A frozen main controller cannot
-    /// speak at all; that is reported as a finding, not counted here.
+    /// for longer than the grace time. The supervisor's fault alarm counts
+    /// as an instruction ("continue CPR"). If the main controller freezes it
+    /// cannot speak, so the supervisor's alarm must come on within the grace
+    /// time instead.
     fn check_not_silent(&mut self) {
-        if self.silence_reported || self.main_frozen {
+        if self.silence_reported || self.alarm_on {
             return;
         }
         let now = self.now();
         let grace = silence_grace_ms(&self.config);
+        if let Some(frozen_at) = self.main_frozen_at {
+            if now.saturating_sub(frozen_at) > grace {
+                self.silence_reported = true;
+                self.violate(
+                    Rule::LeftWithoutInstruction,
+                    format!("main controller frozen and no supervisor alarm within {grace} ms"),
+                    None,
+                );
+            }
+            return;
+        }
         match self.last_directive {
             Some((t, p)) if !is_instruction(p) && now.saturating_sub(t) > grace => {
                 self.silence_reported = true;
@@ -715,7 +763,12 @@ impl Simulation {
                 );
                 return;
             }
-            Event::AnalysisTimedOut => "Analysis took too long: treated as 'not sure'".to_string(),
+            Event::AnalysisTimedOut => {
+                "No answer from the analysis within its time limit: no shock".to_string()
+            }
+            Event::AnalysisInconclusive => {
+                "Analysis inconclusive ('not sure' until the time limit): no shock".to_string()
+            }
             Event::PadsOn => "Pad contact detected".to_string(),
             Event::PadsOff => "Pad contact lost".to_string(),
             Event::PadResistance(o) => format!("Pad resistance measured just before shock: {} Ω", o.0),
@@ -911,8 +964,9 @@ impl Simulation {
         match action {
             Action::Fault(f) => {
                 self.plant.borrow_mut().inject(f);
-                if f == Fault::MainFreeze {
+                if f == Fault::MainFreeze && !self.main_frozen {
                     self.main_frozen = true;
+                    self.main_frozen_at = Some(now);
                 }
                 self.injected.push((now, f));
                 self.log(Source::Injected, format!("Fault: {}", f.describe()));
@@ -938,13 +992,13 @@ impl Simulation {
 
     fn responder_hears(&mut self, prompt: Prompt) {
         let now = self.now();
-        let reaction = self.scenario.responder.reaction_ms;
         let want = match prompt {
             Prompt::StartCpr | Prompt::DeviceFaultContinueCpr | Prompt::SeriousFaultContinueCpr => {
                 Some(true)
             }
             Prompt::AnalysingDoNotTouch
             | Prompt::StopCprAnalysing
+            | Prompt::DoNotTouchPatient
             | Prompt::ShockAdvisedCharging
             | Prompt::StandClear => Some(false),
             Prompt::AttachPads => {
@@ -959,13 +1013,24 @@ impl Simulation {
             _ => None,
         };
         if let Some(w) = want {
-            let current = self.responder_pending.map_or_else(
-                || self.plant.borrow().compressing,
-                |(_, pending)| pending,
-            );
-            if current != w {
-                self.responder_pending = Some((now.saturating_add(reaction), w));
-            }
+            self.responder_wants(w);
+        }
+    }
+
+    /// The responder decides to start (`true`) or stop (`false`)
+    /// compressions, and does so after their reaction time.
+    fn responder_wants(&mut self, w: bool) {
+        if !w && self.scenario.responder.keeps_compressing {
+            return;
+        }
+        let now = self.now();
+        let reaction = self.scenario.responder.reaction_ms;
+        let current = self.responder_pending.map_or_else(
+            || self.plant.borrow().compressing,
+            |(_, pending)| pending,
+        );
+        if current != w {
+            self.responder_pending = Some((now.saturating_add(reaction), w));
         }
     }
 
@@ -1064,6 +1129,8 @@ impl Simulation {
             supervisor_refusals: self.refusals,
             metronome_beats: beats,
             messages_dropped: dropped,
+            supervisor_alarm_at: self.alarm_first_at,
+            main_frozen_at: self.main_frozen_at,
             config: self.config,
         }
     }

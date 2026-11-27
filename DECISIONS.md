@@ -34,6 +34,10 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-22 | **Firmware is hardware-agnostic.** Everything that decides anything runs and is tested on an ordinary computer; the processor is chosen later and connected through a thin layer. | Provisional | Keeps the processor choice open while the Rust compiler qualification question is unresolved, and makes the safety logic testable now. |
 | D-23 | **Model design point: 100 µF charged to 1,950 V (adult) or 1,150 V (child)**, voltage fixed per mode, phase lengths chosen from the measured resistance. | Provisional, model only | Delivers within 7% of target across 25–175 ohms in the model. Depends on an assumed 5 ohm internal resistance. |
 | D-24 | **Only third-party code on the device is `libm`** (maths functions). Additions are listed in `firmware/DEPENDENCIES.md` with a reason. | Provisional | The medical software standard requires every outside component to be justified and tracked. |
+| D-25 | **The charger is cut off whenever the discharge path is open**, by hardware. | Provisional | Simulation finding F-3: otherwise a frozen main controller leaves the charger running. |
+| D-26 | **The supervisor has its own alarm output.** | Provisional | Finding F-3: a device whose main controller has died must not be silent. |
+| D-27 | **"Not sure" does not end an analysis**; the device keeps analysing to a 12 second limit. | Provisional | Finding F-1: otherwise compressions running into an analysis could prevent a shock every cycle. |
+| D-28 | **Voltage sensor budget: each sensor may be off by 2% + 15 V**, and the capacitor counts as charged within 2% + 20 V of plan. | Provisional | Finding F-2. Assumes sensors accurate to 2% + 10 V. Conflicts with child-mode energy tolerance; see Q-17. |
 
 ## Owner questions
 
@@ -66,6 +70,10 @@ Decisions D-02, D-04, D-05, D-08, D-10, D-11, D-12, D-14 and D-15 remain provisi
 **Q-15. Cancel pressed during the switch-on self-test** currently counts as a failed self-test and disables shocks for that session. Should a stray press at switch-on be ignored instead?
 
 **Q-16. Pads on, but resistance just above the 175 ohm limit.** Today the device only repeats "attach pads" and never analyses. Some commercial units accept up to 180–230 ohms. Widen the range, or add a distinct "check pads, continue CPR" behaviour?
+
+**Q-17. Child shocks at low resistance can overshoot.** With ordinary sensor accuracy, a child shock into a low-resistance patient could deliver about 60 J against a 50 J target (finding F-9). Options: (a) require more accurate voltage sensors; (b) change the child waveform so low-resistance shocks can be made shorter; (c) lower the child charge voltage slightly and accept a small undershoot at high resistance. This should wait for the real tolerance figure from the purchased standard.
+
+**Q-18. Supervisor alarm when the main controller never starts.** The supervisor now sounds its alarm if it hears nothing from the main controller within one second of switch-on. Confirm this is wanted.
 
 ## Things that need a professional, not a guess
 

@@ -173,7 +173,9 @@ fn indeterminate_never_charges() {
     assert!(!b.state_sequence().contains(&S::Charging));
     assert_eq!(b.board.requests.len(), 0);
     assert_eq!(b.shocks_fired(), 0);
-    assert!(b.board.prompts_only().contains(&Prompt::NoShockAdvised));
+    // "Not sure" for ever ends each analysis as inconclusive, never as a shock.
+    assert!(b.board.prompts_only().contains(&Prompt::AnalysisInconclusive));
+    assert!(!b.board.prompts_only().contains(&Prompt::NoShockAdvised));
 }
 
 #[test]
@@ -217,7 +219,129 @@ fn not_sure_wins_over_shockable_within_one_analysis() {
     }
     b.board.rhythm = NOT_SURE;
     b.run_ms(100);
+    // "Not sure" is not final, so the analysis carries on; it must not charge.
+    assert_eq!(b.state(), S::Analysing);
+    let max = b.config.analysis_time_limit_ms + 1_000;
+    reach(&mut b, S::Cpr, max);
+    assert!(!b.state_sequence().contains(&S::Charging));
+    assert_eq!(b.board.requests.len(), 0);
+}
+
+/// Run until the fake analyser has emitted `n` more decisions.
+fn run_decisions(b: &mut Bench, n: usize) {
+    let start = b
+        .rescue
+        .events()
+        .iter()
+        .filter(|e| matches!(e.event, Event::Decision(_)))
+        .count();
+    let reached = b.run_until(30_000, |b| {
+        b.rescue
+            .events()
+            .iter()
+            .filter(|e| matches!(e.event, Event::Decision(_)))
+            .count()
+            >= start + n
+    });
+    assert!(reached, "analyser stopped deciding");
+}
+
+fn count_prompt(b: &Bench, p: Prompt) -> usize {
+    b.board.prompts_only().iter().filter(|&&x| x == p).count()
+}
+
+#[test]
+fn not_sure_during_analysis_is_not_final_and_a_later_shockable_charges() {
+    // Scripted analyser: not sure, not sure, then shockable.
+    let mut b = Bench::new();
+    b.board.rhythm = NOT_SURE;
+    b.run_to_analysing();
+    run_decisions(&mut b, 2);
+    b.run_ms(10);
+    assert_eq!(b.state(), S::Analysing, "two 'not sure' answers must not end the analysis");
+    assert!(!b.board.prompts_only().contains(&Prompt::NoShockAdvised));
+    b.board.rhythm = SHOCKABLE;
+    reach(&mut b, S::Charging, 3_000);
+    assert!(!b.state_sequence().contains(&S::Cpr));
+}
+
+#[test]
+fn not_sure_during_analysis_repeats_hands_off_prompt_at_most_every_reminder_interval() {
+    let mut b = Bench::new();
+    b.board.rhythm = NOT_SURE;
+    b.run_to_analysing();
+    let entered = b.board.now;
+    run_decisions(&mut b, 1);
+    b.run_ms(10);
+    // The first "not sure" re-issues the hands-off instruction at once.
+    assert_eq!(count_prompt(&b, Prompt::DoNotTouchPatient), 1);
+    let max = b.config.analysis_time_limit_ms + 1_000;
+    reach(&mut b, S::Cpr, max);
+    let times: Vec<u32> = b
+        .board
+        .prompts
+        .iter()
+        .filter(|&&(t, p)| p == Prompt::DoNotTouchPatient && t >= entered)
+        .map(|&(t, _)| t)
+        .collect();
+    assert!(times.len() >= 2, "reminder should repeat during a long analysis: {times:?}");
+    for w in times.windows(2) {
+        assert!(
+            w[1] - w[0] >= b.config.hands_off_reminder_ms,
+            "reminders too close: {times:?}"
+        );
+    }
+}
+
+#[test]
+fn not_sure_for_the_whole_analysis_goes_to_cpr_at_the_limit_as_inconclusive() {
+    let mut b = Bench::new();
+    b.board.rhythm = NOT_SURE;
+    b.run_to_analysing();
+    let start = b.board.now;
+    reach(&mut b, S::Cpr, 60_000);
+    let took = b.board.now - start;
+    let limit = b.config.analysis_time_limit_ms;
+    assert!((limit..=limit + 10).contains(&took), "analysis lasted {took} ms");
+    assert!(b.has_event(|e| *e == Event::AnalysisInconclusive));
+    assert!(!b.has_event(|e| *e == Event::AnalysisTimedOut));
+    // The responder is told, then told to start CPR, at the same moment.
+    let p = b.board.prompts_only();
+    let i = p.iter().position(|&x| x == Prompt::AnalysisInconclusive).unwrap();
+    assert_eq!(p.get(i + 1), Some(&Prompt::StartCpr));
+    assert!(!b.state_sequence().contains(&S::Charging));
+    assert_eq!(b.shocks_fired(), 0);
+}
+
+#[test]
+fn not_sure_then_non_shockable_goes_to_cpr_at_once() {
+    let mut b = Bench::new();
+    b.board.rhythm = NOT_SURE;
+    b.run_to_analysing();
+    run_decisions(&mut b, 1);
+    b.board.rhythm = NON;
+    run_decisions(&mut b, 1);
+    b.run_ms(4);
     assert_eq!(b.state(), S::Cpr);
+    assert!(b.board.prompts_only().contains(&Prompt::NoShockAdvised));
+    assert!(!b.has_event(|e| *e == Event::AnalysisInconclusive));
+    assert_eq!(b.board.requests.len(), 0);
+}
+
+#[test]
+fn not_sure_during_countdown_still_aborts_the_shock() {
+    let mut b = Bench::new();
+    b.run_to_countdown();
+    b.run_ms(1_000);
+    b.board.rhythm = NOT_SURE;
+    let seen = b.run_until(3_000, |b| b.board.last_decision.get() == Some(NOT_SURE));
+    assert!(seen);
+    b.board.rhythm = SHOCKABLE;
+    reach(&mut b, S::Cpr, 10_000);
+    assert_eq!(b.shocks_fired(), 0);
+    assert_eq!(b.board.requests.len(), 0);
+    assert!(b.has_event(|e| *e == Event::ShockAborted(AbortReason::RhythmChanged)));
+    assert_capacitor_emptied(&b);
 }
 
 #[test]

@@ -16,7 +16,7 @@
 //! the supervisor holds the discharge path open during the charge step;
 //! [`crate::rescue::Rescue`] does this.
 
-use crate::config::{within, Config};
+use crate::config::Config;
 use crate::hal::{BatteryStatus, MainHardware, PadCartridge};
 use crate::link::SupervisorReport;
 use aed_types::{Millis, Volts};
@@ -28,6 +28,10 @@ pub enum SelfTestFailure {
     BatteryUnderLoad,
     /// No report arrived from the supervisor in time.
     SupervisorLinkDead,
+    /// The supervisor answered but did not hold the discharge path open in
+    /// time, so the charger could not run (see
+    /// [`crate::interlock::charger_may_run`]).
+    SupervisorNotHolding,
     /// The supervisor reported a latched fault.
     SupervisorFaultLatched,
     /// The charger did not reach the test voltage in time.
@@ -154,25 +158,28 @@ impl SelfTest {
                 }
                 BatteryStatus::Good => Step::Link { since: now },
             },
+            // The charger is only switched on once the supervisor reports it is
+            // holding the discharge path open: the charger cannot run while the
+            // discharge path is active (interlock rule), so charging earlier
+            // would only waste the charge step's time limit.
             Step::Link { since } => match fresh_link {
                 Some(l) if l.report.fault.is_some() => {
                     Step::Finished(Err(SelfTestFailure::SupervisorFaultLatched))
                 }
-                Some(_) => Step::Charge { since: now },
+                Some(l) if l.report.holding => Step::Charge { since: now },
+                Some(_) if now.since(since) > self.config.self_test_link_wait_ms => {
+                    Step::Finished(Err(SelfTestFailure::SupervisorNotHolding))
+                }
                 None if now.since(since) > self.config.self_test_link_wait_ms => {
                     Step::Finished(Err(SelfTestFailure::SupervisorLinkDead))
                 }
-                None => Step::Link { since },
+                Some(_) | None => Step::Link { since },
             },
             Step::Charge { since } => {
                 let v = hw.capacitor_voltage();
-                let target_low = self
-                    .test_voltage
-                    .0
-                    .saturating_sub(self.config.voltage_tolerance.0);
                 if v > self.config.overvoltage_limit {
                     Step::Finished(Err(SelfTestFailure::Overvoltage))
-                } else if v.0 >= target_low {
+                } else if self.config.reached_plan(v, self.test_voltage) {
                     Step::Agree { since: now }
                 } else if now.since(since) > self.config.charge_time_limit_ms {
                     Step::Finished(Err(SelfTestFailure::ChargeTimeout))
@@ -184,7 +191,7 @@ impl SelfTest {
                 let v = hw.capacitor_voltage();
                 let agrees = fresh_link.is_some_and(|l| {
                     l.received_at >= since
-                        && within(l.report.capacitor_voltage, v, self.config.voltage_tolerance)
+                        && self.config.readings_agree(l.report.capacitor_voltage, v)
                 });
                 if v > self.config.overvoltage_limit {
                     Step::Finished(Err(SelfTestFailure::Overvoltage))
@@ -198,7 +205,7 @@ impl SelfTest {
             }
             Step::Discharge { since } => {
                 let v = hw.capacitor_voltage();
-                if v < self.config.empty_voltage {
+                if self.config.reads_empty(v) {
                     Step::Pads
                 } else if now.since(since) > self.config.disarm_time_limit_ms {
                     Step::Finished(Err(SelfTestFailure::DischargeTimeout))

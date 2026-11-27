@@ -1,6 +1,6 @@
 # System architecture
 
-Version 0.1, 27 November 2026. Decision numbers (D-xx) refer to [DECISIONS.md](../DECISIONS.md).
+Version 0.2, 27 November 2026. Decision numbers (D-xx) refer to [DECISIONS.md](../DECISIONS.md).
 
 **Everything in this document is a design on paper and in simulation. No hardware exists. Figures marked *model* come from arithmetic, not measurement.**
 
@@ -29,6 +29,8 @@ flowchart LR
     GATE --> BRIDGE
     SUP -- "independent voltage reading" --- CAP
     SUP -- "force discharge" --> DUMP
+    SUP --> ALARM[Supervisor alarm]
+    DUMP -. "open: charger off" .-> CHG
     RELAY --> PADS[Pads]
     PADS --> ECG
 ```
@@ -54,6 +56,11 @@ The device is fully automatic (D-06), so no human presses a button. No single fa
 3. **Hardware interlock.** The bridge drivers are powered only while both signals are present.
 
 The supervisor also empties the capacitor by itself if: the main controller stops responding; the capacitor stays charged longer than a time limit; the voltage goes above a safe maximum; or the two controllers disagree.
+
+Two further rules came out of simulation (finding F-3):
+
+- **The charger cannot run while the discharge path is open.** Because either controller letting go opens the discharge path, the supervisor can always stop the charger, even if the main controller has frozen with the charger switched on. This is a requirement on the hardware, not something software can provide.
+- **The supervisor has its own alarm**, a buzzer or light it alone controls. If the main controller dies it cannot speak, so the supervisor sounds the alarm whenever it has declared a fault, or if the main controller never starts.
 
 What the supervisor does *not* do is second-guess the rhythm. A second opinion on the rhythm is built into the main controller's analysis (two different methods must agree). Whether the supervisor should also run its own simple rhythm check is an open design question.
 
@@ -82,7 +89,7 @@ stateDiagram-v2
 
 Points that matter:
 
-- **"Not sure" means CPR, never a shock.** The analysis may answer shockable, not shockable, or indeterminate.
+- **"Not sure" never leads to a shock.** The analysis may answer shockable, not shockable, or not sure. While analysing, "not sure" means keep analysing and remind the responder not to touch the patient; if the time limit passes without a clear answer the device says so and goes to CPR. Once the capacitor is charged, "not sure" cancels the shock.
 - **The rhythm is checked right up to delivery.** During the countdown the analysis keeps running. If the rhythm stops being shockable, the shock is abandoned and the capacitor emptied.
 - **Any fault leads to "continue CPR"**, with the capacitor emptied. A faulty device must never leave a responder waiting for it.
 - **Cancel works in every state.**

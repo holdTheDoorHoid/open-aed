@@ -116,6 +116,13 @@ impl Watcher {
                 self.failures
                     .push(format!("t={now} supervisor still holding for a dead main"));
             }
+            // 4b. ...and sound its own alarm, so the device is not silent.
+            if now - since > c.heartbeat_timeout_ms + c.heartbeat_period_ms + 2 * b.tick_ms
+                && !b.board.sup_alarm
+            {
+                self.failures
+                    .push(format!("t={now} supervisor alarm off for a dead main"));
+            }
             return;
         }
 

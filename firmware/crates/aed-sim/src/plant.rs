@@ -13,7 +13,7 @@
 
 use std::collections::VecDeque;
 
-use aed_core::interlock::{bridge_may_fire, discharge_path_active};
+use aed_core::interlock::{bridge_may_fire, charger_may_run, discharge_path_active};
 use aed_core::{BatteryStatus, MainStatus, PadCartridge, Prompt, ShockStatus, SupervisorReport};
 use aed_rhythm::synth::{Rhythm, Synth, Xorshift32};
 use aed_types::{EcgSample, ShockPlan, Volts};
@@ -78,10 +78,16 @@ pub struct PlantConfig {
     /// The capacitor's own slow leakage (bleeder), ohms. Default 50 MΩ
     /// (time constant about 80 minutes). Model choice.
     pub bleed_ohms: f64,
-    /// If true, the charger is switched off in hardware whenever the
-    /// discharge path is active. ARCHITECTURE.md does not say whether the
-    /// real design does this; default false (not assumed).
+    /// If true (the default), the charger is switched off in hardware
+    /// whenever the discharge path is active: the hardware requirement
+    /// `aed_core::interlock::charger_may_run`. Set false only to show what
+    /// happens without that rule (finding F-3: a frozen main controller then
+    /// leaves the charger feeding the discharge load).
     pub charger_gated_by_discharge: bool,
+    /// Regulation error of the charger: it charges to this multiple of the
+    /// voltage it is asked for (1.0: exact). Default 1.0 (model choice). Used
+    /// to test how wrong the capacitor voltage can be when a shock still fires.
+    pub charger_set_point_gain: f64,
     /// Delay of each message on the wire between the controllers, ms. Default 1 ms.
     pub link_delay_ms: u32,
     /// Chance that any one message is lost (0.0 to 1.0). Default 0.
@@ -114,7 +120,8 @@ impl Default for PlantConfig {
             charger_runaway_volts: 2_600.0,
             dump_ohms: 2_000.0,
             bleed_ohms: 50.0e6,
-            charger_gated_by_discharge: false,
+            charger_gated_by_discharge: true,
+            charger_set_point_gain: 1.0,
             link_delay_ms: 1,
             link_drop_probability: 0.0,
             main_clock_ppm: 0,
@@ -323,6 +330,8 @@ pub struct Plant {
     pub cartridge: PadCartridge,
     /// The ready indicator.
     pub ready: bool,
+    /// The supervisor's own fault alarm (buzzer and light).
+    pub supervisor_alarm: bool,
     /// The responder is doing chest compressions now.
     pub compressing: bool,
     /// Compression artifact size, microvolts peak to peak.
@@ -377,6 +386,7 @@ impl Plant {
             battery: BatteryStatus::Good,
             cartridge: PadCartridge::Ok,
             ready: false,
+            supervisor_alarm: false,
             compressing: false,
             compression_uv: 1_500.0,
             faults: Vec::new(),
@@ -413,6 +423,19 @@ impl Plant {
     #[must_use]
     pub fn discharge_active(&self) -> bool {
         discharge_path_active(self.main_hold, self.supervisor_hold)
+    }
+
+    /// True if the charger is physically able to run now: it is switched on,
+    /// the battery can power it and, unless the hardware rule is switched off
+    /// for a test, the discharge path is not active.
+    #[must_use]
+    pub fn charger_running(&self) -> bool {
+        let on = self.charger_target.is_some() && self.battery != BatteryStatus::Depleted;
+        if self.config.charger_gated_by_discharge {
+            charger_may_run(on, self.discharge_active())
+        } else {
+            on
+        }
     }
 
     /// True while the cancel control is held.
@@ -546,11 +569,11 @@ impl Plant {
 
     /// The highest voltage the charger will drive towards right now, if it is running.
     fn charger_limit(&self) -> Option<f64> {
-        let target = f64::from(self.charger_target?.0);
+        let target = f64::from(self.charger_target?.0) * self.config.charger_set_point_gain;
         if self.battery == BatteryStatus::Depleted {
             return None;
         }
-        if self.config.charger_gated_by_discharge && self.discharge_active() {
+        if !self.charger_running() {
             return None;
         }
         if self.has_fault(Fault::ChargerRunaway) {

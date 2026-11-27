@@ -450,3 +450,82 @@ fn permit_with_request_fires_only_while_both_hold() {
         ));
     }
 }
+
+// ----- the supervisor's own fault alarm (finding F-3) ----------------------------
+
+/// Drive the supervisor into `kind`, the way a real failure would.
+fn provoke(kind: SupervisorFault) -> SupBench {
+    let mut s = SupBench::new();
+    s.board.main_hold = true;
+    s.board.charger = Some(Volts(PLANNED));
+    match kind {
+        SupervisorFault::HeartbeatLost => {
+            s.claim(S::Charging);
+            s.run_ms(2_000);
+            s.claim = None;
+            s.run_ms(s.config.heartbeat_timeout_ms + 100);
+        }
+        SupervisorFault::ChargedTooLong => {
+            s.claim(S::Charging);
+            s.run_ms(9_000);
+            s.claim(S::Countdown);
+            s.run_ms(s.config.max_charged_ms);
+        }
+        SupervisorFault::Overvoltage => {
+            s.board.charger_runaway = true;
+            s.claim(S::Charging);
+            s.run_ms(12_000);
+        }
+        SupervisorFault::VoltageDisagreement => {
+            s.claim(S::Charging);
+            s.run_ms(9_000);
+            s.claim_v = Some(900);
+            s.claim(S::Countdown);
+            s.run_ms(s.config.disagreement_persist_ms + 200);
+        }
+    }
+    s
+}
+
+#[test]
+fn supervisor_alarm_is_on_for_every_supervisor_fault_kind() {
+    for kind in [
+        SupervisorFault::HeartbeatLost,
+        SupervisorFault::ChargedTooLong,
+        SupervisorFault::Overvoltage,
+        SupervisorFault::VoltageDisagreement,
+    ] {
+        let mut s = provoke(kind);
+        assert_eq!(s.sup.fault(), Some(kind));
+        assert!(s.board.sup_alarm, "{kind:?}: alarm off");
+        assert!(s.sup.alarm_active());
+        // Latched: it stays on.
+        s.run_ms(5_000);
+        assert!(s.board.sup_alarm, "{kind:?}: alarm went off again");
+    }
+}
+
+#[test]
+fn supervisor_alarm_stays_off_through_a_normal_arming() {
+    let mut s = SupBench::new();
+    s.arm_and_count_down();
+    s.claim(S::Delivering);
+    s.run_ms(100);
+    s.claim(S::Cpr);
+    s.run_ms(1_000);
+    assert!(!s.board.sup_alarm);
+    assert_eq!(s.sup.fault(), None);
+}
+
+#[test]
+fn supervisor_sounds_its_alarm_if_the_main_controller_never_starts() {
+    let mut s = SupBench::new();
+    s.run_ms(s.config.self_test_link_wait_ms - 100);
+    assert!(!s.board.sup_alarm, "too early");
+    s.run_ms(200);
+    assert!(s.board.sup_alarm, "main controller silent since switch-on: alarm must sound");
+    // Not a latched fault: it never held anything (see
+    // supervisor_does_not_hold_before_hearing_main).
+    assert_eq!(s.sup.fault(), None);
+    assert!(!s.board.sup_hold);
+}
