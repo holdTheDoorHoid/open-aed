@@ -15,7 +15,7 @@ Trained responders: police officers, paramedics, medical professionals. They car
 | Stretch goal | 500 g and 0.5 litre | The hardware estimate for a 150 J device from catalogue parts is 350–620 cm³ and 420–800 g |
 | Not a goal | 300 g, like the CellAED | That device reached its size by cutting shock energy and shock count, and its maker has had regulatory trouble. Catalogue parts do not get there at full energy. |
 
-**What the parts study found (27 November 2026, after the owner's decisions on the capacitor, battery and pads):** a set of parts that follows every decision with lower-risk choices comes to about 0.89 L and 902 g with pads, which misses the target by about 200 g. The smallest plausible set that still follows every decision comes to about 0.63 L and 697 g, meeting it by 3 g, and only if a capacitor maker can deliver the most optimistic estimate. A first prototype is more likely to weigh 780–900 g. The 500 g stretch goal is not reachable with parts available today. See [PARTS_STUDY.md](PARTS_STUDY.md).
+**What the parts study found (27 November 2026, after the owner's decisions on the capacitor, battery and pads):** a set of parts that follows every decision with lower-risk choices comes to about 0.89 L and 902 g with pads, which misses the target by about 200 g. (Those figures assume the 85 °C capacitor; dropping that requirement, as the owner since decided, should save roughly 60 g. Not yet re-derived.) The smallest plausible set that still follows every decision comes to about 0.63 L and 697 g, meeting it by 3 g, and only if a capacitor maker can deliver the most optimistic estimate. A first prototype is more likely to weigh 780–900 g. The 500 g stretch goal is not reachable with parts available today. See [PARTS_STUDY.md](PARTS_STUDY.md).
 
 For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 
@@ -69,7 +69,7 @@ For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 | Dust and water | IP65 or better |
 | Drop | 1.5 m onto concrete |
 | Operating temperature | −20 to +50 °C target (commercial AEDs are rated 0 to 50 °C) |
-| Storage heat | **Open problem.** Parked cars reach 47–70 °C in the cabin air and 70–100 °C on the dashboard. Defibrillator film capacitors are rated to 55 °C and the densest camera-flash capacitors to 65 °C. The device may need a "do not leave on the dashboard" rule, a heat-tolerant capacitor, or both. |
+| Storage heat | **Left in a vehicle for short periods, not kept on a dashboard** (D-48). Provisional limit: about 70 °C for a few hours, to be set from the capacitor, battery and pad datasheets. The device records its own temperature and reports "not ready" after overheating until it has cooled and passed a self-test. |
 
 ## Readiness and self-test
 
@@ -91,7 +91,7 @@ Field surveys found 15–21% of public AEDs not ready when inspected, and an ana
 - Firmware in Rust. (D-08) A safety-qualified Rust compiler (Ferrocene) exists and has been qualified to the medical software standard at its strictest class since January 2025. **Unresolved:** two research threads disagree on whether that qualification covers the small microcontroller family this device would use. Check with the vendor before choosing the processor.
 - No single fault may cause or block a shock. Published designs converge on three independent checks before energy is released: the main processor, a separate supervisor, and a hardware interlock.
 - The storage capacitor discharges itself by default whenever it is not actively being held for a shock, with a permanent backup bleed resistor as well.
-- Catalogue parts wherever they exist; made-to-order parts where they do not, each with a published specification (D-42). The storage capacitor is made to order: about 100 µF, at least 2,200 V, rated for 85 °C storage (D-41).
+- Catalogue parts wherever they exist; made-to-order parts where they do not, each with a published specification (D-42). The storage capacitor is made to order: about 100 µF, at least 2,200 V, rated for about 70 °C storage (D-41).
 
 ## Connectivity
 
