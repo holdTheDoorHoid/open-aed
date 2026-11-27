@@ -40,7 +40,6 @@ Not worth writing to yet: the large US trial archive (NHLBI BioLINCC) and the CA
 ## Before sending anything
 
 - Decide the name and contact details that go at the bottom. The letters say `[Your name]`.
-- Decide whether the repository is public by then. The letters assume it is, because "open" is the main thing the project has to offer; a holder cannot inspect a private repository.
 - Have someone outside the project read letter 01. A clinician or researcher friend will spot wording that sounds naive to that audience.
 
 ## Log

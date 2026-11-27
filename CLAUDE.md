@@ -6,5 +6,5 @@
 4. Label simulated results as simulated, and unverified facts as unverified. Give the source for every number.
 5. Firmware is Rust (D-08). No new language dependencies without an owner decision.
 6. Write documents in plain language. The owner is not a programmer or an electrical engineer; explain decisions and their reasons, not implementation detail.
-7. The repository is private until the owner says otherwise (D-13). Do not change its visibility, add collaborators, or post about it elsewhere.
+7. The repository is public (owner decision, 27 November 2026). Never commit patient data, anything under `data/`, personal contact details of third parties, or secrets. Buildable high-voltage design files (schematics, board layouts) are not published until the patent review is done (D-13). Do not add collaborators or post about the project elsewhere without the owner asking.
 8. Research notes live in `research_notes/`, one file per topic. Do not overwrite another topic's file.
