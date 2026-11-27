@@ -11,7 +11,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 |---|---|---|---|
 | D-01 | "Rive AED" in the original request is taken to mean the **Avive Connect**. The CellAED is studied as the other very small unit. | **Confirmed by owner, 26 Nov 2026** | No product named "Rive" was found; the owner confirmed the Avive Connect was meant. |
 | D-02 | The shock is a **biphasic truncated exponential** waveform adjusted to the patient's resistance. | Provisional | Best-proven shape; no human trial shows another is better for cardiac arrest; founding patents have expired. |
-| D-03 | Adult energy is **fixed 150 joules** for the first prototype, with the board laid out so a 200 joule version stays possible. | **Confirmed by owner, 26 Nov 2026** | Matches Philips and Avive, which opens the "prove equivalence on the bench" approval route. |
+| D-03 | Adult energy is **150 joules only.** No allowance for a 200 joule version. | **Confirmed by owner, 27 Nov 2026** (changed: headroom dropped) | The model showed a 100 µF capacitor cannot deliver 200 J within the 2,000 V ceiling. Owner chose the smallest device. Matches Philips and Avive. |
 | D-04 | Child energy is **50 joules**, selected in software. | Provisional | Matches Avive and the pocket units; avoids a separate attenuator or pad. |
 | D-05 | **One pad set** for all patients, about 55–70 cm² of gel per pad, front-and-back placement in child mode. | Provisional | Meets the adult minimum area while fitting an infant. Avive's FDA approval summary and help page describe the same-pads approach, though one spec-page reading says separate child pads; to be settled by reading the FDA summary in full. Several other units (Zoll AED 3, Schiller, Stryker CR2) also use one pad set with a child button. |
 | D-06 | **Fully automatic:** the device analyses and, if a shock is advised, warns, counts down and delivers it without a button press. | **Confirmed by owner, 26 Nov 2026** (changed from semi-automatic) | Owner decision. Removes the delay and hesitation of a button press. It raises the bar on the software: with no human confirming, a wrong shock decision is delivered, so the stand-clear warning, countdown, a way to cancel, and the independent second check all become essential. |
@@ -35,9 +35,13 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-23 | **Model design point: 100 µF charged to 1,950 V (adult) or 1,150 V (child)**, voltage fixed per mode, phase lengths chosen from the measured resistance. | Provisional, model only | Delivers within 7% of target across 25–175 ohms in the model. Depends on an assumed 5 ohm internal resistance. |
 | D-24 | **Only third-party code on the device is `libm`** (maths functions). Additions are listed in `firmware/DEPENDENCIES.md` with a reason. | Provisional | The medical software standard requires every outside component to be justified and tracked. |
 | D-25 | **The charger is cut off whenever the discharge path is open**, by hardware. | Provisional | Simulation finding F-3: otherwise a frozen main controller leaves the charger running. |
-| D-26 | **The supervisor has its own alarm output.** | Provisional | Finding F-3: a device whose main controller has died must not be silent. |
+| D-26 | **The supervisor has its own alarm output**, which also sounds if the main controller never starts within one second of switch-on. | **Confirmed by owner, 27 Nov 2026** | Finding F-3: a device whose main controller has died must not be silent. |
 | D-27 | **"Not sure" does not end an analysis**; the device keeps analysing to a 12 second limit. | Provisional | Finding F-1: otherwise compressions running into an analysis could prevent a shock every cycle. |
-| D-28 | **Voltage sensor budget: each sensor may be off by 2% + 15 V**, and the capacitor counts as charged within 2% + 20 V of plan. | Provisional | Finding F-2. Assumes sensors accurate to 2% + 10 V. Conflicts with child-mode energy tolerance; see Q-17. |
+| D-28 | **Voltage sensors must be accurate to about 1% + 7 V.** The agreement allowance and the charged window are set from that. | **Confirmed by owner, 27 Nov 2026** (changed from 2% + 10 V) | Finding F-9: with looser sensors a child shock into a low-resistance patient could overshoot by about 21%. |
+| D-29 | **Charge during analysis.** The capacitor starts charging when an analysis starts, so a shock can follow the decision without a charging wait. If no shock is advised the charge is burned off inside the device. | **Confirmed by owner, 27 Nov 2026** | Cuts roughly 6 s from the hands-off pause before a shock. Costs battery and heat on every no-shock cycle. |
+| D-30 | **Stand-clear countdown is 3 seconds.** | **Confirmed by owner, 27 Nov 2026** | Users are trained responders; saves 2 s of hands-off time. To be checked against the purchased standard. |
+| D-31 | **Cancel is ignored during the switch-on self-test.** A button held down throughout is reported as a stuck-button fault. | **Confirmed by owner, 27 Nov 2026** | A stray press while drawing the device must not disable it. |
+| D-32 | **Pads are sensed up to about 250 ohms.** Above the 175 ohm shock range the device still analyses and says "press pads firmly", but shocks only once the resistance is in range; otherwise CPR continues. Widening the shock range itself is to be studied once the standard is bought. | **Confirmed by owner, 27 Nov 2026** | Finding F-8: pads that are on but read slightly high must not leave the responder with only "attach pads". |
 
 ## Owner questions
 
@@ -59,21 +63,19 @@ All eleven were answered on 26 November 2026.
 
 Decisions D-02, D-04, D-05, D-08, D-10, D-11, D-12, D-14 and D-15 remain provisional: they were made by Claude from the research and the owner has not been asked about them directly.
 
-## New questions from the first firmware and simulation work (27 November 2026)
+## Questions from the first firmware and simulation work
 
-**Q-12. The 200 joule headroom does not fit.** D-03 says "fixed 150 J, with room for 200 J later". The model shows a 100 µF capacitor at the 2,000 volt ceiling stores exactly 200 J, so it cannot deliver 200 J to a patient. A 200 J version needs a capacitor about a third larger or a higher voltage with higher-rated parts throughout. Options: (a) accept 150 J only and drop the headroom; (b) size the capacitor space and voltage ratings for 200 J now, at a size cost; (c) decide after the bench prototype.
+All seven were answered on 27 November 2026.
 
-**Q-13. Charge while analysing?** In simulation the responder's hands are off the chest for about 17 seconds before each shock: 7 s analysing, 6 s charging, 5 s countdown. Starting the charge during analysis would remove most of the 6 s. The cost: the capacitor is charged more often when no shock follows, and that energy is then burned off internally.
-
-**Q-14. How long should the stand-clear countdown be?** It is 5 seconds as a placeholder. Shorter saves hands-off time; longer gives people more warning on a fully automatic device.
-
-**Q-15. Cancel pressed during the switch-on self-test** currently counts as a failed self-test and disables shocks for that session. Should a stray press at switch-on be ignored instead?
-
-**Q-16. Pads on, but resistance just above the 175 ohm limit.** Today the device only repeats "attach pads" and never analyses. Some commercial units accept up to 180–230 ohms. Widen the range, or add a distinct "check pads, continue CPR" behaviour?
-
-**Q-17. Child shocks at low resistance can overshoot.** With ordinary sensor accuracy, a child shock into a low-resistance patient could deliver about 60 J against a 50 J target (finding F-9). Options: (a) require more accurate voltage sensors; (b) change the child waveform so low-resistance shocks can be made shorter; (c) lower the child charge voltage slightly and accept a small undershoot at high resistance. This should wait for the real tolerance figure from the purchased standard.
-
-**Q-18. Supervisor alarm when the main controller never starts.** The supervisor now sounds its alarm if it hears nothing from the main controller within one second of switch-on. Confirm this is wanted.
+| No. | Question | Answer | Recorded as |
+|---|---|---|---|
+| Q-12 | 200 J headroom does not fit; what to do? | 150 J only | D-03 |
+| Q-13 | Charge while analysing? | Yes | D-29 |
+| Q-14 | Countdown length? | 3 seconds | D-30 |
+| Q-15 | Cancel during switch-on self-test? | Ignore it; detect a stuck button | D-31 |
+| Q-16 | Pads on but resistance just over 175 ohms? | Sense wider and prompt now; study a wider shock range later | D-32 |
+| Q-17 | Child shock overshoot? | Require more accurate sensors | D-28 |
+| Q-18 | Supervisor alarm when the main controller never starts? | Keep it | D-26 |
 
 ## Things that need a professional, not a guess
 
