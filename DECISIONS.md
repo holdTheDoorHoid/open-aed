@@ -29,7 +29,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-17 | **Licence: share-alike.** CERN-OHL-S v2 for hardware, GPL v3 (or later) for firmware and software, CC BY-SA 4.0 for documents and research. | **Confirmed by owner, 26 Nov 2026** | Owner decision. Anyone who improves the design must publish the improvement. |
 | D-18 | **High-voltage work waits for an experienced engineer.** No hands-on high-voltage building until someone with professional high-voltage experience joins the project. | **Confirmed by owner, 26 Nov 2026** | Owner decision. Phase 1 is hazard-free and comes first anyway. |
 | D-19 | **No manual mode.** The device is fully automatic only. | **Confirmed by owner, 26 Nov 2026** | Owner decision (see D-06). Keeps the screen small and simple. |
-| D-20 | **Data partnerships are parked.** Rhythm software is developed on public data first; outreach for real cardiac-arrest recordings resumes once it works on those. | **Confirmed by owner, 26 Nov 2026** | Owner decision. Still required before Phase 5. |
+| D-20 | **Data partnerships resumed.** Outreach letters are drafted in `docs/outreach/`; the owner sends them. Preferred arrangement: the holder runs the project's evaluation tool and returns only scores. | **Confirmed by owner, 27 Nov 2026** (reverses the earlier "parked") | Public data has taken the rhythm analysis as far as it can (finding F-10). |
 | D-21 | **Budget: small and self-funded, with grant applications** for the larger costs. | **Confirmed by owner, 26 Nov 2026** | Owner decision. |
 | D-22 | **Firmware is hardware-agnostic.** Everything that decides anything runs and is tested on an ordinary computer; the processor is chosen later and connected through a thin layer. | Provisional | Keeps the processor choice open while the Rust compiler qualification question is unresolved, and makes the safety logic testable now. |
 | D-23 | **Model design point: 100 µF charged to 1,950 V (adult) or 1,150 V (child)**, voltage fixed per mode, phase lengths chosen from the measured resistance. | Provisional, model only | Delivers within 7% of target across 25–175 ohms in the model. Depends on an assumed 5 ohm internal resistance. |
@@ -88,8 +88,6 @@ All seven were answered on 27 November 2026.
 **Q-20. The last-seconds blind spot (finding F-4).** A heart that recovers in the last 2 seconds before delivery is still shocked, because the analysis looks at a 4-second stretch of signal. Options: add a fast "has the rhythm just changed?" check during the countdown; shorten the analysis window (costs accuracy); or accept it, as commercial fully automatic units have a similar gap. Needs a clinician's view.
 
 **Q-21. How strict should the countdown be? (finding F-11)** Today any single doubtful answer during the 3-second countdown cancels the shock. On real fibrillation that cancels about a third of correct shocks. Allowing one doubtful second would deliver more of them, but would also shock a heart that recovered up to 2.5 seconds earlier (finding F-4). This is a trade between missed shocks and unnecessary ones and needs a clinician's view. Not changed.
-
-**Q-22. Resume the search for real cardiac-arrest recordings? (reverses D-20)** D-20 parked data partnerships until the software worked on public data. It has now been tested and tuned on public data and the conclusion is that public data cannot take it further. Recommendation: un-park it now.
 
 ## Things that need a professional, not a guess
 
