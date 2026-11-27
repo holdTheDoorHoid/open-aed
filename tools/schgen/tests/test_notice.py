@@ -55,5 +55,19 @@ class Notice(unittest.TestCase):
             self.assertIn("c.kicad_sch", errs[0])
 
 
+    def test_stale_sheets_only_generated_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            def w(name, text):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            gen = f'(kicad_sch (version 1) (generator "{writer.GENERATOR}")'
+            w("p.kicad_sch", gen)
+            w("keep.kicad_sch", gen)
+            w("old.kicad_sch", gen)
+            w("handmade.kicad_sch", '(kicad_sch (version 1) (generator "eeschema")')
+            hier = NS(root_file=os.path.join(d, "p.kicad_sch"), dir=d, sheets=[NS(file="keep.kicad_sch")])
+            self.assertEqual([os.path.basename(f) for f in build.stale_sheets(hier)], ["old.kicad_sch"])
+
+
 if __name__ == "__main__":
     unittest.main()

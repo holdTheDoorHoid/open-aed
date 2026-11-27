@@ -64,6 +64,21 @@ def footprint_report(hier: project.Hierarchy, sheets: dict[str, spec.Sheet]) -> 
     return errs, sorted(set(todo))
 
 
+def stale_sheets(hier: project.Hierarchy) -> list[str]:
+    """Generated .kicad_sch files in the board directory that the hierarchy no longer lists (a sheet was renamed or
+    removed). Only files written by this generator are returned; a hand-made file is never touched."""
+    wanted = {os.path.basename(hier.root_file)} | {e.file for e in hier.sheets}
+    out = []
+    for f in sorted(glob.glob(os.path.join(hier.dir, "*.kicad_sch"))):
+        if os.path.basename(f) in wanted:
+            continue
+        with open(f, encoding="utf-8") as fh:
+            head = fh.read(400)
+        if f'(generator "{writer.GENERATOR}")' in head:
+            out.append(f)
+    return out
+
+
 def check_notice(hier: project.Hierarchy) -> list[str]:
     """Every generated schematic file must carry the project notice (CLAUDE.md rule 2, SAFETY.md §2a).
     A project without a notice in hierarchy.toml fails too: the notice is mandatory for this repository."""
@@ -174,6 +189,10 @@ def build_board(board: str, libs, args, results: dict) -> list[str]:
     project.write_lib_tables(hier)
     failures: list[str] = []
     res = results.setdefault(board, {})
+
+    for f in stale_sheets(hier):
+        os.remove(f)
+        _log(f"    removed stale generated sheet {os.path.relpath(f, REPO)} (no longer in hierarchy.toml)")
 
     notice_errs = check_notice(hier)
     failures += notice_errs

@@ -5,7 +5,7 @@
 	(uuid "3f41a170-0630-58d6-950b-742d71ab4603")
 	(paper "A4")
 	(title_block
-		(title "Main capacitor-voltage chain: ADS1220 + REF3425, output-node sense inputs, capacitor and pad-area NTC inputs")
+		(title "Main capacitor-voltage chain: ADS1220 + REF3425, output-node sense inputs, capacitor NTC, LOWV_OK (60 V) comparator")
 		(date "2026-11-27")
 		(rev "A-draft")
 		(company "Open AED project — CERN-OHL-S-2.0 — NOT FOR CONSTRUCTION")
@@ -17,7 +17,7 @@
 	(lib_symbols)
 	(rectangle
 		(start 20.32 20.32)
-		(end 242.12 51.784)
+		(end 253.88 51.784)
 		(stroke
 			(width 0.254)
 			(type dash)
@@ -27,10 +27,10 @@
 		)
 		(uuid "735ccbf6-3373-5408-9376-00f935f5a4c9")
 	)
-	(text_box "07_sense_main: Main capacitor-voltage chain: ADS1220 + REF3425, output-node sense inputs, capacitor and pad-area NTC inputs"
+	(text_box "07_sense_main: Main capacitor-voltage chain: ADS1220 + REF3425, output-node sense inputs, capacitor NTC, LOWV_OK (60 V) comparator"
 		(exclude_from_sim no)
 		(at 25.4 25.4 0)
-		(size 211.64 5.35)
+		(size 223.4 5.35)
 		(margins 0.9525 0.9525 0.9525 0.9525)
 		(stroke
 			(width -1)
@@ -51,7 +51,7 @@
 	(text_box "NOT FOR CONSTRUCTION — unreviewed design\nPLACEHOLDER — this block is not captured yet.\nDesign source: docs/HARDWARE_DESIGN.md §B9.\nInstances: 07_sense_main.\nRefs 701-799. Receives the scaled divider tap VCAP_M_TAP from 11_hv_storage (the HV string is not on this sheet).\nWhen it is captured, add hardware/aed-main/specs/07_sense_main.toml and run tools/build.sh; the generator then replaces this page."
 		(exclude_from_sim no)
 		(at 25.4 31.75 0)
-		(size 211.64 14.954)
+		(size 223.4 14.954)
 		(margins 0.9525 0.9525 0.9525 0.9525)
 		(stroke
 			(width -1)

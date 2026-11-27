@@ -5,7 +5,7 @@
 	(uuid "1df1012c-7e58-531a-ab01-16668c4b85c9")
 	(paper "A4")
 	(title_block
-		(title "Main controller STM32U585VIT6: clocks, SWD, NOR flash (event record), FRAM (durable store), link buffers")
+		(title "Main controller STM32U585ZIT6: clocks, SWD, NOR flash (event record), FRAM (durable store), link buffers")
 		(date "2026-11-27")
 		(rev "A-draft")
 		(company "Open AED project — CERN-OHL-S-2.0 — NOT FOR CONSTRUCTION")
@@ -27,7 +27,7 @@
 		)
 		(uuid "422c0b2e-e99d-5054-9a03-d5357ce34a3f")
 	)
-	(text_box "04_main_mcu: Main controller STM32U585VIT6: clocks, SWD, NOR flash (event record), FRAM (durable store), link buffers"
+	(text_box "04_main_mcu: Main controller STM32U585ZIT6: clocks, SWD, NOR flash (event record), FRAM (durable store), link buffers"
 		(exclude_from_sim no)
 		(at 25.4 25.4 0)
 		(size 201.56 5.35)

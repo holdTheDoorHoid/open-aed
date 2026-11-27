@@ -142,7 +142,7 @@
       },
       {
         "bus_width": 12,
-        "clearance": 12.5,
+        "clearance": 0.3,
         "diff_pair_gap": 0.15,
         "diff_pair_via_gap": 0.25,
         "diff_pair_width": 0.15,
@@ -151,6 +151,24 @@
         "microvia_drill": 0.1,
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 3,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 3.0,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6,
+        "name": "RTN_PULSE"
+      },
+      {
+        "bus_width": 12,
+        "clearance": 12.5,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 4,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.5,
         "via_diameter": 0.6,
@@ -168,7 +186,7 @@
         "microvia_diameter": 0.3,
         "microvia_drill": 0.1,
         "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 4,
+        "priority": 5,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 3.0,
         "via_diameter": 0.6,
@@ -186,7 +204,7 @@
         "microvia_diameter": 0.3,
         "microvia_drill": 0.1,
         "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 5,
+        "priority": 6,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.3,
         "via_diameter": 0.6,
@@ -204,7 +222,7 @@
         "microvia_diameter": 0.3,
         "microvia_drill": 0.1,
         "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 6,
+        "priority": 7,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
         "track_width": 0.3,
         "via_diameter": 0.6,
@@ -220,6 +238,14 @@
     "netclass_assignments": null,
     "netclass_patterns": [
       {
+        "netclass": "RTN_PULSE",
+        "pattern": "HV_RTN"
+      },
+      {
+        "netclass": "RTN_PULSE",
+        "pattern": "*LS_SRC*"
+      },
+      {
         "netclass": "HV_PULSE",
         "pattern": "HV_CAP_P"
       },
@@ -230,10 +256,6 @@
       {
         "netclass": "HV_PULSE",
         "pattern": "HV_OUT_*"
-      },
-      {
-        "netclass": "HV_PULSE",
-        "pattern": "HV_RTN"
       },
       {
         "netclass": "HV_PULSE",
@@ -347,20 +369,24 @@
       "11_hv_storage"
     ],
     [
-      "e8eed8f7-9dfd-50ac-88a5-0e0e5fcf0b5b",
-      "12_hv_bridge"
+      "af411dd1-479d-534a-a6a7-2b798d729477",
+      "12_bridge_logic"
     ],
     [
-      "5ca19b03-ef3a-57c0-813a-8cbd35bfb161",
-      "13_patient_interface"
+      "9be6bdde-1d56-5224-948d-f4565ac126e7",
+      "13_hv_bridge"
     ],
     [
-      "0d848a28-0050-5f40-83d3-7837963381d6",
-      "14_frontend_main"
+      "2792a181-f2de-5848-90a8-5a617f32caf9",
+      "14_patient_interface"
     ],
     [
-      "6ae0c47c-8636-5807-bebd-b2c9045a44b5",
-      "15_frontend_sup"
+      "4fa4cc19-c394-56d7-9919-6687d6407f16",
+      "15_frontend_main"
+    ],
+    [
+      "249a1154-54bd-5285-80a0-1f93aca4e4cf",
+      "16_frontend_sup"
     ]
   ],
   "text_variables": {}

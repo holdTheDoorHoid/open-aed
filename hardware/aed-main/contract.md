@@ -1,349 +1,381 @@
-# aed-main capture — shared net contract
+# aed-main capture — shared net contract (issue 2)
 
-**NOT FOR CONSTRUCTION — unreviewed design.** Written 2026-11-27, before any sheet is captured, so that sheets
-captured in parallel meet on the same names. Design source: [`docs/HARDWARE_DESIGN.md`](../../docs/HARDWARE_DESIGN.md)
-(section numbers §Bn below refer to it). Where this file and the design document disagree on a **name**, on **which
-sheet holds a part** or on **which sheet fits a resistor**, this file wins; where they disagree on the **design**,
-capture the conservative reading and log a question in your hand-over note. Firmware contract: the traits in
-`firmware/crates/aed-core/src/hal.rs` and the functions in `interlock.rs` (table §7).
+**NOT FOR CONSTRUCTION — unreviewed design.** Design source: [`docs/HARDWARE_DESIGN.md`](../../docs/HARDWARE_DESIGN.md)
+version 0.2 (§Bn, §F below refer to it). Where this file and the design document disagree on a **name**, on
+**which sheet holds a part** or on **which sheet fits a resistor**, this file wins; where they disagree on the
+**design**, capture the conservative reading and log a question. Firmware contract: `hal.rs`, `interlock.rs`,
+decisions D-59, D-60, D-61 and the proposed HAL additions in design §F-11 (table §7).
 
 Nothing in this file is an instruction to build or power anything (CLAUDE.md rule 2, SAFETY.md §2a).
 
----
+## 0. Change log — read this first
+
+**Issue 2 (27 Nov 2026) replaces issue 1 completely. Nothing captured from issue 1 is valid; no sheet had been
+captured.** Changes, after the independent review (`docs/reviews/2026-11-27-hardware-design-review.md`) and D-59–D-61:
+
+| Area | Issue 1 | Issue 2 |
+|---|---|---|
+| Sheets | 15 sheets | **16 sheets**: new `12_bridge_logic` (sequencer); old 12/13/14/15 renumbered to `13_hv_bridge`, `14_patient_interface`, `15_frontend_main`, `16_frontend_sup`. **All reference blocks of sheets 12–16 changed** |
+| Work packages | 7 | **8**: WP-D is now the shock logic (09 + 12); storage (11) is WP-F; bridge power stage (13) is WP-G; patient + front ends (14–16) is WP-H. Library files renamed accordingly |
+| Main controller | STM32U585VIT6 (LQFP100) | **STM32U585ZIT6 (LQFP144)** |
+| Interlock | three series switches; `HOLD_OK` open-drain wired-AND (released = held) | four series switches + **SW5 sequence hold**; second permit switch for the **test permit**; **150 ms latched window**; "held" proven by **optocouplers** (`HOLD_A_HELD_N`, `HOLD_B_HELD_N`, low = held, pull-ups mean "not held") |
+| Charger control | `CHG_EN` → `CHG_GATED` (one signal for CHARGE and supply) | **`CHG_SESSION` → `VTRANS_EN`** (eFuse with soft start) and **`CHG_RUN` → `CHARGE_EN`** (+ local VTRANS_GOOD). `CHG_EN`, `CHG_GATED` **deleted** |
+| Mode | `MODE_ADULT_HW` (closed in ADULT; default child) | **`MODE_CHILD_HW`** (closed in CHILD; **default adult**, D-60) + readback **`MODE_HW_RB_N`**. `MODE_ADULT_HW` **deleted** |
+| Discharge stacks | 3 devices each | **4 devices each**, active release, gate TVS on every device, opto OVP force |
+| Bridge | logic on the power-stage sheet; `OC_TRIP_N` | sequencer on 12; gated enables `G_HA/G_LA/G_HB/G_LB`; `BR_FAULT_N` (replaces `OC_TRIP_N`); `SEQ_ACT_M_N`, `SEQ_DONE_M_N`, `SEQ_ACT_S_N`, `SEQ_DONE_S_N`, `SEQ_HOLD`, `WIN_OPEN`, `TEST_MODE`, `OC_DET_N`, `IDLE_I_DET_N`, `BTEST_EN`, `K_EN`; rail `BRIDGE_3V3` now inter-sheet |
+| High-side drive | SN6505B | **gated push-pull** from a 400 kHz clock (no soft start) |
+| Freewheel | none | **D1301** across R_S + L_S |
+| Rectifier | one diode | **two in series + fusible resistor** |
+| Patient relay | coil from `BRIDGE_5V` | coil from a 12 V boost on `VBAT_SYS` (enable `K_EN`), hold-up, 90 ms cap; **aux contact `K_REST_N`** |
+| Test permit | — | **`TEST_PERMIT_CLK`** (S → 09), **`LOWV_OK`** (07 → 09) |
+| Readbacks | `HOLD_OK_RB_N`, `OC_TRIP_N` | `HOLD_RB_A_N`, `HOLD_RB_B_N`, `BR_FAULT_N` |
+| Display | `LCD_DISP` open drain | **`LCD_BLANK`** (active high) into an AON inverter |
+| Supervisor monitors | `SHOCK_REQ` read by S | **removed** (R-31); S reads `SEQ_ACT_S_N`, `SEQ_DONE_S_N`, `OVP_TRIP` |
+| `I_SHOCK` | 40 mV/A | **26.7 mV/A**, INA240 on `BRIDGE_5V` |
+| Net classes | `HV_RTN` in HV_PULSE | **`RTN_PULSE`** class for `HV_RTN`, `LS_SRC` |
 
 ## 1. Work packages, sheets, owners
 
-Seven capture work packages (WP). One engineer (or agent) per package. A package edits only its own spec files,
-its own symbol-library source file and nothing else. `hierarchy.toml`, `specs/00_root.toml` and this contract are
-edited only by the integrator; a package that needs a change there reports it.
+One engineer (or agent) per package. A package edits only its own spec files and its own symbol-library source.
+`hierarchy.toml`, `specs/00_root.toml` and this contract are edited only by the integrator.
 
-| WP | Sheets (spec files it owns) | Symbol library source it owns | Size [EST, parts] |
+| WP | Sheets | Symbol library source | Size [EST, parts] |
 |---|---|---|---|
-| **WP-A power** | `01_power_battery`, `02_power_dock`, `03_power_rails` | `hardware/lib/src/aed_power.toml` | ≈ 110 |
-| **WP-B controllers** | `04_main_mcu`, `05_supervisor_mcu` | `hardware/lib/src/aed_mcu.toml` | ≈ 110 |
-| **WP-C ui+sense** | `06_ui`, `07_sense_main`, `08_sense_sup` | `hardware/lib/src/aed_uisense.toml` | ≈ 90 |
-| **WP-D interlock+storage** | `09_interlock`, `11_hv_storage` | `hardware/lib/src/aed_interlock.toml` | ≈ 120 |
-| **WP-E charger** | `10_hv_charger` | `hardware/lib/src/aed_charger.toml` | ≈ 60 |
-| **WP-F bridge** | `12_hv_bridge` | `hardware/lib/src/aed_bridge.toml` | ≈ 120 |
-| **WP-G patient+front ends** | `13_patient_interface`, `14_frontend_main`, `15_frontend_sup` | `hardware/lib/src/aed_patient.toml` | ≈ 110 |
+| **WP-A power** | `01_power_battery`, `02_power_dock`, `03_power_rails` | `hardware/lib/src/aed_power.toml` | ≈ 115 |
+| **WP-B controllers** | `04_main_mcu`, `05_supervisor_mcu` | `hardware/lib/src/aed_mcu.toml` | ≈ 120 |
+| **WP-C ui+sense** | `06_ui`, `07_sense_main`, `08_sense_sup` | `hardware/lib/src/aed_uisense.toml` | ≈ 95 |
+| **WP-D shock logic** | `09_interlock`, `12_bridge_logic` | `hardware/lib/src/aed_logic.toml` | ≈ 130 |
+| **WP-E charger** | `10_hv_charger` | `hardware/lib/src/aed_charger.toml` | ≈ 75 |
+| **WP-F storage** | `11_hv_storage` | `hardware/lib/src/aed_storage.toml` | ≈ 100 |
+| **WP-G bridge power** | `13_hv_bridge` | `hardware/lib/src/aed_bridge.toml` | ≈ 100 |
+| **WP-H patient+front ends** | `14_patient_interface`, `15_frontend_main`, `16_frontend_sup` | `hardware/lib/src/aed_patient.toml` | ≈ 120 |
 
-**Library rule.** A custom symbol is defined once, in the library of the package that first needs it. If two
-packages need the same custom part (for example the 74LVC1G17 Ioff buffer if it is not in KiCad's stock library),
-the package listed first in this table owns it and the other uses it by `lib_id`; announce it in the hand-over note.
-Prefer KiCad stock symbols (`Device:R`, `Device:C`, `power:*`, stock logic and regulator symbols) wherever the stock
-symbol's pin names and numbers match the datasheet; check them like a custom one.
+WP-D owns both logic sheets because the interlock (09) and the sequencer (12) are one function split across the
+two boards; its nets with WP-G (13) are few and listed in §5.7.
+
+**Library rule.** A custom symbol is defined once, in the library of the first package in this table that needs
+it; others use it by `lib_id` and say so in their hand-over note. Prefer stock KiCad symbols where their pins match
+the datasheet.
 
 ## 2. Reference designators
 
-Sheet NN owns references **NN01–NN99 for every prefix** (`R1201`, `C1201`, `U1201`, `Q1201`, `D1201`, `TP1201`
-…). For sheets 01–09 that is 101–199 … 901–999. **Overflow block:** NN01 + 5000 (sheet 12 overflow is
-`R6201–R6299`); sheet 01's overflow is 5101–5199. Root: `H1–H9` (mounting holes), `NT1–NT9` (reserved). The net
-tie joining `HV_RTN` to `GND` is `NT1101` on sheet 11. Design-document names (QHA, K1301, T1001 …) go in each part's
-`DocRef` field.
-
-Fixed references (named in the design document; keep them):
+Sheet NN owns **NN01–NN99 for every prefix** (sheets 01–09: 101–999). **Overflow block = NN01 + 5000** (sheet 12 →
+6201–6299; sheet 16 → 6601–6699). Root: `H1–H9`, `NT1–NT9` reserved. The `HV_RTN`–`GND` ties are **NT1101 and NT1102**
+on sheet 11. Design names go in `DocRef`.
 
 | Ref | Part | Sheet |
 |---|---|---|
-| U101 | MAX17320 | 01 |
-| F101 | main fuse 25 A | 01 |
-| U201 | BQ25887 | 02 |
-| U301, U302 | TPS629210 (`3V3_MAIN`, `3V3_SUP`) | 03 |
-| U303 | TPS62130 (`5V0_SYS`) | 03 |
-| U304 | TPS70933 (`3V3_AON`) | 03 |
-| U305 | RV-3028-C7 | 03 |
-| U401 | STM32U585VIT6 | 04 |
+| U101, F101 | MAX17320; main fuse 25 A | 01 |
+| U201, U202 | BQ25887; TPS25947 | 02 |
+| U301, U302 / U303 / U304 / U305 | TPS629210 (`3V3_MAIN`, `3V3_SUP`) / TPS62130 / TPS70933 / RV-3028-C7 | 03 |
+| U401 | STM32U585ZIT6 | 04 |
 | U501 | MCXA153VLH | 05 |
-| U701 / U702 | ADS1220 / REF3425 | 07 |
-| U801 / U802 | AD7171 / ADR3425 | 08 |
-| U1001, Q1001, T1001, D1001, F1001 | LT3751, primary switch, transformer, output diode, VTRANS fuse | 10 |
-| C1101 (off-board, connector/terminals J1101), NT1101 | storage capacitor, HV_RTN–GND tie | 11 |
-| Q1101–Q1103 / Q1104–Q1106 | discharge stack A / stack B | 11 |
-| R1101–R1103 / R1104–R1106 | dump resistors path A / path B | 11 |
-| Q1201 QHA, Q1202 QLA, Q1203 QHB, Q1204 QLB | SiC bridge switches | 12 |
-| R1201 (R_S), L1201 (L_S), R1202 (shunt) | series element, shunt | 12 |
-| T1201, T1202 | high-side gate transformers | 12 |
-| K1201, R1203 | bridge test relay and 2 kΩ test load | 12 |
-| K1301, J1301 | patient relay, pad connector | 13 |
-| U1401 | ADS1292R | 14 |
-| U1501 | MAX30009 | 15 |
+| U601, U602 | LS013B7DH05; MAX98357A | 06 |
+| U701 / U702 / U703 | ADS1220 / REF3425 / `LOWV_OK` comparator | 07 |
+| U801 / U802 / U803 | AD7171 / ADR3425 / OVP comparator | 08 |
+| U901–U906 | TPS22918: U901 SW1 (request), U902 SW2a (permit), U903 SW2b (test permit), U904 SW3 (held), U905 SW4 (window), U906 SW5 (sequence hold) | 09 |
+| U1001, Q1001, T1001, D1001, D1002, R1004, U1002, F1001, U1003 | LT3751, primary switch, transformer, rectifiers, fusible resistor, TPS25982 eFuse, backup fuse, VTRANS_GOOD comparator | 10 |
+| J1101, J1102, NT1101, NT1102 | capacitor terminals, NTC connector, star ties | 11 |
+| Q1101–Q1104 / Q1105–Q1108 | stack A / stack B (bottom device first) | 11 |
+| R1101–R1103 / R1104–R1106 | dump resistors A / B | 11 |
+| U1101, U1102 / U1103, U1104 | hold-sense optos A, B / OVP-force optos A, B | 11 |
+| Q1109, Q1110 | release switches A, B | 11 |
+| U1201… | sequencer logic | 12 |
+| Q1301 QHA, Q1302 QLA, Q1303 QHB, Q1304 QLB | SiC switches | 13 |
+| R1301 (R_S), L1301 (L_S), D1301 (D_FW), R1302 (shunt) | series element, freewheel diode, shunt | 13 |
+| T1301, T1302; U1301, U1302; U1303 | high-side gate transformers; UCC5350MC × 2; MGJ2D052005SC | 13 |
+| K1301, R1303 | bridge test relay; 200 Ω test load | 13 |
+| K1401, J1401 | patient relay; pad connector | 14 |
+| U1501 | ADS1292R | 15 |
+| U1601 | MAX30009 | 16 |
 
 ## 3. Naming rules
 
-- **R1** Upper case, `A–Z 0–9 _`. Active-low nets end in `_N`. No net name starts with a digit except the rails
-  listed in §4.
-- **R2** Prefix `HV_` **only** for nets galvanically connected to the storage capacitor or the charger secondary
-  (they get net class HV / HV_PULSE by pattern). Prefix `PT_` **only** for patient/applied-part nets. `HSA_` / `HSB_`
-  **only** for the floating high-side gate-drive islands of QHA / QHB (class HV_FLOAT). **No other net may contain
-  the substrings `HV_`, `PT_`, `HSA_` or `HSB_`**, because the net-class patterns match substrings (`*HV_*`).
-- **R3** Local nets (one sheet only) need no contract entry; name them by function (`LT_FB`, `STACKA_G1`).
-  Local high-voltage nets still follow R2 (`HV_FB_MID`, `HV_STA_D2`).
-- **R4** Analog taps carry the suffix `_TAP` and are ≤ 2.6 V at full scale.
-- **R5** Dynamic consent signals end in `_CLK` (§5.4).
-- **R6** Every rail is a power symbol (`[nets] power`). Every inter-sheet signal is a global label
-  (`[nets] global`). There are no multi-instance sheets and no hierarchical labels in this project.
-- **R7** A signal from a rail that stays powered into a controller (or chip) that may be unpowered enters the
-  reader through **≥ 100 kΩ series resistance or a buffer with power-off (Ioff) protection powered from the
-  reader's rail**, on the reader's sheet. Nothing may back-power an unpowered controller.
-- **R8** **Default resistors.** Each inter-sheet signal has exactly one default (pull) resistor, on the sheet named
-  in §5. Open-drain outputs are pulled up **on the reader's sheet, to the reader's own rail** (so the reader never
-  sees a voltage from a rail it does not share). No other sheet adds a pull on that net. `tools/xcheck.py` lists
-  pulls per net; more than one is a contract violation unless §5 says "two by design".
-- **R9** No test point on any `HV_*`, `HV_FLOAT` or `PT_*` net.
-- **R10** Every part carries `MPN`, `Manufacturer`, `Datasheet` and, where the design document names it, `DocRef`.
-  Parts with `[UNVERIFIED]` ratings carry a field `Verify = "<what>"`.
+- **R1** `A–Z 0–9 _`; active low ends in `_N`.
+- **R2** `HV_` only for nets galvanically on the capacitor or charger secondary; `PT_` only for patient nets;
+  `HSA_`/`HSB_` only for the high-side gate islands of QHA/QHB. **No other net may contain `HV_`, `PT_`, `HSA_`,
+  `HSB_`, `LS_SRC` or `RTN`** (net-class patterns match substrings).
+- **R3** Local nets need no entry; local HV nets still follow R2.
+- **R4** Analog taps end `_TAP`, ≤ 2.6 V full scale.
+- **R5** Dynamic consents end `_CLK` (design §B8.1: 1–5 kHz, code-generated).
+- **R6** Rails are power symbols; inter-sheet signals are global labels; no hierarchical labels.
+- **R7** A signal entering a reader that may be unpowered enters through ≥ 100 kΩ or an Ioff buffer on the reader's
+  rail, on the reader's sheet.
+- **R8** One default resistor per net, on the sheet named in §5. **Open-drain outputs are pulled up on the reader's
+  sheet to the reader's rail.** If a net has two readers on different rails, the one named in §5 pulls; the other
+  reads through an Ioff buffer with no pull.
+- **R9** No test point on `HV_*`, `HV_FLOAT` or `PT_*` nets.
+- **R10** Every part: `MPN`, `Manufacturer`, `Datasheet`, `DocRef` where named; `Verify = "<what>"` for any
+  `[UNVERIFIED]` rating.
+- **R11** Any signal whose open, unpowered or unsoldered state could be read as "safe to charge", "held",
+  "permitted" or "sequence allowed" is a contract violation: report it.
 
 ## 4. Rails
 
 | Rail | Made on | Source | Used on | Notes |
 |---|---|---|---|---|
-| `GND` | 01 | pack negative | all | system ground; joined to `HV_RTN` only at NT1101 (11) |
-| `HV_RTN` | 11 | NT1101 | 10, 11, 12 | capacitor negative, charger secondary return, bridge shunt return |
-| `VBAT_PACK` | 01 | MAX17320 protection FETs | 01, 02 | BQ25887 charges into it |
-| `VBAT_SYS` | 01 | after F101 | 01, 03, 10 | 21 A peak to the charger |
-| `VDOCK` | 02 | after TPS25947 | 02 only | power symbol, local use |
-| `3V3_MAIN` | 03 | U301 | 04, 06, 07, 09, 14 | main controller domain |
-| `3V3_SUP` | 03 | U302 | 05, 08, 09, 15 | supervisor domain; **never used by a main-domain part** |
-| `5V0_SYS` | 03 | U303 (enable `EN_5V0`) | 06, 09, 10, 11 | loss = safe (design §B1.6); the bridge takes its power only through `BRIDGE_5V` |
-| `3V3_AON` | 03 | U304 | 03, 06 | always on |
-| `BRIDGE_5V` | 09 | third series load switch | 12, 13 | exists only while a shock is allowed |
-| `1V8_SUP` | 15 | LDO from `3V3_SUP` | 15 only | |
-| `VREF_M` | 07 | REF3425 | 07 only | |
-| `VREF_S` | 08 | ADR3425 | 08 only | |
+| `GND` | 01 | pack negative | all | joined to `HV_RTN` only at NT1101 ∥ NT1102 (11) |
+| `HV_RTN` | 11 | NT1101 ∥ NT1102 | 10, 11, 13 | class `RTN_PULSE` |
+| `VBAT_PACK` | 01 | MAX17320 FETs | 01, 02 | |
+| `VBAT_SYS` | 01 | after F101 | 01, 03, 10, 14 | 14: relay coil boost |
+| `VDOCK` | 02 | TPS25947 | 02 | |
+| `3V3_MAIN` | 03 | U301 | 04, 06, 07, 09, 15 | main domain |
+| `3V3_SUP` | 03 | U302 | 05, 08, 09, 11, 16 | 11: OVP-force opto LEDs only. **Never used by a main-domain part** |
+| `5V0_SYS` | 03 | U303 (`EN_5V0`) | 06, 09, 10 | loss is safe |
+| `3V3_AON` | 03 | U304 | 03, 06 | |
+| `BRIDGE_5V` | 09 | SW1–SW4 or SW5 | 12, 13 | only while a shock or test is allowed |
+| `BRIDGE_3V3` | 12 | LDO + ≥ 2 ms hold-up | 12, 13 | 13: UCC5350 input sides, gate-drive clock |
+| `1V8_SUP` | 16 | LDO from 3V3_SUP | 16 | |
+| `VREF_M` / `VREF_S` | 07 / 08 | references | own sheet | |
 
-Local rails made and used on one sheet (`VTRANS`, `BRIDGE_3V3`, the low-side `+20/−5 V`, the hold pumps' negative
-nodes, `AVDD_AFE`) are local power nets of that sheet (`flag_nodes` where fed through a ferrite or 0 Ω).
-A sheet using a rail made on a sheet that is still a placeholder accepts the ERC "power input not driven" with
-`until_sheet = "<maker sheet>"`; **no package adds a PWR_FLAG to a rail made by another package.**
+Local rails (one sheet): `VTRANS`, the low-side `+20/−5 V`, the pump nodes, `AVDD_AFE`, `K_VCOIL`.
+A sheet using a rail made on a placeholder sheet accepts the ERC with `until_sheet`; **no package flags another
+package's rail.**
 
 ## 5. Inter-sheet signals
 
-Columns: **Net** · **Driver → loads** · **Domain** (rail of the driver's output) · **Active** · **Default / unpowered
-state and why it is safe** · **Default resistor (sheet, value, to)** · **Implements** (HAL method or decision).
-`M` = main controller, `S` = supervisor.
+Columns: Net · Driver → loads · Domain · Active · Default / unpowered state · Default resistor (sheet, value) ·
+Implements. M = main, S = supervisor.
 
-### 5.1 Power control and always-on domain
+### 5.1 Power control and always-on
 
 | Net | Driver → loads | Domain | Active | Default / unpowered | Default resistor | Implements |
 |---|---|---|---|---|---|---|
-| `PWR_BTN_N` | 06 (button to GND) → 03, 04 | 3V3_AON | low | high (not pressed) | **03**: 100 kΩ to 3V3_AON. 04 reads through R7 | switch-on (§B1.7, owner question 1) |
-| `MAIN_KEEP` | 04 → 03 | 3V3_MAIN | high | low: main rail off unless another wake source | **03**: 100 kΩ to GND | power latch |
+| `PWR_BTN_N` | 06 → 03, 04 | 3V3_AON | low | high | **03**: 100 kΩ to 3V3_AON; 04 via R7 | switch-on |
+| `MAIN_KEEP` | 04 → 03 | 3V3_MAIN | high | low | **03**: 100 kΩ to GND | power latch |
 | `SUP_KEEP` | 05 → 03 | 3V3_SUP | high | low | **03**: 100 kΩ to GND | power latch |
-| `SUP_WAKE` | 04 → 03 | 3V3_MAIN | high | low: supervisor stays off during standby wakes | **03**: 100 kΩ to GND | scheduled self-tests power the supervisor |
-| `EN_5V0` | 04 → 03 | 3V3_MAIN | high | low: 5V0_SYS off (safe, §B1.6) | **03**: 100 kΩ to GND | — |
-| `RTC_INT_N` | 03 (RV-3028 INT, open drain) → 03, 04 | 3V3_AON | low | high | **03**: 100 kΩ to 3V3_AON (exception to R8: the wake logic on 03 is the primary reader); 04 reads through R7 | wake timer (schedule.rs, standby.rs) |
-| `RTC_CLKOUT` | 03 → 06 | 3V3_AON | 1 Hz square | running whenever the pack is connected | none (push-pull) | memory-LCD inversion; ready LED flash |
-| `READY_D` | 04 → 03 | 3V3_MAIN | high = ready | low | **03**: 1 MΩ to GND | `MainHardware::set_ready_indicator` |
-| `READY_CLK` | 04 → 03 | 3V3_MAIN | rising edge latches | low (no edge) | **03**: 1 MΩ to GND | same |
-| `I2C_M_SCL`, `I2C_M_SDA` | 04 ↔ 01 (MAX17320), 02 (BQ25887), 03 (RV-3028) | 3V3_MAIN | — | low when main off (devices on other rails see a quiet bus) | **04**: 4.7 kΩ to 3V3_MAIN, one pair | `battery`, `battery_under_load`, `temperatures` (cells), wake timer |
+| `SUP_WAKE` | 04 → 03 | 3V3_MAIN | high | low | **03**: 100 kΩ to GND | self-tests power S |
+| `EN_5V0` | 04 → 03 | 3V3_MAIN | high | low (5V0_SYS off: safe) | **03**: 100 kΩ to GND | F-2 ordering |
+| `RTC_INT_N` | 03 (open drain) → 03, 04 | 3V3_AON | low | high | **03**: 100 kΩ to 3V3_AON (R8 exception: 03 is the primary reader); 04 via R7 | wake timer |
+| `RTC_CLKOUT` | 03 → 06 | 3V3_AON | 1 Hz | running | none | LCD inversion, ready flash |
+| `READY_D`, `READY_CLK` | 04 → 03 | 3V3_MAIN | high / rising edge | low | **03**: 1 MΩ to GND each | `set_ready_indicator` |
+| `I2C_M_SCL`, `I2C_M_SDA` | 04 ↔ 01, 02, 03 | 3V3_MAIN | — | low with M off | **04**: 4.7 kΩ to 3V3_MAIN | gauge, charger, RTC |
+| `DOCK_DET_N` | 02 (open drain) → 03, 04 | — | low = docked | high | **03**: 100 kΩ to 3V3_AON; 04 via R7 | wake on dock |
 
 ### 5.2 Battery and dock
 
 | Net | Driver → loads | Domain | Active | Default / unpowered | Default resistor | Implements |
 |---|---|---|---|---|---|---|
-| `GAUGE_ALRT_N` | 01 (open drain) → 04 | — | low | high | **04**: 100 kΩ to 3V3_MAIN | `battery` |
-| `BAT_LOAD_EN` | 04 → 01 | 3V3_MAIN | high | low: load off; **01 also limits on-time to ≤ 250 ms in hardware** | **01**: 100 kΩ to GND | `battery_under_load` (D-15) |
-| `CHGR_INT_N` | 02 (open drain) → 04 | — | low | high | **04**: 100 kΩ to 3V3_MAIN | battery charging status |
-| `CHGR_CE_N` | 04 → 02 | 3V3_MAIN | low = charge enabled | **low: charging allowed** (hardware temperature limits still act) | **02**: 100 kΩ to GND | D-48 charge window (firmware layer) |
-| `DOCK_DET_N` | 02 (open drain, switched by VDOCK) → 03, 04 | — | low = docked | high | **03**: 100 kΩ to 3V3_AON; 04 reads through R7 | wake on dock |
-| `DOCK_TX` | 04 → 02 | 3V3_MAIN | UART, idle high | high (idle) once 3V3_MAIN is up; with the main off the line is low and the contact shows a "break", which the dock ignores. 02's open-drain stage is powered from VDOCK, so it never drives the contact when undocked | **04**: 100 kΩ to 3V3_MAIN | records out (D-09) |
-| `DOCK_RX` | 02 (Ioff buffer on 3V3_MAIN) → 04 | 3V3_MAIN | UART | — | none (push-pull) | records/configuration in |
-| *(reserved)* `DOCK_D2` | — | — | — | — | — | second data contact if Q-47 option (b) is chosen; do not use the name for anything else |
+| `GAUGE_ALRT_N` | 01 (OD) → 04 | — | low | high | **04**: 100 kΩ to 3V3_MAIN | `battery` |
+| `BAT_LOAD_EN` | 04 → 01 | 3V3_MAIN | high | low; 01 limits on-time ≤ 250 ms | **01**: 100 kΩ to GND | `battery_under_load` |
+| `CHGR_INT_N` | 02 (OD) → 04 | — | low | high | **04**: 100 kΩ to 3V3_MAIN | charging status |
+| `CHGR_CE_N` | 04 → 02 | 3V3_MAIN | low = charge | low (charging allowed, hardware limits act) | **02**: 100 kΩ to GND | D-48 |
+| `DOCK_TX` | 04 → 02 | 3V3_MAIN | UART idle high | high once M is up; 02's stage is powered from VDOCK | **04**: 100 kΩ to 3V3_MAIN | records out |
+| `DOCK_RX` | 02 (Ioff buffer on 3V3_MAIN) → 04 | 3V3_MAIN | UART | — | none | records in |
+| *(reserved)* `DOCK_D2` | — | — | — | — | — | Q-47 option (b) only |
 
-### 5.3 Supervisor link
-
-| Net | Driver → loads | Domain | Active | Default / unpowered | Default resistor | Implements |
-|---|---|---|---|---|---|---|
-| `LINK_M2S` | 04 (UART TX) → 05 | 3V3_MAIN | UART, 1 Mbit/s | low = "break" = no messages = main stopped | **05**: 100 kΩ to GND, plus 1 kΩ series and an Ioff Schmitt buffer on 3V3_SUP | `send_status` / `receive_status` (link.rs) |
-| `LINK_S2M` | 05 (UART TX) → 04 | 3V3_SUP | UART | low = no reports | **04**: 100 kΩ to GND, 1 kΩ series, Ioff buffer on 3V3_MAIN | `send_report` / `supervisor_report` |
-
-### 5.4 Interlock (§B8) — the shock path
-
-Dynamic (`_CLK`) nets: a ≥ 1 kHz square wave produced by code that stops when the controller's control loop stops
-(not a free-running timer). A static level, either one, means "no consent".
+### 5.3 Link
 
 | Net | Driver → loads | Domain | Active | Default / unpowered | Default resistor | Implements |
 |---|---|---|---|---|---|---|
-| `HOLD_M_CLK` | 04 → 09 | 3V3_MAIN | toggling = hold | static → path A conducts | **09**: 100 kΩ to GND | `MainHardware::set_discharge_hold`; `interlock::discharge_path_active` |
-| `HOLD_S_CLK` | 05 → 09 | 3V3_SUP | toggling = hold | static → path B conducts | **09**: 100 kΩ to GND | `SupervisorHardware::set_discharge_hold` |
-| `HOLD_A_DRV` | 09 (buffer **powered from 3V3_MAIN**) → 11 (pump A) | 3V3_MAIN | square wave | no wave → stack A on | **11**: 100 kΩ to GND at the pump input | same |
-| `HOLD_B_DRV` | 09 (buffer **powered from 3V3_SUP**) → 11 (pump B) | 3V3_SUP | square wave | no wave → stack B on | **11**: 100 kΩ to GND | same |
-| `HOLD_OK` | 11 (two open-drain comparators, wired-AND) → 09 | 5V0_SYS | high = both stacks measured off | low (either stack on, or 5V0_SYS off) | **09**: 10 kΩ to 5V0_SYS (the only pull) | NOT `discharge_path_active`; input to `bridge_may_fire` and `charger_may_run` |
-| `HOLD_OK_RB_N` | 09 (open drain) → 04 | — | low = held | high | **04**: 100 kΩ to 3V3_MAIN | self-test "SupervisorNotHolding" diagnosis |
-| `OVP_TRIP` | 08 (comparator, push-pull on 3V3_SUP) → 11, 05 | 3V3_SUP | high = over-voltage | low (but supervisor unpowered already means path B on) | **11**: 100 kΩ to GND; 05 reads through R7 | hardware over-voltage (§B4.6, §B5.5) |
-| `SHOCK_REQ` | 04 → 09, 05 | 3V3_MAIN | high | low: no request | **09**: 100 kΩ to GND; 05 reads through R7 (monitor only) | `request_shock` / `withdraw_shock_request`; `bridge_may_fire(main_request…)` |
-| `PERMIT_CLK` | 05 → 09 | 3V3_SUP | toggling = permit | static → no permit | **09**: 100 kΩ to GND | `SupervisorHardware::set_permit`; `bridge_may_fire(…supervisor_permit…)` |
-| `BRIDGE_ARMED_N` | 09 (open drain, low while BRIDGE_5V is up) → 04 | — | low | high | **04**: 100 kΩ to 3V3_MAIN | `shock_status` (Refused vs Pending) |
-| `CHG_EN` | 04 → 09 | 3V3_MAIN | high | low: charger off | **09**: 100 kΩ to GND | `set_charger`; `charger_may_run(charger_enabled…)` |
-| `CHG_GATED` | 09 (AND gate on 5V0_SYS) → 10 | 5V0_SYS | high | low: LT3751 CHARGE low **and** VTRANS switch open | **10**: 100 kΩ to GND | `charger_may_run` (D-25) |
+| `LINK_M2S` | 04 → 05 | 3V3_MAIN | UART 1 Mbit/s | low = no messages | **05**: 100 kΩ to GND + 1 kΩ series + Ioff Schmitt on 3V3_SUP | link.rs |
+| `LINK_S2M` | 05 → 04 | 3V3_SUP | UART | low | **04**: same on 3V3_MAIN | link.rs |
 
-Local to 09 (no contract entry needed, but these names are reserved for the test points): `PERMIT_OK`,
-`SHOCK_REQ_BUF`, `BR5V_AFTER_REQ`, `BR5V_AFTER_PERMIT`.
+### 5.4 Consent and interlock (sheet 09)
+
+| Net | Driver → loads | Domain | Active | Default / unpowered | Default resistor | Implements |
+|---|---|---|---|---|---|---|
+| `HOLD_M_CLK` | 04 → 09 | 3V3_MAIN | 1–5 kHz = hold | static → path A conducts ≤ 10 ms | **09**: 100 kΩ to GND | `MainHardware::set_discharge_hold`; `discharge_path_active` |
+| `HOLD_S_CLK` | 05 → 09 | 3V3_SUP | 1–5 kHz = hold | static → path B conducts | **09**: 100 kΩ to GND | `SupervisorHardware::set_discharge_hold` |
+| `HOLD_A_DRV` | 09 (buffer on **3V3_MAIN**) → 11 | 3V3_MAIN | square wave | none → stack A on | **11**: 100 kΩ to GND at the pump input | same |
+| `HOLD_B_DRV` | 09 (buffer on **3V3_SUP**) → 11 | 3V3_SUP | square wave | none → stack B on | **11**: 100 kΩ to GND | same |
+| `HOLD_A_HELD_N`, `HOLD_B_HELD_N` | 11 (opto transistor to GND) → 09 | 5V0_SYS | **low = held** (LED lit by the gate bias) | **high = not held** (opto dark, open or unpowered) | **09**: 10 kΩ to 5V0_SYS each | input to `HOLD_OK` (local on 09) = both low |
+| `HOLD_RB_A_N`, `HOLD_RB_B_N` | 09 (open-drain copies) → 04 | — | low = held | high | **04**: 100 kΩ to 3V3_MAIN | F-7 hold-sensor test (proposed `hold_readback`) |
+| `OVP_TRIP` | 08 (push-pull on 3V3_SUP) → 11 (opto LEDs via resistor), 05 | 3V3_SUP | high = over-voltage | low | **11**: 100 kΩ to GND; 05 via R7 | hardware OV force; proposed `overvoltage_tripped` |
+| `SHOCK_REQ` | 04 → 09 | 3V3_MAIN | high | low | **09**: 100 kΩ to GND | `request_shock` / `withdraw_shock_request` (start only, D-59) |
+| `PERMIT_CLK` | 05 → 09 | 3V3_SUP | 1–5 kHz = permit | static → none | **09**: 100 kΩ to GND | `SupervisorHardware::set_permit` (start only) |
+| `TEST_PERMIT_CLK` | 05 → 09 | 3V3_SUP | 1–5 kHz = test permit | static → none | **09**: 100 kΩ to GND | proposed `set_test_permit` (D-61) |
+| `LOWV_OK` | 07 (comparator, push-pull on 3V3_MAIN) → 09 | 3V3_MAIN | high = capacitor < 60 V | low (no test mode) | **09**: 100 kΩ to GND | D-61 hardware voltage limit |
+| `BRIDGE_ARMED_N` | 09 (OD, low while BRIDGE_5V up) → 04 | — | low | high | **04**: 100 kΩ to 3V3_MAIN | `shock_status` / `sequence_status` |
+| `WIN_OPEN` | 09 → 12 | 5V0_SYS logic → 12 via Ioff buffer | high = within 150 ms window | low | **12**: 100 kΩ to GND (Ioff buffer on BRIDGE_3V3) | D-59 point 3 |
+| `TEST_MODE` | 09 → 12 | same | high = test mode | low (shock mode rules) | **12**: 100 kΩ to GND | D-61 |
+| `SEQ_HOLD` | 12 → 09 | BRIDGE_3V3 | high = sequence running | low | **09**: 100 kΩ to GND | D-59 completion (SW5) |
 
 ### 5.5 Charger
 
 | Net | Driver → loads | Domain | Active | Default / unpowered | Default resistor | Implements |
 |---|---|---|---|---|---|---|
-| `CHG_DONE_N` | 10 (LT3751 DONE, open collector) → 04 | — | low = target reached or fault | high | **04**: 100 kΩ to 3V3_MAIN | `set_charger` status |
-| `CHG_FAULT_N` | 10 (LT3751 FAULT, open collector) → 04 | — | low = supply out of range | high | **04**: 100 kΩ to 3V3_MAIN | charge fault |
-| `MODE_ADULT_HW` | 06 (switch pole B: closes to 5V0_SYS in ADULT) → 10 | 5V0_SYS | high = adult ceiling | low = **child ceiling (1,221 V)** | **10**: 100 kΩ to GND | hardware mode ceiling (§B4.4) |
-| `HV_CAP_P` | 10 (output diode) → 11, 12 | HV | — | — | — (bleeder on 11) | the capacitor's positive terminal |
+| `CHG_SESSION` | 04 → 09 | 3V3_MAIN | high | low | **09**: 100 kΩ to GND | `set_charger` (session) |
+| `CHG_RUN` | 04 → 09 | 3V3_MAIN | high | low | **09**: 100 kΩ to GND | `set_charger` (regulation, F-3) |
+| `VTRANS_EN` | 09 → 10 | 5V0_SYS | high = eFuse on | low | **10**: 100 kΩ to GND | `charger_may_run` (supply) |
+| `CHARGE_EN` | 09 → 10 | 5V0_SYS | high | low (CHARGE < 0.3 V) | **10**: 100 kΩ to GND | `charger_may_run` (CHARGE pin, after local VTRANS_GOOD) |
+| `CHG_DONE_N`, `CHG_FAULT_N` | 10 (open collector) → 04 | — | low | high | **04**: 100 kΩ to 3V3_MAIN each | charge status; F-3 fault retry |
+| `MODE_CHILD_HW` | 06 (pole B closes to 5V0_SYS in CHILD) → 10 | 5V0_SYS | high = child ceiling | **low = adult ceiling** (D-60) | **10**: 100 kΩ to GND | D-60 |
+| `MODE_HW_RB_N` | 10 (OD, from the FB-switch gate drive) → 04 | — | low = child ceiling active | high | **04**: 100 kΩ to 3V3_MAIN | D-60 readback (proposed `mode_hw_ceiling`) |
+| `HV_CAP_P` | 10 (after D1001, D1002, R1004) → 11, 13 | HV | — | — | (bleeder on 11) | capacitor + |
 
 ### 5.6 Storage and sensing
 
-| Net | Driver → loads | Domain | Active | Default / unpowered | Default resistor | Implements |
+| Net | Driver → loads | Domain | Active | Default | Default resistor | Implements |
 |---|---|---|---|---|---|---|
-| `VCAP_M_TAP` | 11 (main string tap, clamped on 11) → 07 | analog ≤ 2.6 V | 1:998 of VCAP | 0 V | none (the divider is the default) | `MainHardware::capacitor_voltage` |
-| `VCAP_S_TAP` | 11 (supervisor string tap, clamped on 11) → 08 | analog | 1:1,000 | 0 V | none | `SupervisorHardware::capacitor_voltage`; OVP |
-| `NTC_CAP_M` | 11 (connector J1102 pin, NTC to GND) → 07 | analog | — | — | **07**: bias resistor to VREF_M | `temperatures` (Capacitor) |
-| `NTC_CAP_S` | 11 (J1102, second NTC to GND) → 05 | analog | — | — | **05**: bias resistor to the supervisor's ADC reference | `SupervisorHardware::temperature` (D-56) |
-| `HVM_SCLK`, `HVM_MOSI`, `HVM_CS_N` | 04 → 07 | 3V3_MAIN | SPI | CS high | **07**: 100 kΩ pull-up on `HVM_CS_N` to 3V3_MAIN | main chain |
-| `HVM_MISO`, `HVM_DRDY_N` | 07 → 04 | 3V3_MAIN | SPI / low = data | — | none (ADS1220 drives both) | main chain |
-| `HVS_SCLK`, `HVS_PDRST_N` | 05 → 08 | 3V3_SUP | serial / low = power-down | PDRST low = ADC held reset until firmware | **08**: 100 kΩ to GND on `HVS_PDRST_N` | supervisor chain |
+| `VCAP_M_TAP` | 11 (clamped to GND on 11) → 07 | analog | 1:998 | 0 V | none | `MainHardware::capacitor_voltage`; `LOWV_OK` |
+| `VCAP_S_TAP` | 11 (clamped to GND) → 08 | analog | 1:1,000 | 0 V | none | `SupervisorHardware::capacitor_voltage`; OVP |
+| `NTC_CAP_M` | 11 (J1102) → 07 | analog | — | — | **07**: bias to VREF_M | `temperatures` (Capacitor) |
+| `NTC_CAP_S` | 11 (J1102) → 05 | analog | — | — | **05**: bias to S's ADC ref | `SupervisorHardware::temperature` |
+| `HVM_SCLK`, `HVM_MOSI`, `HVM_CS_N` | 04 → 07 | 3V3_MAIN | SPI | CS high | **07**: 100 kΩ up on `HVM_CS_N` | main chain |
+| `HVM_MISO`, `HVM_DRDY_N` | 07 → 04 | 3V3_MAIN | SPI | — | none | main chain |
+| `HVS_SCLK`, `HVS_PDRST_N` | 05 → 08 | 3V3_SUP | serial / low = reset | PDRST low | **08**: 100 kΩ to GND on `HVS_PDRST_N` | supervisor chain |
 | `HVS_DOUT` | 08 → 05 | 3V3_SUP | DOUT/RDY | — | none | supervisor chain |
 
-### 5.7 Bridge and patient interface
+### 5.7 Bridge logic (12) ↔ controllers, power stage (13) and patient relay (14)
 
 | Net | Driver → loads | Domain | Active | Default / unpowered | Default resistor | Implements |
 |---|---|---|---|---|---|---|
-| `CMD_HA`, `CMD_LA`, `CMD_HB`, `CMD_LB` | 04 (one advanced timer) → 12 | 3V3_MAIN | high = switch on | low: all off (and no drive power without BRIDGE_5V) | **12**: 100 kΩ to GND each; inputs through Ioff logic on BRIDGE_3V3 | `request_shock(plan)` phase timing |
-| `RELAY_CMD` | 04 → 13 | 3V3_MAIN | high = pads to bridge | low: pads to front ends | **13**: 100 kΩ to GND | `request_shock` |
-| `BTEST_CMD` | 04 → 12 | 3V3_MAIN | high = test load across outputs | low: open | **12**: 100 kΩ to GND | bridge self-test (§B6.6) |
-| `I_SHOCK` | 12 (INA240 on BRIDGE_3V3) → 04 | analog 0–3.2 V | 40 mV/A | 0 V when unpowered | **04**: anti-alias RC; no pull | `shock_status` |
-| `OC_TRIP_N` | 12 (latch, open drain) → 04 | — | low = over-current latched | high | **04**: 100 kΩ to 3V3_MAIN | `shock_status` (Fault) |
-| `OUT_A_TAP`, `OUT_B_TAP` | 12 (output pull-down dividers, clamped on 12) → 07 | analog | 1:1,000 | 0 V | none | shorted-switch detection; output voltage |
-| `HV_OUT_A`, `HV_OUT_B` | 12 → 13 | HV | — | pulled to HV_RTN on 12 (1 MΩ dividers) | **12** (the dividers) | the shock path |
-| `PT_FE_A`, `PT_FE_B` | 13 (relay rest contacts) → 14, 15 | PATIENT | — | — | none on 13; each front end has its own bias network ≥ 10 MΩ | `pad_resistance` (both), ECG |
-| `PAD_PRESENT_N` | 13 (connector loop to GND) → 04 | — | low = pad plug fitted | high | **04**: 100 kΩ to 3V3_MAIN | `pad_cartridge` (Missing) |
-| `PAD_ID_1W` | 04 ↔ 13 (1-Wire EEPROM in the pad plug) | 3V3_MAIN | 1-Wire | idle high | **04**: 2.2 kΩ to 3V3_MAIN (1-Wire master pull-up); series resistor and TVS on 13 | `pad_cartridge` (Expired), pad-set identity (D-57) |
-| `NTC_PADS` | 13 (NTC to GND) → 04 | analog | — | — | **04**: bias resistor to the main's ADC reference | `temperatures` (Pads) |
+| `CMD_HA`, `CMD_LA`, `CMD_HB`, `CMD_LB` | 04 (one advanced timer) → 12 | 3V3_MAIN | high | low | **12**: 100 kΩ to GND each; Ioff buffers on BRIDGE_3V3 | `request_shock(plan)` phases |
+| `RELAY_CMD` | 04 → 12 | 3V3_MAIN | high | low | **12**: 100 kΩ to GND | `request_shock` |
+| `BTEST_CMD` | 04 → 12 | 3V3_MAIN | high | low | **12**: 100 kΩ to GND | test sequence (D-61) |
+| `G_HA`, `G_HB` | 12 → 13 | BRIDGE_3V3 | high = carrier on | low | **13**: 100 kΩ to GND each | gated high-side enables |
+| `G_LA`, `G_LB` | 12 → 13 | BRIDGE_3V3 | high = low side on | low | **13**: 100 kΩ to GND each (at the UCC5350 inputs) | gated low-side enables |
+| `BTEST_EN` | 12 → 13 | BRIDGE_3V3 | high = test relay closed | low | **13**: 100 kΩ to GND | test mode only |
+| `OC_DET_N` | 13 (comparator, push-pull on BRIDGE_3V3) → 12 | BRIDGE_3V3 | low = ≥ 90 A | high when working; **an open or unpowered comparator reads low = fault** | **12**: 100 kΩ to GND (see note) | over-current latch |
+| `IDLE_I_DET_N` | 13 (comparator, push-pull) → 12 | BRIDGE_3V3 | low = ≥ 5 A | as above | **12**: 100 kΩ to GND (see note) | idle-current latch (R-14) |
+| `K_EN` | 12 → 14 | BRIDGE_3V3 | high = coil supply on | low | **14**: 100 kΩ to GND | relay transfer |
+| `K_REST_N` | 14 (force-guided aux contact to GND) → 04, 12 | — | **low = at rest** | high (= "not at rest": main faults; sequencer treats as transferred only with `K_EN` on ≥ 10 ms) | **04**: 100 kΩ to 3V3_MAIN; 12 reads via Ioff buffer, no pull | proposed `relay_at_rest`; sequencer start rule |
+| `SEQ_ACT_M_N`, `SEQ_DONE_M_N` | 12 (OD) → 04 | — | low | high (not active / not done) | **04**: 100 kΩ to 3V3_MAIN each | proposed `MainHardware::sequence_status` |
+| `SEQ_ACT_S_N`, `SEQ_DONE_S_N` | 12 (OD) → 05 | — | low | high | **05**: 100 kΩ to 3V3_SUP each | proposed `SupervisorHardware::sequence_status` |
+| `BR_FAULT_N` | 12 (OD) → 04 | — | low = ended by a fault latch | high | **04**: 100 kΩ to 3V3_MAIN | `shock_status` = Fault |
+| `I_SHOCK` | 13 (INA240 on BRIDGE_5V + 2:3 divider) → 04 | analog 0–3.2 V | 26.7 mV/A | 0 V | **04**: anti-alias RC | `shock_status`; test sequence |
+| `OUT_A_TAP`, `OUT_B_TAP` | 13 (dividers, clamped to GND on 13) → 07 | analog | 1:1,000 | ≤ 35 mV idle | none | shorted-switch and test-relay checks |
+| `HV_OUT_A`, `HV_OUT_B` | 13 → 14 | HV | — | pulled to HV_RTN (1 MΩ) on 13 | **13** | shock path |
+| `PT_FE_A`, `PT_FE_B` | 14 (relay rest contacts) → 15, 16 | PATIENT | — | — | none on 14 | `pad_resistance` (both), ECG |
 
-### 5.8 Front ends and user interface
+**Note on `OC_DET_N` / `IDLE_I_DET_N`:** push-pull comparator outputs on `BRIDGE_3V3`. The default resistor is a
+**100 kΩ pull-down on 12**, so an open or unpowered comparator reads *fault* (R11), and the sequencer refuses to
+start a sequence while either reads low.
+
+### 5.8 Pads, front ends and user interface
 
 | Net | Driver → loads | Domain | Active | Default / unpowered | Default resistor | Implements |
 |---|---|---|---|---|---|---|
-| `AFE_SCLK`, `AFE_MOSI`, `AFE_CS_N`, `AFE_START` | 04 → 14 | 3V3_MAIN | SPI; START high = convert | CS high, START low | **14**: 100 kΩ up on `AFE_CS_N`, 100 kΩ down on `AFE_START` | ECG and impedance streams (`on_ecg_sample`, `on_impedance_sample`), `pad_resistance` |
-| `AFE_RESET_N` | 04 → 14 | 3V3_MAIN | low = reset / power-down | **low: held in reset until firmware** | **14**: 100 kΩ to GND | same |
-| `AFE_MISO`, `AFE_DRDY_N` | 14 → 04 | 3V3_MAIN | SPI / low = data ready | — | none | same |
-| `SBZ_SCLK`, `SBZ_MOSI`, `SBZ_CS_N` | 05 → 15 | 3V3_SUP | SPI | CS high | **15**: 100 kΩ up on `SBZ_CS_N` to 3V3_SUP (MAX30009 VDDIO = 3V3_SUP) | `SupervisorHardware::pad_resistance` |
-| `SBZ_MISO` | 15 → 05 | 3V3_SUP | SPI | — | none | same |
-| `SBZ_INT_N` | 15 (open drain) → 05 | — | low | high | **05**: 100 kΩ to 3V3_SUP | same |
-| `LCD_SCLK`, `LCD_SI`, `LCD_SCS` | 04 → 06 | 3V3_MAIN into a 3V3_AON part | SPI | low (display keeps its image) | **06**: 1 MΩ to GND each (R7: display inputs defined while main is off) | `prompt` (screen) |
-| `LCD_DISP` | 04 (open drain) → 06 | — | low = blank | **high: display on**, showing the last image | **06**: 1 MΩ to 3V3_AON | ready shown while off (§B10.3) |
-| `I2S_BCLK`, `I2S_LRCLK`, `I2S_SD` | 04 → 06 | 3V3_MAIN | I²S | — | none | `prompt` (speech), `metronome_beat` |
-| `AMP_SD_N` | 04 → 06 | 3V3_MAIN | low = amplifier off | low | **06**: 100 kΩ to GND | same |
-| `CANCEL_M_N` | 06 (contact 1 to GND) → 04 | — | low = pressed | high | **04**: 10 kΩ to 3V3_MAIN | `MainHardware::cancel_pressed` (D-31) |
-| `CANCEL_S_N` | 06 (contact 2 to GND) → 05 | — | low = pressed | high | **05**: 10 kΩ to 3V3_SUP | `SupervisorHardware::cancel_pressed` |
-| `MODE_ADULT_N`, `MODE_CHILD_N` | 06 (switch pole A to GND) → 04 | — | low = that position | both high = "between positions" (a fault) | **04**: 10 kΩ to 3V3_MAIN each | `patient_mode` |
+| `PAD_PRESENT_N` | 14 → 04 | — | low = fitted | high | **04**: 100 kΩ to 3V3_MAIN | `pad_cartridge` |
+| `PAD_ID_1W` | 04 ↔ 14 | 3V3_MAIN | 1-Wire | idle high | **04**: 2.2 kΩ to 3V3_MAIN; series R + TVS on 14 | `pad_cartridge`, D-57 |
+| `NTC_PADS` | 14 → 04 | analog | — | — | **04**: bias to the ADC ref | `temperatures` (Pads) |
+| `AFE_SCLK`, `AFE_MOSI`, `AFE_CS_N`, `AFE_START` | 04 → 15 | 3V3_MAIN | SPI / START | CS high, START low | **15**: 100 kΩ up on CS, down on START | ECG + impedance streams |
+| `AFE_RESET_N` | 04 → 15 | 3V3_MAIN | low = reset | low | **15**: 100 kΩ to GND | same |
+| `AFE_MISO`, `AFE_DRDY_N` | 15 → 04 | 3V3_MAIN | — | — | none | same |
+| `SBZ_SCLK`, `SBZ_MOSI`, `SBZ_CS_N` | 05 → 16 | 3V3_SUP | SPI | CS high | **16**: 100 kΩ up on CS | `SupervisorHardware::pad_resistance` |
+| `SBZ_MISO` | 16 → 05 | 3V3_SUP | — | — | none | same |
+| `SBZ_INT_N` | 16 (OD) → 05 | — | low | high | **05**: 100 kΩ to 3V3_SUP | same |
+| `LCD_SCLK`, `LCD_SI`, `LCD_SCS` | 04 → 06 | 3V3_MAIN into an AON part | SPI | low | **06**: 1 MΩ to GND each | `prompt` |
+| `LCD_BLANK` | 04 → 06 (74AUP1G04 on 3V3_AON) | 3V3_MAIN | high = blank | **low = display on** | **06**: 1 MΩ to GND | ready shown while off |
+| `I2S_BCLK`, `I2S_LRCLK`, `I2S_SD` | 04 → 06 | 3V3_MAIN | I²S | low | none; **4.7 kΩ series on 06** | `prompt`, `metronome_beat` |
+| `AMP_SD_N` | 04 → 06 | 3V3_MAIN | low = off | low | **06**: 100 kΩ to GND | same |
+| `CANCEL_M_N` | 06 → 04 | — | low | high | **04**: 10 kΩ to 3V3_MAIN | `MainHardware::cancel_pressed` |
+| `CANCEL_S_N` | 06 → 05 | — | low | high | **05**: 10 kΩ to 3V3_SUP | `SupervisorHardware::cancel_pressed` |
+| `MODE_ADULT_N`, `MODE_CHILD_N` | 06 (pole A to GND) → 04 | — | low = that position | both high = fault | **04**: 10 kΩ to 3V3_MAIN each | `patient_mode`; D-60 compare |
 
-**Two by design** (R8 exceptions): none besides `RTC_INT_N` (noted above). The cancel contacts share only `GND`.
+## 6. Board-split nets
 
-## 6. Board-split nets (if layout uses a low-voltage board and a high-voltage board)
-
-Every net with a driver or load on both groups (sheets 01–09 vs 10–15) crosses the board-to-board connector:
-
-- Power: `VBAT_SYS` (21 A peak — separate high-current contacts), `GND` (several contacts, plus the high-current return),
-  `5V0_SYS`, `3V3_MAIN`, `3V3_SUP`, `BRIDGE_5V`.
-- Interlock: `HOLD_A_DRV`, `HOLD_B_DRV`, `HOLD_OK`, `OVP_TRIP`, `CHG_GATED`, `MODE_ADULT_HW`.
-- Charger: `CHG_DONE_N`, `CHG_FAULT_N`.
+Low-voltage board 01–09, high-voltage/patient board 10–16. Crossing:
+- Power: `VBAT_SYS` (charger and coil boost — high-current contacts), `GND`, `5V0_SYS`, `3V3_MAIN`, `3V3_SUP`, `BRIDGE_5V`.
+- Interlock: `HOLD_A_DRV`, `HOLD_B_DRV`, `HOLD_A_HELD_N`, `HOLD_B_HELD_N`, `OVP_TRIP`, `VTRANS_EN`, `CHARGE_EN`,
+  `MODE_CHILD_HW`, `WIN_OPEN`, `TEST_MODE`, `SEQ_HOLD`.
+- Charger: `CHG_DONE_N`, `CHG_FAULT_N`, `MODE_HW_RB_N`.
 - Sensing: `VCAP_M_TAP`, `VCAP_S_TAP`, `NTC_CAP_M`, `NTC_CAP_S`, `OUT_A_TAP`, `OUT_B_TAP`, `I_SHOCK`.
-- Bridge and patient: `CMD_HA`, `CMD_LA`, `CMD_HB`, `CMD_LB`, `RELAY_CMD`, `BTEST_CMD`, `OC_TRIP_N`,
-  `PAD_PRESENT_N`, `PAD_ID_1W`, `NTC_PADS`.
-- Front ends: all `AFE_*` and `SBZ_*`.
+- Sequencer: `CMD_*`, `RELAY_CMD`, `BTEST_CMD`, `SEQ_ACT_M_N`, `SEQ_DONE_M_N`, `SEQ_ACT_S_N`, `SEQ_DONE_S_N`,
+  `BR_FAULT_N`, `K_REST_N`.
+- Pads and front ends: `PAD_PRESENT_N`, `PAD_ID_1W`, `NTC_PADS`, all `AFE_*`, `SBZ_*`.
 
-**No `HV_*`, `HV_FLOAT` or `PT_*` net crosses the connector.** The front ends are on the high-voltage/patient
-board so that `PT_FE_A/B` stay there.
+**No `HV_*`, `HV_FLOAT` or `PT_*` net crosses.**
 
 ## 7. HAL methods → nets
 
-### `MainHardware`
+### `MainHardware` (existing methods)
 
 | Method | Nets / parts |
 |---|---|
-| `now` | U401 crystals (local) |
-| `pad_resistance` | `PT_FE_A/B` via K1301 rest contacts → U1401 channel 1; `AFE_*` |
-| `capacitor_voltage` | main divider string (11) → `VCAP_M_TAP` → U701/U702; `HVM_*` |
-| `set_charger(target)` | `CHG_EN` (→ `CHG_GATED`); closed loop on `capacitor_voltage`; `MODE_ADULT_HW` sets the hardware ceiling; `CHG_DONE_N`, `CHG_FAULT_N` |
-| `set_discharge_hold` | `HOLD_M_CLK` → `HOLD_A_DRV` → stack A; `HOLD_OK_RB_N` readback |
-| `request_shock(plan)` | `SHOCK_REQ`; then `RELAY_CMD`; then `CMD_HA/LB` (phase 1), `CMD_HB/LA` (phase 2) from one timer |
-| `withdraw_shock_request` | `SHOCK_REQ`, all `CMD_*`, `RELAY_CMD` low |
-| `shock_status` | `BRIDGE_ARMED_N`, `I_SHOCK`, `OC_TRIP_N` (+ both voltage readings) |
+| `now` | U401 crystals |
+| `pad_resistance` | `PT_FE_A/B` via K1401 rest contacts → U1501 ch. 1; `AFE_*` |
+| `capacitor_voltage` | main string (11) → `VCAP_M_TAP` → U701/U702; `HVM_*` |
+| `set_charger(target)` | `CHG_SESSION` → `VTRANS_EN`; `CHG_RUN` → `CHARGE_EN` (regulation loop on `capacitor_voltage`); `CHG_DONE_N`, `CHG_FAULT_N`; ceiling via `MODE_CHILD_HW` |
+| `set_discharge_hold` | `HOLD_M_CLK` → `HOLD_A_DRV` → stack A |
+| `request_shock(plan)` | `SHOCK_REQ`; `RELAY_CMD`; `CMD_HA` → `CMD_LB` (phase 1); `CMD_HB` → `CMD_LA` (phase 2) — sequencer rules §B13 |
+| `withdraw_shock_request` | `SHOCK_REQ`, `CMD_*`, `RELAY_CMD` low (no effect after `SEQ_ACT`, D-59) |
+| `shock_status` | `BRIDGE_ARMED_N`, `SEQ_ACT_M_N`, `SEQ_DONE_M_N`, `BR_FAULT_N`, `I_SHOCK` |
 | `cancel_pressed` | `CANCEL_M_N` |
 | `patient_mode` | `MODE_ADULT_N`, `MODE_CHILD_N` |
-| `battery` | `I2C_M_*` → U101; `GAUGE_ALRT_N` |
-| `battery_under_load` | `BAT_LOAD_EN` + U101 readings |
+| `battery`, `battery_under_load` | `I2C_M_*` → U101; `GAUGE_ALRT_N`; `BAT_LOAD_EN` |
 | `pad_cartridge` | `PAD_PRESENT_N`, `PAD_ID_1W` |
-| `temperatures` | Cell1/Cell2: `I2C_M_*` → U101; Capacitor: `NTC_CAP_M`; Pads: `NTC_PADS`; Board: U401 internal |
-| `prompt` | `I2S_*`, `AMP_SD_N`; `LCD_*` |
-| `metronome_beat` | `I2S_*` |
+| `temperatures` | cells (`I2C_M_*`), `NTC_CAP_M`, `NTC_PADS`, U401 internal |
+| `prompt`, `metronome_beat` | `I2S_*`, `AMP_SD_N`, `LCD_*` |
 | `set_ready_indicator` | `READY_D`, `READY_CLK` |
 | `send_status` / `supervisor_report` | `LINK_M2S` / `LINK_S2M` |
-| board callbacks `on_ecg_sample`, `on_impedance_sample` | `AFE_*` (DRDY at 250/s) |
-| standby: wake timer, durable store | `RTC_INT_N`, `I2C_M_*` (U305); F-RAM on U401's local SPI; `MAIN_KEEP`, `SUP_WAKE` |
+| board callbacks (ECG, impedance) | `AFE_*` |
+| standby | `RTC_INT_N`, `I2C_M_*`, F-RAM (local), `MAIN_KEEP`, `SUP_WAKE` |
+
+### `MainHardware` — proposed additions (design §F-11)
+
+| Proposed method | Nets |
+|---|---|
+| `sequence_status()` | `BRIDGE_ARMED_N`, `SEQ_ACT_M_N`, `SEQ_DONE_M_N`, `BR_FAULT_N` |
+| `relay_at_rest()` | `K_REST_N` |
+| `mode_hw_ceiling()` | `MODE_HW_RB_N` |
+| `hold_readback()` | `HOLD_RB_A_N`, `HOLD_RB_B_N` |
+| test-sequence primitives | `BTEST_CMD`, `CMD_*`, `I_SHOCK`, `OUT_A_TAP`, `OUT_B_TAP` |
 
 ### `SupervisorHardware`
 
-| Method | Nets / parts |
+| Method | Nets |
 |---|---|
-| `now` | U501 crystal (local) |
-| `capacitor_voltage` | supervisor divider string (11) → `VCAP_S_TAP` → U801/U802; `HVS_*` |
-| `pad_resistance` | `PT_FE_A/B` → U1501; `SBZ_*` |
+| `now` | U501 crystal |
+| `capacitor_voltage` | supervisor string → `VCAP_S_TAP` → U801/U802; `HVS_*` |
+| `pad_resistance` | `PT_FE_A/B` → U1601; `SBZ_*` |
 | `cancel_pressed` | `CANCEL_S_N` |
 | `temperature` | `NTC_CAP_S` |
-| `set_permit` | `PERMIT_CLK` |
+| `set_permit` | `PERMIT_CLK` (start only, D-59) |
 | `set_discharge_hold` | `HOLD_S_CLK` → `HOLD_B_DRV` → stack B |
 | `receive_status` / `send_report` | `LINK_M2S` / `LINK_S2M` |
-| `set_fault_alarm` | piezo and fault light, local to 05 |
-| (monitors) | `SHOCK_REQ`, `OVP_TRIP` |
+| `set_fault_alarm` | local piezo and light |
+| *proposed* `set_test_permit` | `TEST_PERMIT_CLK` |
+| *proposed* `sequence_status` | `SEQ_ACT_S_N`, `SEQ_DONE_S_N` |
+| *proposed* `overvoltage_tripped` | `OVP_TRIP` |
 
 ### `interlock.rs` → hardware
 
 | Function | Realised by |
 |---|---|
-| `discharge_path_active(main_hold, supervisor_hold)` | stack A on unless `HOLD_A_DRV` toggling; stack B on unless `HOLD_B_DRV` toggling (11); `HOLD_OK` = both measured off |
-| `bridge_may_fire(main_request, supervisor_permit, discharge_active)` | three series load switches on 09: `SHOCK_REQ` · `PERMIT_OK` · `HOLD_OK` → `BRIDGE_5V` |
-| `charger_may_run(charger_enabled, discharge_active)` | `CHG_GATED = CHG_EN AND HOLD_OK` (09) → LT3751 CHARGE and the VTRANS switch (10) |
+| `discharge_path_active(m, s)` | stack A on unless `HOLD_A_DRV` toggles; stack B on unless `HOLD_B_DRV` toggles; `HOLD_OK` (local 09) = `HOLD_A_HELD_N` low AND `HOLD_B_HELD_N` low |
+| `bridge_may_fire(r, p, d)` | **at the start**: SW1 (`SHOCK_REQ`) · SW2 (`PERMIT_OK`) · SW3 (`HOLD_OK`) · SW4 (`WIN_OPEN`) → `BRIDGE_5V`; **after `SEQ_ACTIVE`**: SW5 (`SEQ_HOLD`) completes the pulse (D-59) |
+| `charger_may_run(e, d)` | `VTRANS_EN` = `CHG_SESSION`·`HOLD_OK`·NOT `TEST_MODE`; `CHARGE_EN` = `CHG_RUN`·`HOLD_OK`·NOT `TEST_MODE` (09), ANDed with VTRANS_GOOD (10) |
 
 ## 8. Parts already chosen (do not re-decide)
 
 | Sheet | Parts |
 |---|---|
-| 01 | MAX17320 (+ 2 protection N-FETs, sense resistor per its datasheet), F101 25 A time-lag, 0.82 Ω pulse load + N-FET + RC time limit, pack connector (keyed; part is a capture decision) |
-| 02 | TPS25947 eFuse, 6.0 V TVS, BQ25887, dock contact pads (3: `DOCK_5V`, `DOCK_GND`, `DOCK_DATA`), open-drain data driver (powered from VDOCK side) + 74LVC1G17 receiver, VDOCK-switched dock-detect MOSFET |
-| 03 | TPS629210 × 2 (separate fuses), TPS62130, TPS70933, RV-3028-C7, SN74AUP1G74 ready latch, green ready LED + pulse network, wake-OR logic |
-| 04 | STM32U585VIT6, 16 MHz and 32.768 kHz crystals, W25Q128JV, CY15B104QN, Ioff receivers for `LINK_S2M`, `PWR_BTN_N`, `RTC_INT_N`, `DOCK_DET_N`, SWD pads |
-| 05 | MCXA153VLH, own crystal, piezo transducer + dual buffer, red fault LED, Ioff receivers for `LINK_M2S`, `SHOCK_REQ`, `OVP_TRIP`, SWD pads |
-| 06 | Sharp LS013B7DH05, MAX98357A + 28 mm sealed speaker, two sealed tactile switches (cancel), two-pole changeover slide switch (mode), sealed tactile switch (power) |
-| 07 | ADS1220, REF3425, NTC bias network |
-| 08 | AD7171, ADR3425, zero-drift buffer on the tap, TLV3012-class comparator with reference (2,160 V trip) |
-| 09 | 74LVC-family consent buffers (main ones on 3V3_MAIN, supervisor ones on 3V3_SUP), permit diode-pump detector + Schmitt buffer, AND gate for `CHG_GATED`, 3 × TPS22918 in series, open-drain readback buffer |
-| 10 | LT3751 (I grade), BSC070N10LS5, 5 mΩ sense, T1001, UX-F5B, FB divider (40.2 MΩ / 40.2 kΩ + 57.6 kΩ switched), RVOUT/RVTRANS 40.2 kΩ, RDCM 18.2 kΩ, RBG 909 Ω, UVLO/OVLO resistors (design §B4.3), LM74502 + N-FET, F1001 15 A, primary clamp, input LC filter and bulk capacitors |
-| 11 | C1101 terminals, J1102 NTC connector, 6 × IXTT10N100D2, 6 × 1.5 kΩ Ohmite EY, balancing strings 3 × 10 MΩ per stack, two inverting charge pumps, two `HOLD_OK` comparators, two OVP shunt N-FETs, bleeder 8 × 2.49 MΩ, main string 10 × 4.02 MΩ HVCR2512 + 2 × 80.6 kΩ, supervisor string 12 × 3.32 MΩ TNPV1206 + 2 × 79.6 kΩ, tap clamps, NT1101 |
-| 12 | 4 × MSC080SMA330B4N (alternative G2R120MT33J), R1201 3.9 Ω ceramic composition, L1201, R1202 2 mΩ shunt, INA240A1, TLV3201 + 74LVC1G74 latch, 74LVC1G123 window, lockout logic, 2 × SN6505B + T1201/T1202 + rectifiers + 100 nF gate capacitors + PNP turn-off, 2 × UCC5350MC, MGJ2D052005SC, BRIDGE_3V3 LDO, output dividers 4 × 249 kΩ + bottom leg, K1201 D-HR reed relay + R1203 2 kΩ ceramic |
-| 13 | K1301 (G17-class DPDT, qualification part), J1301 (made to order), pad-line series resistors and TVS, pad-area NTC |
-| 14 | ADS1292R, per pad: DPCR2512 51 kΩ sense, 2 × 4.7 nF 3 kV C0G in series + DPCR 1 kΩ drive, clamp diodes + TVS, input filters, AVDD filter |
-| 15 | MAX30009, `1V8_SUP` LDO, per pad: DPCR 51 kΩ sense, 2 × 4.7 nF 3 kV + DPCR 1 kΩ drive, clamps |
+| 01 | MAX17320 + 2 protection N-FETs + sense resistor; F101 25 A; 0.82 Ω load + N-FET + RC limit; keyed pack connector |
+| 02 | TPS25947, 6.0 V TVS, BQ25887, three dock contacts, VDOCK-powered open-drain data driver, 74LVC1G17 receiver, dock-detect MOSFET |
+| 03 | TPS629210 × 2 (own fuses), TPS62130, TPS70933, RV-3028-C7, SN74AUP1G74, ready LED + pulse network, wake-OR |
+| 04 | STM32U585ZIT6, 16 MHz + 32.768 kHz crystals, W25Q128JV, CY15B104QN, Ioff receivers (`LINK_S2M`, `PWR_BTN_N`, `RTC_INT_N`, `DOCK_DET_N`), SWD pads |
+| 05 | MCXA153VLH, crystal, piezo + dual buffer, red LED, Ioff receivers (`LINK_M2S`, `OVP_TRIP`), NTC bias, SWD pads |
+| 06 | LS013B7DH05, 74AUP1G04 (3V3_AON) for blanking, MAX98357A + 28 mm speaker, 4.7 kΩ I²S series resistors, two cancel switches, two-pole changeover mode switch (pole B closes in CHILD), power switch |
+| 07 | ADS1220, REF3425, NTC bias, **`LOWV_OK` comparator** (60 V on the tap, push-pull, 3V3_MAIN) |
+| 08 | AD7171, ADR3425, zero-drift buffer, OVP comparator (2,160 V) |
+| 09 | TPS22918 × 6 (U901–U906: SW1, SW2a, SW2b, SW3, SW4, SW5), consent buffers on their own rails, two band-limited pump detectors (permit, test permit) on 3V3_SUP, hold-drive buffers (A on 3V3_MAIN, B on 3V3_SUP) with 8 kHz two-pole low-pass, `HOLD_OK` logic with 10 kΩ pull-ups, window timer + latch + 50 ms re-arm, `TEST_MODE` logic, charger gates, open-drain readbacks |
+| 10 | LT3751IUFD, BSC070N10LS5, 5 mΩ sense, T1001, **2 × UX-F5B**, **R1004 fusible**, **TPS25982 eFuse**, F1001 15 A, VTRANS_GOOD comparator + ≥ 1 ms delay, FB network (10 × 4.02 MΩ 0.1 % + 36.9 kΩ 0.1 %, N-FET default on), RVOUT/RVTRANS 40.2 kΩ, RBG 931 Ω 0.1 %, RDCM 18.2 kΩ, UVLO/OVLO (69.8 k, 155 k, **71.5 k**, 87.5 k), primary clamp, LC filter, bulk |
+| 11 | J1101, J1102, NT1101 ∥ NT1102, **8 × IXTT10N100D2**, 6 × 1.5 kΩ EY, 2 × (4 × 10 MΩ sharing strings + 1 nF speed-up caps), 8 × 15 V bidirectional gate TVS, upper-gate 100 kΩ resistors, 2 × three-stage pumps + 3.3 µF reservoirs + 1 MΩ gate resistors, 2 × release switches (BSS126 class) with clock-derived bias, 2 × hold-sense optos (LED + 4.7 V zener + 1.5 kΩ), 2 × OVP-force optos, bleeder 8 × 2.49 MΩ, main string 10 × 4.02 MΩ HVCR2512 + 2 × 80.6 kΩ, supervisor string 12 × 3.32 MΩ TNPV1206 + 2 × 79.6 kΩ, tap clamps (10 kΩ + 3.6 V to GND) |
+| 12 | BRIDGE_3V3 LDO + ≥ 2 ms hold-up, 4.5 V rail-UV detector, power-on reset, RAIL_READY (20 ms), Ioff command buffers, sequencer state latches, lockout delays (10 µs, 150 µs, 50 µs lead), **latched 25 ms cap** (RC + comparator + latch), OC / idle / UV / cap fault latches, relay coil 90 ms latched cap and start window (≤ 60 ms), turn-off order delays (20 µs, 1 ms, 15 ms), open-drain status outputs |
+| 13 | 4 × MSC080SMA330B4N, R1301 3.9 Ω ceramic, L1301 30 µH, **D1301 3.3 kV SiC**, snubber RC, R1302 2 mΩ, 2 × UCC5350MC, MGJ2D052005SC, 400 kHz oscillator + two-phase divider, 2 × dual N-FET push-pull + T1301/T1302 + rectifiers + 18 V zener + 100 Ω + 100 nF + PNP turn-off + 10 kΩ bleed, fast OC comparator (90 A), idle comparator (5 A), INA240A1 on BRIDGE_5V + 2:3 divider, output dividers (4 × 249 kΩ + bottom leg, clamp to GND), K1301 D-HR reed + R1303 200 Ω |
+| 14 | K1401 (G17-class, with force-guided aux contact), 12 V coil boost from VBAT_SYS + economiser + ≈ 1.7 mF hold-up + zener release, J1401, pad-line series R + TVS, pad NTC |
+| 15 | ADS1292R, per pad: DPCR2512 51 kΩ sense, 2 × 4.7 nF 3 kV C0G + 1 kΩ pulse-rated drive resistor, TVS to analog ground below the rail, rail shunt clamp, filters |
+| 16 | MAX30009, 1V8_SUP LDO, taps as sheet 15 |
 
 ## 9. Decisions left to each capture engineer
 
-Decide, write down why in the sheet's group notes, and list in the hand-over note.
-
-- **WP-A:** protection MOSFETs and MAX17320 sense resistor and thresholds; pack connector; exact fuse parts; inductors and capacitors of the three bucks; the wake-OR logic implementation (diodes vs gates) provided the power button enables both controller regulators without any logic in between; the RC values of the battery-load time limit; BQ25887 TS network values for a 0–45 °C hard window (or an added comparator if the TS thresholds cannot reach 45 °C).
-- **WP-B:** pin assignment within the constraints of §2.2/§2.3 of the design (the four bridge commands on one advanced timer; `I_SHOCK` and `NTC_PADS` on ADC pins; UARTs for the link and the dock); supervisor crystal frequency; decoupling; boot-pin straps. If the 100-pin STM32U585 package has fewer usable I/O than counted, report it, do not drop a net.
-- **WP-C:** speaker and piezo parts (≥ 85 dB targets); NTC bias values; buffer and comparator parts on 08 with the 2,160 V threshold from the actual divider ratio; anti-alias filters.
-- **WP-D:** charge-pump topology and values meeting "bottom gate ≤ −7.0 V at 25 µA from a 3.3 V clock" (or 5 V buffer for pump A); `HOLD_OK` comparator and level-shift network (threshold −6.0 V); speed-up capacitors on the balancing strings; permit detector time constant (collapse within ≤ 2 ms of the clock stopping); high-voltage chip resistor parts for the bleeder.
-- **WP-E:** primary clamp design; input filter; parallel second primary MOSFET if needed; layout notes for the RVOUT/RDCM nodes (datasheet: no planes under them).
-- **WP-F:** lockout delay network (≥ 150 µs) and window one-shot (25 ms) values; over-current threshold resistor network (90 A); rectifier and PNP turn-off parts on the high-side islands; whether R1201 is one part or two in parallel.
-- **WP-G:** clamp diode and TVS parts; front-end filter values; bias networks; whether K1301's coil needs a 12 V boost from `BRIDGE_5V` (if the qualified relay has a 12 V coil); the 1-Wire series resistor and TVS.
+- **WP-A:** protection FETs, MAX17320 thresholds (OC ≥ 30 A ms delay, SC ≥ 60 A ≥ 100 µs, **auto-retry**), pack connector, fuse parts, buck passives, wake-OR implementation (button enables both regulators with no logic between), load RC, BQ25887 TS network for 0–45 °C.
+- **WP-B:** pin assignment (four `CMD_*` on one advanced timer; `I_SHOCK`, `NTC_PADS` on ADC pins); supervisor crystal; decoupling; straps.
+- **WP-C:** speaker and piezo parts; NTC bias; buffer and comparator parts (OVP 2,160 V, LOWV 60 V from the real divider ratios); filters.
+- **WP-D:** the logic family and gate-level implementation of §B8 and §B13 (discrete 74LVC/AUP with Ioff, or another discrete family — **no programmable logic** without an owner decision); detector RC values meeting §B8.1 (1–5 kHz pass, ≥ 100 kHz reject, rise ≤ 3 ms, hold-up ≥ 3 ms, collapse ≤ 8 ms); timer RCs and comparator thresholds (cap 25 ms ± 15 %, window 150 ms, re-arm 50 ms, lockouts); `BRIDGE_3V3` hold-up sizing (≥ 2 ms at the sheet's measured load).
+- **WP-E:** primary clamp; LC filter; eFuse current-limit and dV/dt values; VTRANS_GOOD threshold (5.0 V, hysteresis) and delay; R1004 part.
+- **WP-F:** pump capacitor values meeting "−7.0 V or more negative at 1.1 mA from a 2 kHz 3.3 V clock"; release-switch bias network (stack conducting ≤ 10 ms after the last edge); opto part (CTR at 1 mA); speed-up capacitor value (≥ 10 × device Coss); bleeder resistor parts.
+- **WP-G:** gate resistors; oscillator and push-pull parts; rectifier and PNP parts; snubber values; comparator networks (90 A, 5 A); D1301 part; L1301 construction choice with the maker.
+- **WP-H:** clamp and TVS parts; drive-tap resistor part (≥ 1.5 kV / 10 µs); boost converter and economiser for the chosen relay's coil; hold-up value; 1-Wire protection.
 
 ## 10. Cross-sheet behaviour each side must check and write down
 
-- **WP-D with WP-B:** the hold and permit clocks' frequency, duty and the maximum gap firmware may leave without
-  causing a release (pump hold-up) — and that the clocks come from code, not a free-running timer.
-- **WP-D with WP-E:** `CHG_GATED` low must stop both the LT3751 (CHARGE < 0.3 V) and VTRANS within 1 ms.
-- **WP-F with WP-B:** the order of `RELAY_CMD`, `CMD_HA`, `CMD_LB`, gap, `CMD_HB`, `CMD_LA` and the timing margins
-  (design §B8.4); what the lockout does to a command sequence that violates it.
-- **WP-F with WP-G:** relay operate/release times against the bridge sequence; `HV_OUT_*` pull-downs on 12 only.
-- **WP-G with WP-B:** ADS1292R modulation setting (64 kHz) and MAX30009 carrier (128 kHz).
-- **Everyone:** what your sheet's outputs do when your rail is off and the reader's rail is on (R7), and the
-  reverse.
+- **WP-D with WP-B:** consent clocks 1–5 kHz from code, maximum gap 1 ms (F-1); the shock command order and timing (F-4); what the sequencer does with commands out of order.
+- **WP-D with WP-F:** `HOLD_*_DRV` amplitude and frequency into the pumps; `HOLD_*_HELD_N` timing (held within ≤ 5 ms of the first edge; not held within ≤ 5 ms of the last).
+- **WP-D with WP-E:** `VTRANS_EN`, `CHARGE_EN` off within 1 ms of `HOLD_OK` loss or `TEST_MODE`.
+- **WP-D with WP-G:** `G_*` timing; `OC_DET_N`/`IDLE_I_DET_N` polarity and response (≤ 0.5 µs for OC); `BRIDGE_3V3` load of sheet 13 for the hold-up sizing; turn-off order on rail collapse.
+- **WP-D with WP-H:** `K_EN` timing; coil hold-up ≥ 30 ms; `K_REST_N` contact type.
+- **WP-H with WP-B:** ADS1292R at 64 kHz, MAX30009 at 128 kHz; idle drive outputs high-impedance.
+- **Everyone:** R7 and R11 for every output on your sheet.

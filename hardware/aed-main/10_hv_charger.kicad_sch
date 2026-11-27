@@ -3,9 +3,9 @@
 	(generator "aed_schgen")
 	(generator_version "1.0")
 	(uuid "b5fb6013-66d4-53b7-869f-ce57d805d224")
-	(paper "A4")
+	(paper "A3")
 	(title_block
-		(title "HIGH VOLTAGE: flyback capacitor charger LT3751, primary switch, made-to-order transformer, output rectifier, FB ceiling divider")
+		(title "HIGH VOLTAGE: LT3751 flyback charger, eFuse VTRANS switch, made-to-order transformer, two series rectifiers + fusible resistor, child FB ceiling")
 		(date "2026-11-27")
 		(rev "A-draft")
 		(company "Open AED project — CERN-OHL-S-2.0 — NOT FOR CONSTRUCTION")
@@ -17,7 +17,7 @@
 	(lib_symbols)
 	(rectangle
 		(start 20.32 20.32)
-		(end 274.04 51.784)
+		(end 302.6 51.784)
 		(stroke
 			(width 0.254)
 			(type dash)
@@ -27,10 +27,10 @@
 		)
 		(uuid "d0c8e5fe-fbd7-5fb9-bf69-758ea5d8e714")
 	)
-	(text_box "10_hv_charger: HIGH VOLTAGE: flyback capacitor charger LT3751, primary switch, made-to-order transformer, output rectifier, FB ceiling divider"
+	(text_box "10_hv_charger: HIGH VOLTAGE: LT3751 flyback charger, eFuse VTRANS switch, made-to-order transformer, two series rectifiers + fusible resistor, child FB ceiling"
 		(exclude_from_sim no)
 		(at 25.4 25.4 0)
-		(size 243.56 5.35)
+		(size 272.12 5.35)
 		(margins 0.9525 0.9525 0.9525 0.9525)
 		(stroke
 			(width -1)
@@ -48,10 +48,10 @@
 		)
 		(uuid "8c79f8c0-6572-5fdf-9be2-ec3daa88c08e")
 	)
-	(text_box "NOT FOR CONSTRUCTION — unreviewed design\nPLACEHOLDER — this block is not captured yet.\nDesign source: docs/HARDWARE_DESIGN.md §B4.\nInstances: 10_hv_charger.\nRefs 1001-1099 (overflow 6001-6099). Charger runs only while CHG_GATED is high (D-25).\nWhen it is captured, add hardware/aed-main/specs/10_hv_charger.toml and run tools/build.sh; the generator then replaces this page."
+	(text_box "NOT FOR CONSTRUCTION — unreviewed design\nPLACEHOLDER — this block is not captured yet.\nDesign source: docs/HARDWARE_DESIGN.md §B4.\nInstances: 10_hv_charger.\nRefs 1001-1099 (overflow 6001-6099). VTRANS_EN (session, soft start) and CHARGE_EN (CHARGE pin after VTRANS_GOOD) are separate (contract issue 2).\nWhen it is captured, add hardware/aed-main/specs/10_hv_charger.toml and run tools/build.sh; the generator then replaces this page."
 		(exclude_from_sim no)
 		(at 25.4 31.75 0)
-		(size 243.56 14.954)
+		(size 272.12 14.954)
 		(margins 0.9525 0.9525 0.9525 0.9525)
 		(stroke
 			(width -1)

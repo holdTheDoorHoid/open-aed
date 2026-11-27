@@ -28,7 +28,7 @@ Why this way: a reviewer can check a pin table against a datasheet line by line,
 edit that shows clearly in the project history. **Until the schematic is frozen, the pin tables are the source of
 truth. Never edit a generated `.kicad_sch` file by hand** — the next build overwrites it.
 
-Today every page is a **placeholder**: a box with the block's name, its design-document section and which capture
+There are 16 block pages (contract issue 2, after the independent review). Today every page is a **placeholder**: a box with the block's name, its design-document section and which capture
 work package will draw it. The pages fill in as the work packages in `hardware/aed-main/contract.md` are captured.
 
 ## 2. Where things are
@@ -79,6 +79,7 @@ What makes the build fail:
 | Pin-table validation | unknown keys, duplicate references, a pin listed twice, a wire with only one pin on a page, a wire declared in two categories |
 | Symbol cross-check | a symbol pin missing from the table (every pin must be listed; `NC` for unused), a pin the symbol does not have, a pin name that differs from the symbol |
 | Notice | the `NOT FOR CONSTRUCTION` notice is missing from `hierarchy.toml` or from any generated page |
+| Stale pages | (not a failure) a generated page whose sheet was renamed or removed from `hierarchy.toml` is deleted and reported; hand-made files are never touched |
 | Rail flags | the same supply rail is flagged as "made here" on two pages |
 | Footprints | a part's footprint is in no library (unless marked as a footprint still to be made) |
 | ERC | any error, or any warning not accepted with a written reason in a pin table |
