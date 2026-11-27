@@ -20,8 +20,13 @@
 //!   records a timeline.
 //! * [`report`]: readable timelines, summaries and timing tables.
 //! * [`campaign`]: the seeded random campaign.
-//! * [`standby`]: the device between rescues: weeks of periodic self-tests
-//!   (decision D-15), skipping the time between wakes.
+//! * [`standby`]: the device between rescues: weeks or months of periodic
+//!   self-tests (decision D-15) and temperature logging (D-48), skipping
+//!   the time between wakes.
+//! * [`thermal`]: a one-node thermal model of the device and its six
+//!   temperature sensors, with injectable sensor faults.
+//! * [`record`]: the host-side reader and pretty-printer for the record the
+//!   device sends down the dock cable (D-09).
 
 pub mod campaign;
 pub mod hw;
@@ -30,6 +35,8 @@ pub mod report;
 pub mod runner;
 pub mod scenario;
 pub mod standby;
+pub mod thermal;
+pub mod record;
 
 pub use plant::{Fault, Plant, PlantConfig, SensorModel, ShockRecord};
 pub use runner::{run, Rule, RunResult, ShockTiming, Simulation, Violation};

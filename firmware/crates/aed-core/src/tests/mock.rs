@@ -8,6 +8,7 @@
 //! keeps 20% of its voltage after a shock. It exists to exercise the logic, not to predict
 //! the real circuit.
 
+use crate::heat::{DeciC, SensorSet, TempPoint};
 use crate::hal::{BatteryStatus, MainHardware, PadCartridge, ShockStatus, SupervisorHardware};
 use crate::interlock::{bridge_may_fire, charger_may_run, discharge_path_active};
 use crate::link::{MainStatus, SupervisorReport};
@@ -330,6 +331,11 @@ pub struct Board {
     /// The main controller was using compression sensing as of its last
     /// tick (it stops after a channel failure, by design).
     pub chest_in_use: bool,
+    /// What the main controller's five temperature sensors read (the
+    /// supervisor slot is ignored).
+    pub temps: SensorSet,
+    /// What the supervisor's own temperature sensor reads.
+    pub sup_temp: Option<DeciC>,
 }
 
 impl Board {
@@ -377,7 +383,15 @@ impl Board {
             chest_sensing: false,
             chest_since: 0,
             chest_in_use: false,
+            temps: SensorSet::uniform(DeciC::from_c(25)),
+            sup_temp: Some(DeciC::from_c(25)),
         }
+    }
+
+    /// Every temperature sensor, main and supervisor, reads `c` °C.
+    pub fn set_all_temps(&mut self, c: i16) {
+        self.temps = SensorSet::uniform(DeciC::from_c(c));
+        self.sup_temp = Some(DeciC::from_c(c));
     }
 
     /// Change what the chest channel carries, remembering when.
@@ -544,6 +558,11 @@ impl MainHardware for MainView<'_> {
     fn pad_cartridge(&mut self) -> PadCartridge {
         self.0.cartridge
     }
+    fn temperatures(&mut self) -> SensorSet {
+        let mut t = self.0.temps;
+        t.set(TempPoint::Supervisor, None);
+        t
+    }
     fn prompt(&mut self, prompt: Prompt) {
         let now = self.0.now;
         self.0.prompts.push((now, prompt));
@@ -578,6 +597,9 @@ impl SupervisorHardware for SupView<'_> {
     }
     fn cancel_pressed(&mut self) -> bool {
         self.0.sup_cancel.unwrap_or(self.0.cancel)
+    }
+    fn temperature(&mut self) -> Option<DeciC> {
+        self.0.sup_temp
     }
     fn set_permit(&mut self, permit: bool) {
         self.0.permit = permit;

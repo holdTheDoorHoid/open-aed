@@ -11,6 +11,7 @@
 //! (IEC 60601-2-4), which has not been purchased and read. Each must be
 //! reviewed and replaced with a sourced figure before anything relies on it.
 
+use crate::heat::DeciC;
 use aed_types::Volts;
 
 /// All timings and limits, in milliseconds and volts.
@@ -320,15 +321,123 @@ pub struct Config {
     /// test: too cold or hot, or battery not good), wake again after this
     /// many seconds to see whether it can run. Provisional: 3,600 s.
     pub deferred_recheck_s: u32,
-    /// The full-energy test runs only between these temperatures, degrees
-    /// Celsius (inside the device). Provisional: 0 to 45 °C, a cautious
-    /// range for charging the capacitor at full energy from lithium-ion
-    /// cells; UNVERIFIED, to be set from the chosen cells' and capacitor's
-    /// data sheets. The daily low-voltage check runs at any temperature: if
-    /// the device does not work in the cold, that is what it should report.
+    /// The full-energy test runs only with the battery cells between these
+    /// temperatures, degrees Celsius. 0 to 45 °C: the battery charging range
+    /// of D-48, which parts study R-H4 also asks for the weekly test (it
+    /// draws a full charge from the cells), and is inside the 60 °C limit
+    /// for charging the capacitor. The figures are to be confirmed against
+    /// the chosen cells' data sheet (D-48). With [`crate::Standby`] the
+    /// capacitor must also be at or below
+    /// [`Config::full_test_max_capacitor`]. The daily low-voltage check has
+    /// no cold limit: if the device does not work in the cold, that is what
+    /// it should report.
     pub full_test_min_temp_c: i8,
     /// See [`Config::full_test_min_temp_c`].
     pub full_test_max_temp_c: i8,
+    /// The weekly full-energy test runs only with the capacitor at or below
+    /// this. 50 °C, from parts study R-H4: 10 °C inside its 60 °C working
+    /// limit (D-41), so a test never takes the capacitor near its limit.
+    pub full_test_max_capacitor: DeciC,
+
+    // ----- heat (D-41, D-48, D-51, D-52); see `crate::heat` -------------
+    /// "Normal" up to this; "warm" above. D-48: 40 °C.
+    pub heat_normal_max: DeciC,
+    /// Time above this counts towards the warm-spell limit. D-48 and parts
+    /// study H5: 50 °C.
+    pub heat_warm_spell_above: DeciC,
+    /// Longest warm spell above [`Config::heat_warm_spell_above`] before the
+    /// device is "not ready" until cooled and re-tested, seconds. D-48: 8 h
+    /// (one shift).
+    pub heat_warm_spell_limit_s: u32,
+    /// "Too hot" (not ready at once) above this. D-48: 60 °C.
+    pub heat_too_hot_above: DeciC,
+    /// "Service needed" (latched) when any trusted reading is above this.
+    /// D-48: 70 °C.
+    pub heat_service_above: DeciC,
+    /// How far a reading must come back below a heat line before the band
+    /// changes back. Provisional: 2 °C, the ±2 °C sensor accuracy of parts
+    /// study R-H1.
+    pub heat_hysteresis: DeciC,
+    /// After being too hot (or a long warm spell) every sensor must read
+    /// below this ... Parts study R-H3: 45 °C.
+    pub heat_cooled_below: DeciC,
+    /// ... for this long, seconds, before the re-test may clear it. Parts
+    /// study R-H3: 30 minutes (marked EST there).
+    pub heat_cooled_for_s: u32,
+    /// The capacitor is charged (for a shock, the switch-on test or a
+    /// periodic test) only at or below this. D-41: 60 °C working limit.
+    pub capacitor_charge_max: DeciC,
+    /// ... and only with both cells at or below this (the cells' discharge
+    /// rating). D-48: 60 °C.
+    pub cell_discharge_max: DeciC,
+    /// Hysteresis on the charging limits: once held back, charging resumes
+    /// only this far inside the limit. Provisional: 1 °C, half the sensor
+    /// accuracy, so a reading on the line does not flap between cycles.
+    pub charge_limit_hysteresis: DeciC,
+    /// Charging during the analysis (D-29), before a shock is advised, only
+    /// with the capacitor and cells at or below this. Above it the device
+    /// charges only once a shock is advised (as before D-29): a no-shock
+    /// analysis burns a whole charge inside the device, so on a hot day a
+    /// long no-shock rescue would heat it towards the 60 °C limit.
+    /// Provisional (Claude): 55 °C, 5 °C under the limit.
+    pub precharge_max: DeciC,
+    /// Battery (dock) charging only with both cells at or above this. D-48: 0 °C.
+    pub battery_charge_min: DeciC,
+    /// Battery (dock) charging only with both cells at or below this. D-48: 45 °C.
+    pub battery_charge_max: DeciC,
+    /// The supervisor holds charging back (releases its hold, refuses a
+    /// permit) when its own reading is above this. Provisional: 65 °C, the
+    /// 60 °C limit plus two sensors' ±2 °C accuracy (R-H1) and 1 °C, so the
+    /// supervisor's backstop never trips before the main controller's own
+    /// 60 °C limit on a healthy pair of sensors. See [`crate::supervisor`].
+    pub supervisor_temp_limit: DeciC,
+    /// A reading below this is out of range (broken sensor). R-H1: sensors
+    /// readable from −40 °C.
+    pub temp_plausible_min: DeciC,
+    /// A reading above this is out of range. R-H1: readable to +100 °C.
+    pub temp_plausible_max: DeciC,
+    /// A reading further than this from the median of the others is not
+    /// trusted. Provisional (Claude): 15 °C. The box's thermal time constant
+    /// is about 25 minutes (parts study §4), so its inside evens out; the
+    /// discharge resistors get much hotter (about 84 °C) but no sensor is
+    /// on them. Too small a figure would distrust good sensors during a
+    /// rescue; too large would let a sensor that reads room temperature at
+    /// 60 °C pass. To be set from measurements on a real enclosure.
+    pub temp_max_gradient: DeciC,
+    /// A reading unchanged for this many wakes ... (standby). Provisional: 12
+    /// (one hour at 5-minute wakes).
+    pub temp_stuck_wakes: u32,
+    /// ... while another sensor moved by at least this, is stuck.
+    /// Provisional: 3 °C.
+    pub temp_stuck_min_change: DeciC,
+    /// In a rescue, a point with no trusted reading takes the hottest trusted
+    /// reading plus this. Provisional: 5 °C.
+    pub failed_sensor_margin: DeciC,
+    /// Wake to log the temperature every this many seconds while the
+    /// hottest reading is at or below [`Config::heat_normal_max`]. R-H2:
+    /// 5 minutes.
+    pub heat_wake_cool_s: u32,
+    /// ... and every this many seconds above it (or when unknown). R-H2: 1 minute.
+    pub heat_wake_warm_s: u32,
+    /// A wake later than asked by more than this is a gap in the record
+    /// (temperature unknown in between), seconds. Provisional: 5 minutes.
+    pub heat_gap_tolerance_s: u32,
+    /// One heat record entry (hottest and coolest reading) per this many
+    /// seconds. Provisional: 1 hour; with
+    /// [`crate::heat::HEAT_LOG_CAPACITY`] entries that is 90 days.
+    pub heat_log_period_s: u32,
+    /// Pad heat (D-52): time with the pad sensor above this counts. 50 °C.
+    pub pad_heat_above: DeciC,
+    /// Pad heat allowance, seconds above [`Config::pad_heat_above`] over the
+    /// life of a pad set, before "replace pads". D-52: about 7 days, "from
+    /// the pad maker": a PLACEHOLDER until the pad maker gives the figure.
+    pub pad_heat_allowance_s: u32,
+    /// Capacitor life in full charges (tests and rescues). D-41, D-53: 2,500.
+    pub capacitor_life_charges: u32,
+    /// "Capacitor service soon" (advisory) from this percentage of the life.
+    /// Provisional (Claude): 90 %, 250 charges ahead: about a year for a
+    /// heavy user (parts study §1: about 410 a year), several for a typical one.
+    pub capacitor_service_soon_percent: u8,
 }
 
 impl Default for Config {
@@ -381,6 +490,36 @@ impl Default for Config {
             deferred_recheck_s: 3_600,
             full_test_min_temp_c: 0,
             full_test_max_temp_c: 45,
+            full_test_max_capacitor: DeciC::from_c(50),
+            heat_normal_max: DeciC::from_c(40),
+            heat_warm_spell_above: DeciC::from_c(50),
+            heat_warm_spell_limit_s: 8 * 3_600,
+            heat_too_hot_above: DeciC::from_c(60),
+            heat_service_above: DeciC::from_c(70),
+            heat_hysteresis: DeciC::from_c(2),
+            heat_cooled_below: DeciC::from_c(45),
+            heat_cooled_for_s: 1_800,
+            capacitor_charge_max: DeciC::from_c(60),
+            cell_discharge_max: DeciC::from_c(60),
+            charge_limit_hysteresis: DeciC::from_c(1),
+            precharge_max: DeciC::from_c(55),
+            battery_charge_min: DeciC::from_c(0),
+            battery_charge_max: DeciC::from_c(45),
+            supervisor_temp_limit: DeciC::from_c(65),
+            temp_plausible_min: DeciC::from_c(-40),
+            temp_plausible_max: DeciC::from_c(100),
+            temp_max_gradient: DeciC::from_c(15),
+            temp_stuck_wakes: 12,
+            temp_stuck_min_change: DeciC::from_c(3),
+            failed_sensor_margin: DeciC::from_c(5),
+            heat_wake_cool_s: 300,
+            heat_wake_warm_s: 60,
+            heat_gap_tolerance_s: 300,
+            heat_log_period_s: 3_600,
+            pad_heat_above: DeciC::from_c(50),
+            pad_heat_allowance_s: 7 * 86_400,
+            capacitor_life_charges: 2_500,
+            capacitor_service_soon_percent: 90,
         }
     }
 }
@@ -429,6 +568,16 @@ pub enum ConfigError {
     /// shorter than the daily one, a retry is longer than its own test's
     /// interval, or the full-energy test's temperature range is empty.
     SelfTestSchedule,
+    /// The heat lines are not in order (normal < warm spell < too hot <
+    /// service; cooled below too hot; battery charging range not empty and
+    /// inside the capacitor charging limit; pre-charge at or below the
+    /// charging limit; supervisor limit at or above it), a hysteresis is not
+    /// positive or is wider than the gap it sits in, the plausible range is
+    /// empty, or a heat time is zero.
+    HeatThresholds,
+    /// The capacitor life is zero or the "service soon" percentage is not
+    /// 1 to 100.
+    CapacitorLife,
 }
 
 impl Config {
@@ -541,7 +690,50 @@ impl Config {
         if !schedule_ok {
             return Err(ConfigError::SelfTestSchedule);
         }
+        if !self.heat_ok() {
+            return Err(ConfigError::HeatThresholds);
+        }
+        if self.capacitor_life_charges == 0 || !(1..=100).contains(&self.capacitor_service_soon_percent) {
+            return Err(ConfigError::CapacitorLife);
+        }
         Ok(())
+    }
+
+    fn heat_ok(&self) -> bool {
+        let h = self.heat_hysteresis;
+        let ch = self.charge_limit_hysteresis;
+        let ordered = self.heat_normal_max < self.heat_warm_spell_above
+            && self.heat_warm_spell_above < self.heat_too_hot_above
+            && self.heat_too_hot_above < self.heat_service_above
+            && self.heat_cooled_below < self.heat_too_hot_above
+            && self.battery_charge_min < self.battery_charge_max
+            && self.battery_charge_max <= self.capacitor_charge_max
+            && self.precharge_max <= self.capacitor_charge_max
+            && self.full_test_max_capacitor <= self.capacitor_charge_max
+            && self.supervisor_temp_limit >= self.capacitor_charge_max
+            && self.temp_plausible_min < self.temp_plausible_max;
+        // Each hysteresis must be positive and smaller than the band it
+        // sits in, or a band could never be left.
+        let hyst_ok = h.0 > 0
+            && h < self.heat_warm_spell_above.minus(self.heat_normal_max)
+            && h < self.heat_too_hot_above.minus(self.heat_warm_spell_above)
+            && ch.0 > 0
+            && ch.0.saturating_mul(2) < self.battery_charge_max.minus(self.battery_charge_min).0;
+        let times_ok = [
+            self.heat_warm_spell_limit_s,
+            self.heat_cooled_for_s,
+            self.heat_wake_cool_s,
+            self.heat_wake_warm_s,
+            self.heat_log_period_s,
+            self.pad_heat_allowance_s,
+            self.temp_stuck_wakes,
+        ]
+        .iter()
+        .all(|t| *t > 0)
+            && self.heat_wake_warm_s <= self.heat_wake_cool_s
+            && self.temp_max_gradient.0 > 0
+            && self.temp_stuck_min_change.0 > 0;
+        ordered && hyst_ok && times_ok
     }
 
     /// The charge time limit for a charge to `target`, ms: the full

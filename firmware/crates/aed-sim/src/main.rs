@@ -6,6 +6,8 @@
 //! cargo run -p aed-sim -- adult-vf
 //! cargo run -p aed-sim -- timings
 //! cargo run -p aed-sim -- campaign [runs] [first-seed]
+//! cargo run -p aed-sim -- record-demo > record.txt
+//! cargo run -p aed-sim -- read-record record.txt
 //! ```
 //!
 //! SIMULATION ONLY. NOT A MEDICAL DEVICE.
@@ -30,6 +32,8 @@ fn usage() {
     println!("        [--extended]                add compression-sensing variations (touches, breaths, ...)");
     println!("  aed-sim random <seed>             replay one run of the random campaign");
     println!("        (with the same --no-chest / --extended options as the campaign)");
+    println!("  aed-sim record-demo               print a record download (D-09) from a simulated week");
+    println!("  aed-sim read-record <file>        check and summarise a record download");
 }
 
 fn main() -> ExitCode {
@@ -42,6 +46,41 @@ fn main() -> ExitCode {
         "--help" | "-h" => {
             usage();
             ExitCode::SUCCESS
+        }
+        "record-demo" => {
+            let Ok(r) = aed_sim::standby::run(&aed_sim::standby::StandbyScenario::quiet(7)) else {
+                return ExitCode::FAILURE;
+            };
+            let mut text = String::new();
+            let events: Option<&aed_core::EventRecord<256>> = None;
+            if aed_core::write_record(&mut text, &r.standby, 7 * aed_sim::standby::DAY_S, events).is_err() {
+                return ExitCode::FAILURE;
+            }
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        "read-record" => {
+            let Some(path) = args.get(1) else {
+                usage();
+                return ExitCode::FAILURE;
+            };
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("cannot read {path}: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match aed_sim::record::parse(&text) {
+                Ok(r) => {
+                    print!("{}", aed_sim::record::pretty(&r));
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("record refused: {e:?}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         "--list" => {
             for s in catalogue() {

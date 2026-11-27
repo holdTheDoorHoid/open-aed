@@ -5,11 +5,13 @@
 //! It never grows: when it is full, the oldest entry is overwritten and an
 //! overflow counter goes up, so a reviewer can see that entries were lost.
 
+use crate::heat::{DeciC, HeatInhibit, SensorFault, TempPoint};
 use crate::link::SupervisorFault;
+use crate::readiness::ReasonSet;
 use crate::rescue::{AbortReason, FaultKind, RescueState, ShockOutcome};
 use crate::schedule::Readiness;
 use crate::selftest::SelfTestFailure;
-use crate::supervisor::{PermitRefusal, ReleaseReason};
+use crate::supervisor::{PermitRefusal, ReleaseReason, TempIgnored};
 use aed_types::{
     ChestState, ImpedanceSignal, Millis, Ohms, PatientMode, PlanError, RhythmDecision, ShockPlan,
     Volts,
@@ -145,6 +147,40 @@ pub enum Event {
         /// Charges during earlier rescues so far.
         rescue_charges: u32,
     },
+    /// At switch-on: the one readiness result from standby (D-48, D-52,
+    /// D-53), the capacitor's lifetime full charges and the pad heat total.
+    /// Recorded only; the rescue goes ahead (D-50).
+    StandbyReadiness {
+        /// Every reason that applied before switch-on.
+        reasons: ReasonSet,
+        /// Full charges over the capacitor's life.
+        capacitor_charges: u32,
+        /// Seconds the pads have spent above 50 °C.
+        pad_hot_s: u32,
+    },
+    /// Capacitor charging is held back for temperature (D-41, D-48, D-51).
+    HeatChargeInhibit(HeatInhibit),
+    /// Capacitor charging is allowed again (the device has cooled).
+    HeatChargeAllowed,
+    /// The switch-on self-test skipped its charge steps because the device
+    /// was too hot to charge (D-51).
+    SelfTestChargeSkippedForHeat,
+    /// An analysis started without charging during it, because the device
+    /// is warmer than the pre-charge limit (55 °C): it charges only if a
+    /// shock is advised.
+    PrechargeSkippedWarm,
+    /// A shock was advised but charging is held back for temperature: no
+    /// shock now, CPR, analyse again next cycle (D-51).
+    ShockHeldForHeat,
+    /// A temperature reading is not trusted (recorded once per point per rescue).
+    TemperatureSensorFault(TempPoint, SensorFault),
+    /// No temperature reading at all could be trusted: heat cannot hold the
+    /// shock back (a sensor failure must not block every shock).
+    TemperaturesUnknown,
+    /// The supervisor holds charging back: its own reading is over its limit.
+    SupervisorTooHot(DeciC),
+    /// The supervisor is not acting on its own temperature reading.
+    SupervisorTempIgnored(TempIgnored),
 }
 
 /// How many compressions the compression record keeps (the newest).

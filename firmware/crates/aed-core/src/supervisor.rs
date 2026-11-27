@@ -41,6 +41,26 @@
 //!    without latching a fault, if the main controller never sends a single
 //!    message within [`Config::self_test_link_wait_ms`] of switch-on.
 //!
+//! 4. **Heat** (D-41, D-48). It reads its own temperature sensor on the
+//!    capacitor body. Above [`Config::supervisor_temp_limit`] (65 °C, 5 °C
+//!    over the main controller's own 60 °C limit, for two sensors' error)
+//!    it holds charging back: it lets go of the discharge path and gives no
+//!    permit, and says so in its report (`too_hot`), so the main controller
+//!    guides CPR instead of faulting. It is not latched and sounds no
+//!    alarm; it clears when the reading falls 2 °C below the limit. It is a
+//!    backstop for a main controller that ignores heat, so it must not
+//!    itself become a single fault that blocks every shock:
+//!
+//!    * a reading that is missing or outside −40 to +100 °C is ignored
+//!      (recorded once): the main controller's own five sensors still
+//!      apply;
+//!    * a reading more than [`Config::temp_max_gradient`] (15 °C) above
+//!      the main controller's own reported temperature is ignored as well
+//!      (recorded): one of the two sensors is wrong, and a supervisor
+//!      sensor stuck high must not stop every shock on a cool day. If the
+//!      main controller reports no temperature at all, the supervisor acts
+//!      on its own reading.
+//!
 //! Voltage comparisons: its own reading must agree with the main
 //! controller's claim within two sensors' allowed error
 //! ([`Config::readings_agree`]) and be at the planned voltage
@@ -53,6 +73,7 @@
 use crate::config::{Config, ConfigError};
 use crate::events::{Event, EventRecord, SUPERVISOR_EVENT_CAPACITY};
 use crate::hal::SupervisorHardware;
+use crate::heat::DeciC;
 use crate::link::{MainStatus, SupervisorFault, SupervisorReport};
 use crate::rescue::RescueState;
 use aed_types::{in_shock_range, Millis, Ohms, Volts};
@@ -82,6 +103,17 @@ pub enum PermitRefusal {
     /// The supervisor's own pad reading is outside the shock range (25 to
     /// 175 Ω). The wider pad-sensing range of D-32 does not apply here.
     PadsOutOfRange,
+    /// The supervisor's own temperature reading is over its limit.
+    TooHot,
+}
+
+/// Why the supervisor is not acting on its own temperature reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TempIgnored {
+    /// The sensor did not answer, or read outside its range.
+    SensorFailed,
+    /// It reads over the limit, far above the main controller's sensors.
+    DisagreesWithMain,
 }
 
 /// Why the supervisor let go of the discharge path.
@@ -95,6 +127,8 @@ pub enum ReleaseReason {
     Cancel,
     /// A fault was latched.
     Fault(SupervisorFault),
+    /// Its own temperature reading is over its limit.
+    TooHot,
 }
 
 /// The supervisor controller.
@@ -118,7 +152,10 @@ pub struct Supervisor {
     disagree_since: Option<Millis>,
     report_sequence: u32,
     last_report_at: Option<Millis>,
-    last_report_flags: (bool, bool, Option<SupervisorFault>),
+    last_report_flags: (bool, bool, Option<SupervisorFault>, bool),
+    too_hot: bool,
+    own_temp: Option<DeciC>,
+    temp_ignored: Option<TempIgnored>,
     events: EventRecord<SUPERVISOR_EVENT_CAPACITY>,
 }
 
@@ -159,7 +196,10 @@ impl Supervisor {
             disagree_since: None,
             report_sequence: 0,
             last_report_at: None,
-            last_report_flags: (false, false, None),
+            last_report_flags: (false, false, None, false),
+            too_hot: false,
+            own_temp: None,
+            temp_ignored: None,
             events: EventRecord::new(),
         })
     }
@@ -180,6 +220,13 @@ impl Supervisor {
     #[must_use]
     pub const fn alarm_active(&self) -> bool {
         self.alarm
+    }
+
+    /// True while the supervisor holds charging back for its own
+    /// temperature reading.
+    #[must_use]
+    pub const fn too_hot(&self) -> bool {
+        self.too_hot
     }
 
     /// True while the supervisor holds the discharge path open.
@@ -226,17 +273,21 @@ impl Supervisor {
         }
 
         self.check_latched_faults(now, fresh, voltage);
+        self.check_temperature(hw, now, fresh);
         let claim = self.last_status.map(|s| s.state);
         // Ignored during the main controller's switch-on self-test (D-31).
         let cancel = raw_cancel && claim != Some(RescueState::SelfTest);
 
         // Decide whether to hold the discharge path open.
-        let hold = self.fault.is_none() && fresh && claim.is_some_and(holdable) && !cancel;
+        let hold =
+            self.fault.is_none() && fresh && claim.is_some_and(holdable) && !cancel && !self.too_hot;
         if self.holding && !hold {
             let reason = if let Some(f) = self.fault {
                 ReleaseReason::Fault(f)
             } else if cancel {
                 ReleaseReason::Cancel
+            } else if self.too_hot {
+                ReleaseReason::TooHot
             } else if !fresh {
                 ReleaseReason::HeartbeatStale
             } else {
@@ -367,6 +418,44 @@ impl Supervisor {
         }
     }
 
+    /// Read the supervisor's own temperature sensor and decide whether to
+    /// hold charging back for heat (see the module notes).
+    fn check_temperature(&mut self, hw: &mut impl SupervisorHardware, now: Millis, fresh: bool) {
+        let c = &self.config;
+        let reading = hw
+            .temperature()
+            .filter(|t| *t >= c.temp_plausible_min && *t <= c.temp_plausible_max);
+        self.own_temp = reading;
+        let Some(t) = reading else {
+            self.too_hot = false;
+            self.note_temp_ignored(now, Some(TempIgnored::SensorFailed));
+            return;
+        };
+        let limit = if self.too_hot {
+            c.supervisor_temp_limit.minus(c.heat_hysteresis)
+        } else {
+            c.supervisor_temp_limit
+        };
+        let over = t > limit;
+        let main_claim = self.last_status.filter(|_| fresh).and_then(|s| s.temperature);
+        let plausible = main_claim.is_none_or(|m| t.minus(m) <= c.temp_max_gradient);
+        let was = self.too_hot;
+        self.too_hot = over && plausible;
+        if self.too_hot && !was {
+            self.events.push(now, Event::SupervisorTooHot(t));
+        }
+        self.note_temp_ignored(now, (over && !plausible).then_some(TempIgnored::DisagreesWithMain));
+    }
+
+    fn note_temp_ignored(&mut self, now: Millis, why: Option<TempIgnored>) {
+        if why.is_some() && why != self.temp_ignored {
+            if let Some(w) = why {
+                self.events.push(now, Event::SupervisorTempIgnored(w));
+            }
+        }
+        self.temp_ignored = why;
+    }
+
     fn check_permit(
         &self,
         now: Millis,
@@ -383,6 +472,9 @@ impl Supervisor {
         };
         if cancel {
             return Err(PermitRefusal::CancelPressed);
+        }
+        if self.too_hot {
+            return Err(PermitRefusal::TooHot);
         }
         let counted = self
             .countdown_since
@@ -413,7 +505,7 @@ impl Supervisor {
     }
 
     fn send_report_if_due(&mut self, hw: &mut impl SupervisorHardware, now: Millis, v: Volts) {
-        let flags = (self.permit_until.is_some(), self.holding, self.fault);
+        let flags = (self.permit_until.is_some(), self.holding, self.fault, self.too_hot);
         let due = self
             .last_report_at
             .is_none_or(|t| now.since(t) >= self.config.heartbeat_period_ms);
@@ -425,6 +517,8 @@ impl Supervisor {
                 permit: flags.0,
                 holding: flags.1,
                 capacitor_voltage: v,
+                too_hot: self.too_hot,
+                temperature: self.own_temp,
             });
             self.last_report_at = Some(now);
             self.last_report_flags = flags;

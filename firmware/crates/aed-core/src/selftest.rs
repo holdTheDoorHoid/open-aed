@@ -51,6 +51,9 @@ pub enum SelfTestFailure {
     PadsMissing,
     /// The pads are past their use-by date. Advisory: the rescue still continues.
     PadsExpired,
+    /// The pads have used up their heat allowance (D-52). Advisory, like
+    /// expired pads: the rescue still continues.
+    PadsHeatWorn,
     /// The test was stopped from outside before it finished (for example
     /// the battery failed or the cancel control was found stuck). The
     /// cancel control itself does NOT stop the self-test (decision D-31).
@@ -63,7 +66,9 @@ impl SelfTestFailure {
     pub const fn is_advisory(self) -> bool {
         matches!(
             self,
-            SelfTestFailure::PadsMissing | SelfTestFailure::PadsExpired
+            SelfTestFailure::PadsMissing
+                | SelfTestFailure::PadsExpired
+                | SelfTestFailure::PadsHeatWorn
         )
     }
 }
@@ -112,6 +117,9 @@ pub struct SelfTest {
     test_voltage: Volts,
     step: Step,
     battery_low: bool,
+    skip_charge: bool,
+    heat_skip_allowed: bool,
+    charge_skipped: bool,
 }
 
 impl SelfTest {
@@ -125,7 +133,38 @@ impl SelfTest {
             test_voltage,
             step: Step::Battery,
             battery_low: false,
+            skip_charge: false,
+            heat_skip_allowed: false,
+            charge_skipped: false,
         }
+    }
+
+    /// The switch-on self-test of a device that is too hot to charge its
+    /// capacitor (D-48, D-51): skip the charge, agreement and discharge
+    /// steps (they charge the capacitor) and check everything else. Has an
+    /// effect only before the charge step starts. Also lets a supervisor
+    /// report that it is holding charging back for heat lead to the same
+    /// skip instead of a "supervisor not holding" failure. Only the rescue
+    /// uses it; a periodic test that cannot charge must not count as passed.
+    pub fn skip_charge_for_heat(&mut self) {
+        self.heat_skip_allowed = true;
+        if matches!(self.step, Step::Battery | Step::Link { .. }) {
+            self.skip_charge = true;
+        }
+    }
+
+    /// Allow the skip of [`SelfTest::skip_charge_for_heat`] if the
+    /// supervisor reports it is too hot, without skipping on the main
+    /// controller's own readings.
+    pub fn allow_heat_skip(&mut self) {
+        self.heat_skip_allowed = true;
+    }
+
+    /// True if the charge steps were skipped for heat: the charger, the
+    /// voltage agreement and the discharge path were not tested.
+    #[must_use]
+    pub const fn charge_skipped(&self) -> bool {
+        self.charge_skipped
     }
 
     /// How long the charge step may take for this test's voltage, ms.
@@ -178,6 +217,12 @@ impl SelfTest {
             Step::Link { since } => match fresh_link {
                 Some(l) if l.report.fault.is_some() => {
                     Step::Finished(Err(SelfTestFailure::SupervisorFaultLatched))
+                }
+                Some(l) if self.skip_charge || (self.heat_skip_allowed && l.report.too_hot) => {
+                    // The supervisor answers; charging waits for the device
+                    // to cool (D-51). The pads are still checked.
+                    self.charge_skipped = true;
+                    Step::Pads
                 }
                 Some(l) if l.report.holding => Step::Charge { since: now },
                 Some(_) if now.since(since) > self.config.self_test_link_wait_ms => {
@@ -232,6 +277,7 @@ impl SelfTest {
                 })),
                 PadCartridge::Missing => Step::Finished(Err(SelfTestFailure::PadsMissing)),
                 PadCartridge::Expired => Step::Finished(Err(SelfTestFailure::PadsExpired)),
+                PadCartridge::HeatWorn => Step::Finished(Err(SelfTestFailure::PadsHeatWorn)),
             },
             Step::Finished(result) => Step::Finished(result),
         };

@@ -57,6 +57,12 @@ pub fn summary(r: &RunResult) -> String {
          {:.0} J burned off in the internal load (model)",
         r.charges_burned, r.charger_energy_j, r.dump_energy_j
     );
+    let _ = writeln!(
+        out,
+        "  Device temperature:  {:.1} °C at switch-on in {:.1} °C air, peak {:.1} °C, {:.1} °C at the end; \
+         {} shock(s) held back for heat (thermal model)",
+        r.scenario.interior_c, r.scenario.ambient_c, r.peak_interior_c, r.final_interior_c, r.shocks_held_for_heat
+    );
     for (i, sh) in r.shocks.iter().enumerate() {
         let _ = writeln!(
             out,

@@ -7,6 +7,7 @@
 //! report back. On real hardware they would travel over a wire between two
 //! chips; here they are plain values handed to the hardware traits.
 
+use crate::heat::DeciC;
 use crate::rescue::RescueState;
 use aed_types::Volts;
 
@@ -27,6 +28,13 @@ pub struct MainStatus {
     /// How long the main controller says the capacitor has been armed (since
     /// charging began), in milliseconds; zero when not armed.
     pub armed_for_ms: u32,
+    /// The hottest of the main controller's own trusted readings at the
+    /// capacitor and the two cells, or `None` if it has none (D-48). The
+    /// supervisor uses it only as a plausibility check on its own sensor:
+    /// it holds a charge back for heat on its own reading, unless that
+    /// reading is far above this one (then its own sensor is the suspect,
+    /// and one failed sensor must not block every shock).
+    pub temperature: Option<DeciC>,
 }
 
 /// A fault the supervisor has latched. Once latched it stays until power-off:
@@ -62,4 +70,12 @@ pub struct SupervisorReport {
     pub holding: bool,
     /// The capacitor voltage as the supervisor reads it, on its own sensor.
     pub capacitor_voltage: Volts,
+    /// True while the supervisor holds charging back because its own
+    /// temperature reading is over its limit (D-41, D-48). Not a fault: it
+    /// clears when the device cools. The main controller treats it like its
+    /// own heat limit (no charge; CPR guidance).
+    pub too_hot: bool,
+    /// The supervisor's own temperature reading (capacitor body), if it
+    /// trusts it.
+    pub temperature: Option<DeciC>,
 }

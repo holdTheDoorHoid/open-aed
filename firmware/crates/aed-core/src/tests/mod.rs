@@ -5,6 +5,8 @@
 
 mod chest_tests;
 mod decision_tests;
+mod heat_rescue_tests;
+mod heat_tests;
 mod mock;
 mod parts_tests;
 mod rescue_tests;

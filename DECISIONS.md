@@ -63,6 +63,10 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-51 | **A device switched on while too hot guides CPR and analyses, but will not charge until its temperature is back inside the limits.** Then it charges and shocks as normal. | **Confirmed by owner, 27 Nov 2026** | Charging a hot battery or capacitor risks damage and the wrong energy; the responder still gets CPR guidance at once. |
 | D-52 | **The device adds up the time its pads spend above 50 °C and calls for new pads** after about 7 days in total. The figure comes from the pad maker. | **Confirmed by owner, 27 Nov 2026** | Pad makers allow only short spells at 60 °C; heat-damaged pads would otherwise go unnoticed. |
 | D-53 | **The device counts full charges and calls for service as the capacitor approaches its 2,500-charge life.** A heavy-duty capacitor for very busy services is noted as a later option. | **Confirmed by owner, 27 Nov 2026** | Sizing for typical use saves about 71 g. |
+| D-54 | **Above 55 °C the device does not charge during the analysis**; it charges only once a shock is advised. | Provisional (Q-49) | Stops a long rescue in heat from warming the device past its 60 °C limit. Costs about 6 s of hands-off time in that temperature band. |
+| D-55 | **The device never charges during CPR.** After an overheated device cools, it charges at the next analysis. | Provisional (Q-49) | A charged capacitor under compressing hands has had no stand-clear warning, and a charge held through CPR would exceed the time limits. |
+| D-56 | **Temperature sensing: six points, one read only by the supervisor.** Untrusted readings make the device "not ready" when idle. In a rescue, an unknown temperature does not block a shock. | Provisional (Q-49) | Fail safe when idle; never let a broken sensor deny a shock. |
+| D-57 | **The pad connector reports which pad set is fitted**, and the device keeps its heat history and counters in memory that survives battery removal. | Provisional (Q-49) | Needed to track pad heat per pad set and to keep the heat record honest. |
 
 ## Owner questions
 
@@ -152,6 +156,8 @@ Answered on 27 November 2026.
 - **Q-47** (owner): how records come off by cable. Either the dock is the reader (one extra contact on the device), or the device speaks USB itself through the dock (two extra contacts).
 - **Q-48** (owner, with a lawyer): may the specification sheets for made-to-order parts be published now, or held for the patent review? They state what a part must do, not how to build anything, and are currently in the public parts study.
 - **For the hardware engineer:** how to hold the voltage sensors to 1% + 7 V over the device's life (recalibrate at service, or costlier low-drift parts); the temperature range of the candidate pad-resistance chip.
+
+- **Q-49** (owner): confirm the judgment calls made while building the heat rules (D-54 to D-57), and these: a device that was once above 70 °C but has cooled still shocks if its switch-on self-test passes; "service soon" appears at 90% of capacitor life; time with the battery removed is not counted as pad heat.
 
 ## Things that need a professional, not a guess
 

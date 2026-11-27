@@ -17,6 +17,7 @@
 //! charger cannot run while the discharge path is active (a hardware
 //! requirement). See [`crate::interlock`].
 
+use crate::heat::{DeciC, SensorSet};
 use crate::link::{MainStatus, SupervisorReport};
 use crate::prompts::Prompt;
 use aed_types::{Millis, Ohms, PatientMode, ShockPlan, Volts};
@@ -41,6 +42,10 @@ pub enum PadCartridge {
     Missing,
     /// Pads plugged in but past their use-by date.
     Expired,
+    /// Pads plugged in that have used up their heat allowance (D-52). The
+    /// board reports this when [`crate::Standby::pads_heat_worn`] says so.
+    /// Advisory in a rescue, like expired pads.
+    HeatWorn,
 }
 
 /// What the shock hardware reports after a shock was requested.
@@ -90,6 +95,12 @@ pub trait MainHardware {
     fn battery_under_load(&mut self) -> BatteryStatus;
     /// State of the plugged-in pad set (presence and use-by date).
     fn pad_cartridge(&mut self) -> PadCartridge;
+    /// The main controller's own temperature readings (D-48): both cells,
+    /// the capacitor, next to the pads and the board. The supervisor's slot
+    /// ([`crate::heat::TempPoint::Supervisor`]) is left `None`; its reading
+    /// arrives in the supervisor's report. `None` where a sensor did not
+    /// answer.
+    fn temperatures(&mut self) -> SensorSet;
     /// Speak and show a prompt.
     fn prompt(&mut self, prompt: Prompt);
     /// One beat of the CPR compression metronome (a click or tone).
@@ -113,6 +124,10 @@ pub trait SupervisorHardware {
     fn pad_resistance(&mut self) -> Ohms;
     /// The supervisor's own view of the cancel control.
     fn cancel_pressed(&mut self) -> bool;
+    /// The supervisor's own temperature sensor on the capacitor body, read
+    /// through its own converter (D-48, parts study R-H1), or `None` if it
+    /// did not answer.
+    fn temperature(&mut self) -> Option<DeciC>;
     /// Raise (`true`) or lower (`false`) the shock permit line.
     fn set_permit(&mut self, permit: bool);
     /// Hold the discharge path open (`true`) or release it (`false`).

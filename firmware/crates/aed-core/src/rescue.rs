@@ -94,12 +94,36 @@
 //! * during CPR, compressions, pauses and time on chest are recorded, and
 //!   "Continue CPR." is said after [`Config::no_compression_prompt_ms`]
 //!   without compressions.
+//!
+//! **Heat** (decisions D-41, D-48, D-51; see [`crate::heat`]). Every tick
+//! the main controller reads its own temperature sensors (and the
+//! supervisor's reading from its report):
+//!
+//! * The capacitor is charged only with the capacitor and both cells at or
+//!   below 60 °C. Too hot at switch-on: the self-test checks everything but
+//!   the charge ("Device too hot. Shocks delayed until it cools."); every
+//!   analysis runs without charging; a "shock" answer gives "Shock advised.
+//!   Device too hot to charge." and "Start CPR.", and the device analyses
+//!   again after the CPR period. Once it has cooled 1 °C below the limit it
+//!   charges during the analysis and shocks as usual. It never charges
+//!   during CPR (see the README for why).
+//! * Above 55 °C it does not charge during the analysis (D-29) but only once
+//!   a shock is advised, so that "no shock" analyses stop burning charges
+//!   inside a hot device.
+//! * The limit is checked when a charge would start and throughout an
+//!   analysis; once a shock is advised the charge carries on to the shock,
+//!   and only the supervisor's own backstop (65 °C) stops it ("Device too
+//!   hot. No shock.", CPR).
+//! * A sensor that cannot be trusted is replaced by the hottest trusted
+//!   reading plus 5 °C; if none can be trusted, heat does not hold the shock
+//!   back (recorded): a sensor failure must not block every shock.
 
 use crate::config::{Config, ConfigError};
 use crate::events::{
     CompressionEntry, CompressionLog, Event, EventRecord, COMPRESSION_LOG_CAPACITY, EVENT_CAPACITY,
 };
 use crate::hal::{BatteryStatus, MainHardware, ShockStatus};
+use crate::heat::{self, ChargeContext, ChargeGate, DeciC, TempPoint, TEMP_POINTS};
 use crate::link::{MainStatus, SupervisorFault, SupervisorReport};
 use crate::prompts::Prompt;
 use crate::selftest::{LinkSnapshot, SelfTest, SelfTestFailure, SelfTestProgress};
@@ -181,6 +205,9 @@ pub enum AbortReason {
     /// Compression sensing (D-36) said the chest was being compressed, or
     /// could not tell, after the shock was advised.
     HandsOnChest,
+    /// The supervisor's own temperature reading went over its limit while
+    /// the shock was being prepared (D-41, D-48).
+    TooHot,
 }
 
 /// What happened to a requested shock.
@@ -271,6 +298,12 @@ pub struct Counters {
     /// Analysis windows started on already-settled filters because
     /// compression sensing confirmed the chest still (D-47).
     pub fresh_windows: u16,
+    /// Charges of the capacitor towards a shock voltage started (one per
+    /// arming): the rescue's capacitor wear (D-53).
+    pub capacitor_charges: u16,
+    /// "Shock" answers that could not be acted on because the device was
+    /// too hot to charge (D-51).
+    pub shocks_held_for_heat: u16,
 }
 
 /// What compression sensing measured during the current CPR period.
@@ -390,6 +423,12 @@ pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor = NoChestSe
     status_sequence: u32,
     last_status_at: Option<Millis>,
     events: EventRecord<EVENT_CAPACITY>,
+    heat_gate: ChargeGate,
+    precharge_ok: bool,
+    temp_faults_seen: [bool; TEMP_POINTS],
+    temps_unknown_seen: bool,
+    heat_announced: bool,
+    main_temp_claim: Option<DeciC>,
 }
 
 impl<A: RhythmAnalyzer, P: ShockPlanner> Rescue<A, P, NoChestSensor> {
@@ -469,7 +508,117 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             status_sequence: 0,
             last_status_at: None,
             events: EventRecord::new(),
+            heat_gate: ChargeGate::default(),
+            precharge_ok: true,
+            temp_faults_seen: [false; TEMP_POINTS],
+            temps_unknown_seen: false,
+            heat_announced: false,
+            main_temp_claim: None,
         })
+    }
+
+    /// Why capacitor charging is held back for temperature now, by the main
+    /// controller's own judgement (the supervisor's reading included), if it is.
+    #[must_use]
+    pub const fn heat_inhibit(&self) -> Option<heat::HeatInhibit> {
+        self.heat_gate.inhibit()
+    }
+
+    /// True if the switch-on self-test skipped its charge steps for heat
+    /// (report it with [`crate::Standby::record_power_on`]).
+    #[must_use]
+    pub const fn self_test_charge_skipped(&self) -> bool {
+        self.self_test.charge_skipped()
+    }
+
+    /// Write the standby readiness (D-48, D-52, D-53) into the event record
+    /// at switch-on. Recorded only: the rescue goes ahead (D-50).
+    pub fn record_standby_readiness(
+        &mut self,
+        now: Millis,
+        readiness: crate::readiness::DeviceReadiness,
+        capacitor_charges: u32,
+        pad_hot_s: u32,
+    ) {
+        self.events.push(
+            now,
+            Event::StandbyReadiness {
+                reasons: readiness.reasons,
+                capacitor_charges,
+                pad_hot_s,
+            },
+        );
+    }
+
+    /// True while the supervisor reports it is holding charging back for heat.
+    fn supervisor_too_hot(&self, now: Millis) -> bool {
+        self.link.is_some_and(|l| {
+            l.report.too_hot && now.since(l.received_at) <= self.config.heartbeat_timeout_ms
+        })
+    }
+
+    /// True while capacitor charging must wait for the device to cool.
+    fn charge_inhibited(&self, now: Millis) -> bool {
+        self.heat_gate.inhibit().is_some() || self.supervisor_too_hot(now)
+    }
+
+    /// Read the temperatures and update the charging limits (see the module notes).
+    fn update_heat(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        let mut set = hw.temperatures();
+        let sup = self
+            .link
+            .filter(|l| now.since(l.received_at) <= self.config.heartbeat_timeout_ms)
+            .and_then(|l| l.report.temperature);
+        set.set(TempPoint::Supervisor, sup);
+        let a = heat::assess(&self.config, &set, &[false; TEMP_POINTS]);
+        for (p, seen) in TempPoint::ALL.iter().zip(self.temp_faults_seen.iter_mut()) {
+            // The supervisor records its own sensor's problems.
+            if *p == TempPoint::Supervisor {
+                continue;
+            }
+            if let Some(f) = a.fault_at(*p) {
+                if !*seen {
+                    *seen = true;
+                    self.events.push(now, Event::TemperatureSensorFault(*p, f));
+                }
+            }
+        }
+        if a.hottest().is_none() && !self.temps_unknown_seen {
+            self.temps_unknown_seen = true;
+            self.events.push(now, Event::TemperaturesUnknown);
+        }
+        let was = self.heat_gate.inhibit();
+        let inhibit = self.heat_gate.update(&self.config, &a, ChargeContext::Rescue);
+        if inhibit != was {
+            self.events.push(
+                now,
+                inhibit.map_or(Event::HeatChargeAllowed, Event::HeatChargeInhibit),
+            );
+        }
+        self.precharge_ok = heat::precharge_allowed(&self.config, &a, self.precharge_ok);
+        self.main_temp_claim = [TempPoint::Cell1, TempPoint::Cell2, TempPoint::Capacitor]
+            .iter()
+            .filter_map(|p| a.valid_at(*p))
+            .max();
+    }
+
+    /// The device became too hot to charge during an analysis that charges
+    /// (D-29): let the charge go and carry on analysing without one. The
+    /// analysis and its time limit are not restarted.
+    fn drop_charge_keep_analysing(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        self.burn_charge_if_any(now);
+        self.armed_since = None;
+        self.charged_at = None;
+        self.start_emptying(hw, now);
+        self.events.push(
+            now,
+            Event::StateChanged {
+                from: self.state,
+                to: RescueState::Analysing,
+            },
+        );
+        self.state = RescueState::Analysing;
+        self.state_changed = true;
     }
 
     /// The current state.
@@ -878,6 +1027,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         }
 
         self.check_chest_channel(now);
+        self.update_heat(hw, now);
 
         let voltage = hw.capacitor_voltage();
         self.check_emptying(hw, now, voltage);
@@ -999,6 +1149,11 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     fn tick_self_test(&mut self, hw: &mut impl MainHardware, now: Millis) {
         // Cancel is ignored here (D-31): a stray press while the device is
         // drawn and switched on must not disable it.
+        // Too hot to charge (D-51): test everything but the charge.
+        self.self_test.allow_heat_skip();
+        if self.charge_inhibited(now) {
+            self.self_test.skip_charge_for_heat();
+        }
         match self.self_test.step(hw, self.link) {
             SelfTestProgress::Running => {}
             SelfTestProgress::Finished(Ok(pass)) => {
@@ -1011,6 +1166,9 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
                 self.events.push(now, Event::SelfTestFailed(f));
                 if f == SelfTestFailure::PadsExpired {
                     hw.prompt(Prompt::ReplacePads);
+                }
+                if f == SelfTestFailure::PadsHeatWorn {
+                    hw.prompt(Prompt::ReplacePadsHeat);
                 }
                 self.self_test_passed(false, hw, now);
             }
@@ -1026,6 +1184,13 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         }
         self.link_required = true;
         hw.set_ready_indicator(true);
+        if self.self_test.charge_skipped() {
+            self.events.push(now, Event::SelfTestChargeSkippedForHeat);
+        }
+        if self.charge_inhibited(now) && !self.heat_announced {
+            self.heat_announced = true;
+            hw.prompt(Prompt::DeviceTooHot);
+        }
         if self.mode == PatientMode::Child {
             hw.prompt(Prompt::ChildModeFrontBack);
         }
@@ -1060,7 +1225,12 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     /// Start an analysis: with charging during analysis (D-29), set up the
     /// charge first, then enter the analysing state.
     fn enter_analysis(&mut self, hw: &mut impl MainHardware, now: Millis) {
-        if self.config.charge_during_analysis {
+        let hot = self.charge_inhibited(now);
+        if self.config.charge_during_analysis && !hot && !self.precharge_ok {
+            // Warm (D-29 with heat): charge only if a shock is advised.
+            self.events.push(now, Event::PrechargeSkippedWarm);
+        }
+        if self.config.charge_during_analysis && !hot && self.precharge_ok {
             if !self.begin_arming(hw, now) {
                 return;
             }
@@ -1158,6 +1328,17 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     /// A shock is advised: straight to the countdown if the capacitor is
     /// already charged, otherwise wait for the charge to finish.
     fn shock_advised(&mut self, hw: &mut impl MainHardware, now: Millis) {
+        if self.state == RescueState::Analysing && self.charge_inhibited(now) {
+            // Too hot to charge (D-51): say so and go to CPR at once; the
+            // next analysis comes after the CPR period. No charging during
+            // CPR: see the README.
+            self.events.push(now, Event::ShockHeldForHeat);
+            self.counters.shocks_held_for_heat = self.counters.shocks_held_for_heat.saturating_add(1);
+            self.not_given();
+            hw.prompt(Prompt::ShockAdvisedTooHot);
+            self.go(RescueState::Cpr, hw, now);
+            return;
+        }
         if self.state == RescueState::Analysing && !self.begin_arming(hw, now) {
             return;
         }
@@ -1197,6 +1378,11 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         if cancel {
             hw.prompt(Prompt::AnalysisCancelled);
             self.go(RescueState::Cpr, hw, now);
+            return;
+        }
+        if self.charge_inhibited(now) {
+            self.drop_charge_keep_analysing(hw, now);
+            self.analysis_step(hw, now);
             return;
         }
         if self.mode != self.mode_at_arming {
@@ -1266,6 +1452,9 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             } else {
                 AbortReason::PadsOff
             }));
+        }
+        if self.supervisor_too_hot(now) {
+            return Some(ArmedExit::Abort(AbortReason::TooHot));
         }
         if self.mode != self.mode_at_arming {
             return Some(ArmedExit::Abort(AbortReason::ModeChanged));
@@ -1637,6 +1826,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             AbortReason::PadsOff | AbortReason::PlanRefused(_) => Prompt::CheckPads,
             AbortReason::ModeChanged | AbortReason::ConfirmationStale => Prompt::ShockNotDelivered,
             AbortReason::HandsOnChest => Prompt::MovementNoShock,
+            AbortReason::TooHot => Prompt::TooHotNoShock,
         });
         // With the pads off the device can neither analyse nor shock, so the
         // one instruction is to put them back (finding F-6): straight to
@@ -1718,6 +1908,10 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
                     .link
                     .is_some_and(|l| l.report.holding && since.is_some_and(|a| l.received_at > a));
                 if supervisor_holding {
+                    if !self.charger_was_on {
+                        self.counters.capacitor_charges =
+                            self.counters.capacitor_charges.saturating_add(1);
+                    }
                     self.charger_was_on = true;
                     hw.set_charger(Some(self.target));
                 } else {
@@ -1773,6 +1967,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             capacitor_voltage,
             planned_voltage,
             armed_for_ms,
+            temperature: self.main_temp_claim,
         });
     }
 

@@ -154,3 +154,18 @@ Once the compression sensor confirms the chest is still, the rhythm analysis now
 ## Self-test schedule (27 November 2026)
 
 The weekly full-energy test and daily light check (D-15) are implemented as schedule logic and tested over simulated weeks. In an eight-week quiet run: 8 full-energy tests and 48 daily checks, each ending with the capacitor confirmed empty. An ageing charger fails the weekly test while passing the daily one, which is exactly the fault the weekly test exists to catch. Choices made that need confirming are in Q-42.
+
+## Heat rules in simulation (27 November 2026)
+
+| Situation | What the simulated device did |
+|---|---|
+| Switched on at 63 °C for a rescue in 25 °C air | Said "Device too hot. Shocks delayed until it cools", guided CPR, analysed every two minutes, was cool enough at 2 min 25 s and shocked at 4 min 41 s |
+| 30-minute rescue with no shockable rhythm on a 50 °C day | Burned 15 charges inside itself and peaked at 53.9 °C, under the 60 °C limit |
+| Rescue straight out of a hot car (device at 58 °C, air at 57 °C), no rhythm for 20 minutes, then fibrillation | With charging during every analysis: reached 60.1 °C and had to hold back three advised shocks. With the new rule of not pre-charging above 55 °C: peaked at 58.2 °C and shocked at once |
+| An afternoon in a hot car | "Not ready" from 12:42; cabin cooled at 17:00; ready again, after an automatic self-test, by 17:47 |
+| 240 days of mixed weather with faults and two battery removals | Never charged outside its limits, never showed "ready" while hot, lost no heat history |
+
+- **The 55 °C pre-charge rule** was added because of the hot-car case above. It costs about 6 seconds of extra hands-off time before a shock when the device is between 55 and 60 °C.
+- **Cost of never charging during CPR:** after an overheated device cools, the next chance to shock is the next analysis, up to two minutes later.
+- **Not modelled:** sunlight on the case, the vehicle pouch, and each part heating separately. The thermal model is one lump with figures from the parts study.
+- **New hardware requirements this creates:** a temperature sensor only the supervisor can read; memory that survives battery removal and can be written every minute; and a pad connector that reports which pad set is fitted.

@@ -114,6 +114,8 @@ fn run_self_test(
                 capacitor_voltage: Volts(
                     u16::try_from((board.cap_v.round() as i32 + link.offset).max(0)).unwrap(),
                 ),
+                too_hot: false,
+                temperature: None,
             },
             received_at: Millis(board.now),
         });

@@ -29,6 +29,8 @@ struct SupBench {
     /// Voltage the fake main controller claims (None = its true reading).
     claim_v: Option<u16>,
     planned: u16,
+    /// Temperature the fake main controller reports (D-48).
+    claim_temp: Option<crate::heat::DeciC>,
 }
 
 impl SupBench {
@@ -42,6 +44,7 @@ impl SupBench {
             claim: None,
             claim_v: None,
             planned: PLANNED,
+            claim_temp: Some(crate::heat::DeciC::from_c(25)),
         }
     }
 
@@ -57,6 +60,7 @@ impl SupBench {
             capacitor_voltage: Volts(v),
             planned_voltage: Volts(if armed { self.planned } else { 0 }),
             armed_for_ms: 0,
+            temperature: self.claim_temp,
         });
     }
 

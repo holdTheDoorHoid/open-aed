@@ -498,3 +498,32 @@ fn fault_impedance_lost() {
         .iter()
         .any(|e| e.text.starts_with("Compression sensing FAILED")));
 }
+
+#[test]
+fn hot_device_rescue() {
+    // D-51: too hot at switch-on; CPR guidance at once, no charge until
+    // cooled, then a normal shock (more checks in tests/heat.rs).
+    let r = standard("hot-device-rescue");
+    assert!(r.said(Prompt::DeviceTooHot));
+    assert!(r.said(Prompt::ShockAdvisedTooHot));
+    assert!(r.shocks_held_for_heat >= 1);
+}
+
+#[test]
+fn warm_device_rescue() {
+    let r = standard("warm-device-rescue");
+    assert!(r.entered(RescueState::Charging));
+    assert!(!r.entered(RescueState::AnalysingCharging));
+}
+
+#[test]
+fn temp_sensor_failed_main() {
+    let r = standard("temp-sensor-failed-main");
+    assert!(r.timeline.iter().any(|e| e.text.starts_with("Temperature sensor capacitor not trusted")));
+}
+
+#[test]
+fn temp_sensor_stuck_supervisor() {
+    let r = standard("temp-sensor-stuck-supervisor");
+    assert!(r.timeline.iter().any(|e| e.text.contains("Ignores its own temperature reading")));
+}

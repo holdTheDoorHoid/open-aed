@@ -1,6 +1,6 @@
 # System architecture
 
-Version 0.5, 27 November 2026. Decision numbers (D-xx) refer to [DECISIONS.md](../DECISIONS.md).
+Version 0.6, 27 November 2026. Decision numbers (D-xx) refer to [DECISIONS.md](../DECISIONS.md).
 
 **Everything in this document is a design on paper and in simulation. No hardware exists. Figures marked *model* come from arithmetic, not measurement.**
 
@@ -14,7 +14,7 @@ flowchart LR
         PWR --> SUP[Supervisor controller]
         ECG[Heart-signal and pad-resistance front end] --> MAIN
         MAIN --> UI[Speaker, screen, lights, cancel button]
-        MAIN --> BLE[Bluetooth]
+        MAIN --> DOCK[Dock contacts: charging and record download]
         MAIN --> LOG[Event record]
     end
     subgraph HV["High-voltage side"]
@@ -139,6 +139,25 @@ Rules for the firmware:
 ## Self-testing while idle
 
 The device tests itself on a schedule (D-15): a full-energy charge into the internal test load once a week, and a low-voltage check every day. The schedule uses only elapsed time, never the time of day, so a clock fault cannot silently skip tests. A failed or badly overdue test shows "not ready". Every full-energy charge is counted, from tests and from rescues, so capacitor wear is visible in the record. A device showing "not ready" still attempts a rescue: its switch-on self-test decides whether it may shock (D-50).
+
+## Heat
+
+The device watches its own temperature at all times, including when switched off (D-48). The pads and the battery, not the capacitor, set the limits.
+
+- **Six temperature points:** each battery cell, the capacitor, the pads, the circuit board, and a second sensor on the capacitor that only the supervisor reads. A reading that is missing, impossible, stuck, or far from the others is not trusted, and a distrusted sensor makes the device "not ready".
+- **States:** normal up to 40 °C; warm from 40 to 60 °C, still ready for up to 8 hours at a time; too hot above 60 °C, "not ready" until every sensor has been below 45 °C for half an hour and a self-test has passed; service needed if anything ever reads above 70 °C.
+- **While off** it wakes every five minutes (every minute when warm), takes the readings, and keeps 90 days of hourly history plus lifetime totals. A gap in that history means the temperature was unknown, so the device is "not ready" until a self-test passes.
+- **Charging limits:** the battery charges on the dock only between 0 and 45 °C. The capacitor is charged only when it and the cells are at or below 60 °C. Above 55 °C the device stops charging during the analysis and charges only once a shock is advised, so that a long rescue on a hot day cannot heat itself past the limit.
+- **A rescue while too hot (D-51):** the device guides CPR and analyses as usual but does not charge. If a shock is advised it says so, says it is too hot, and returns to CPR at once. It checks again at each analysis and shocks normally once it has cooled. It never charges during CPR.
+- **The supervisor checks independently:** if its own sensor reads above 65 °C it releases the capacitor and refuses a permit. A missing reading, or one far above what the main controller reports, is ignored and recorded, so a broken supervisor sensor cannot block every shock.
+- **Pads (D-52):** time spent above 50 °C is added up for each pad set, and after about 7 days in total the device calls for new pads.
+- **Capacitor wear (D-53):** every full charge is counted. "Service soon" at 90% of the 2,500-charge life; "service due" at 100%, which shows "not ready" but never stops the device shocking.
+
+All of this survives the battery being removed. Every figure is provisional until the real parts are chosen.
+
+## Reading the record
+
+There is no radio in the first prototype (D-09). The event record, heat history, counters and readiness come off by cable through the dock contacts, as plain text with a version line and a checksum. A reader on a computer prints it in plain English.
 
 ## What is deliberately not designed yet
 

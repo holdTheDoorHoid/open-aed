@@ -49,7 +49,13 @@
 //! * **Too cold or too hot** (outside [`Config::full_test_min_temp_c`] to
 //!   [`Config::full_test_max_temp_c`]): only the full-energy test is put
 //!   off. The daily check runs at any temperature, because a device that
-//!   does not work in the cold should say so.
+//!   does not work in the cold should say so. With the heat limits of D-41
+//!   and D-48 ([`crate::Standby`], through [`TestSchedule::on_wake_gated`]):
+//!   the full-energy test needs both cells trusted and within 0-45 °C and
+//!   the capacitor at or below 50 °C (parts study R-H4); the daily check,
+//!   which also charges the capacitor (to 400 V), needs the capacitor and
+//!   cells at or below 60 °C and is put off above that; there is still no
+//!   cold limit on it.
 //! * **Battery low or depleted (power monitor, no load):** only the
 //!   full-energy test is put off, so a test does not use energy a rescue
 //!   may need. The daily check still runs (it will report the battery).
@@ -138,6 +144,16 @@ pub struct WakeDecision {
     pub deferred: Option<(PeriodicTest, Deferral)>,
     /// When to wake next, seconds from now (at least 1).
     pub next_wake_in_s: u32,
+}
+
+/// Which tests the temperature allows now (decided by the caller; see
+/// [`crate::Standby`] for the heat limits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TestGate {
+    /// The full-energy test may charge the capacitor to full energy.
+    pub full_allowed: bool,
+    /// The daily check may charge the capacitor to the low test voltage.
+    pub daily_allowed: bool,
 }
 
 /// The outcome of one periodic test on the hardware.
@@ -398,8 +414,69 @@ impl TestSchedule {
         }
     }
 
-    /// The low-power timer woke the device: decide what to do.
+    /// The low-power timer woke the device: decide what to do. The
+    /// full-energy test's temperature window is judged from
+    /// [`WakeInputs::temperature_c`] alone and the daily check runs at any
+    /// temperature. [`crate::Standby`] uses [`TestSchedule::on_wake_gated`]
+    /// instead, with the heat limits of D-41 and D-48.
     pub fn on_wake(&mut self, w: &WakeInputs) -> WakeDecision {
+        let cfg = &self.config;
+        let full_allowed =
+            w.temperature_c >= cfg.full_test_min_temp_c && w.temperature_c <= cfg.full_test_max_temp_c;
+        self.on_wake_gated(
+            w,
+            TestGate {
+                full_allowed,
+                daily_allowed: true,
+            },
+        )
+    }
+
+    /// Make the daily check due now (heat asks for a re-test after the
+    /// device has cooled, or after a gap in its temperature record).
+    pub fn request_daily_now(&mut self, now_s: u32) {
+        self.daily_due = self.daily_due.min(now_s);
+    }
+
+    /// Every self-test reason the device is not ready at `now_s` (see
+    /// [`crate::readiness`]). [`TestSchedule::readiness`] gives the single
+    /// most serious one.
+    #[must_use]
+    pub fn readiness_reasons(&self, now_s: u32) -> crate::readiness::ReasonSet {
+        use crate::readiness::Reason;
+        let mut r = crate::readiness::ReasonSet::EMPTY;
+        if self.capacitor_unconfirmed {
+            r.insert(Reason::CapacitorNotConfirmedEmpty);
+        }
+        if self.full_failure.is_some() || self.daily_failure.is_some() {
+            r.insert(Reason::SelfTestFailed);
+        }
+        if self.started_at.is_none() || self.last_full_ok.is_none() || self.last_daily_ok.is_none() {
+            r.insert(Reason::SelfTestNotYetRun);
+        }
+        if self.started_at.is_some()
+            && [PeriodicTest::Full, PeriodicTest::Daily]
+                .iter()
+                .any(|t| now_s > self.deadline(*t))
+        {
+            r.insert(Reason::SelfTestOverdue);
+        }
+        match self.pads_problem {
+            Some(SelfTestFailure::PadsMissing) => r.insert(Reason::PadsMissing),
+            Some(_) => r.insert(Reason::PadsExpired),
+            None => {}
+        }
+        if self.battery_low {
+            r.insert(Reason::BatteryLow);
+        }
+        r
+    }
+
+    /// As [`TestSchedule::on_wake`], with the decision on temperature made
+    /// by the caller: `gate.full_allowed` false puts the full-energy test
+    /// off, `gate.daily_allowed` false puts the daily check off as well
+    /// (both with [`Deferral::Temperature`]).
+    pub fn on_wake_gated(&mut self, w: &WakeInputs, gate: TestGate) -> WakeDecision {
         let now = w.now_s;
         match self.last_now {
             None => {
@@ -435,8 +512,7 @@ impl TestSchedule {
             }
         } else {
             if full_due {
-                let cfg = &self.config;
-                if w.temperature_c < cfg.full_test_min_temp_c || w.temperature_c > cfg.full_test_max_temp_c {
+                if !gate.full_allowed || !gate.daily_allowed {
                     deferred = Some((PeriodicTest::Full, Deferral::Temperature));
                 } else if w.battery != BatteryStatus::Good {
                     deferred = Some((PeriodicTest::Full, Deferral::Battery));
@@ -445,7 +521,11 @@ impl TestSchedule {
                 }
             }
             if run.is_none() && daily_due {
-                run = Some(PeriodicTest::Daily);
+                if gate.daily_allowed {
+                    run = Some(PeriodicTest::Daily);
+                } else if deferred.is_none() {
+                    deferred = Some((PeriodicTest::Daily, Deferral::Temperature));
+                }
             }
         }
         if deferred.is_some() {
@@ -788,6 +868,10 @@ impl PeriodicTestRun {
             capacitor_voltage,
             planned_voltage: if charging { self.self_test.test_voltage() } else { Volts(0) },
             armed_for_ms: 0,
+            // The standby gate has already checked the temperature before
+            // handing out this test; the supervisor judges its own reading
+            // alone (a test refused for heat is reported as failed).
+            temperature: None,
         });
     }
 }

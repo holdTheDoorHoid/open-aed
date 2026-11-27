@@ -12,8 +12,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use aed_core::{
-    BatteryStatus, MainHardware, MainStatus, PadCartridge, Prompt, ShockStatus,
-    SupervisorHardware, SupervisorReport,
+    BatteryStatus, DeciC, MainHardware, MainStatus, PadCartridge, Prompt, SensorSet, ShockStatus,
+    SupervisorHardware, SupervisorReport, TempPoint,
 };
 use aed_types::{Millis, Ohms, PatientMode, ShockPlan, Volts};
 
@@ -82,6 +82,11 @@ impl MainHardware for MainView {
     fn pad_cartridge(&mut self) -> PadCartridge {
         self.plant.borrow().cartridge
     }
+    fn temperatures(&mut self) -> SensorSet {
+        let mut s = self.plant.borrow().thermal.sensor_set();
+        s.set(TempPoint::Supervisor, None);
+        s
+    }
     fn prompt(&mut self, prompt: Prompt) {
         let mut p = self.plant.borrow_mut();
         let now = p.now_ms;
@@ -130,6 +135,9 @@ impl SupervisorHardware for SupervisorView {
     }
     fn cancel_pressed(&mut self) -> bool {
         self.plant.borrow().cancel_pressed()
+    }
+    fn temperature(&mut self) -> Option<DeciC> {
+        self.plant.borrow().thermal.reading(TempPoint::Supervisor)
     }
     fn set_permit(&mut self, permit: bool) {
         self.plant.borrow_mut().permit = permit;

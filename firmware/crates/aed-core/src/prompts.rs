@@ -80,6 +80,21 @@ pub enum Prompt {
     MovementNoShock,
     /// During CPR, no compressions have been sensed for a while (D-14).
     ContinueCpr,
+    /// Said once at the end of the switch-on self-test when the device is
+    /// too hot to charge its capacitor (D-51). Informational: the next
+    /// instruction ("Attach pads" or "Analysing") follows at once.
+    DeviceTooHot,
+    /// A shock is advised but the device is too hot to charge (D-51). Always
+    /// followed at once by "Start CPR."; the device analyses again after the
+    /// CPR period and shocks once it has cooled.
+    ShockAdvisedTooHot,
+    /// A shock being prepared was stopped because the supervisor's own
+    /// temperature reading went over its limit. Always followed at once by
+    /// "Start CPR."
+    TooHotNoShock,
+    /// The pads have used up their heat allowance (D-52). Advisory only,
+    /// like out-of-date pads.
+    ReplacePadsHeat,
 }
 
 impl Prompt {
@@ -118,6 +133,10 @@ impl Prompt {
             Prompt::MovementShockDelayed => "Movement detected. Shock delayed.",
             Prompt::MovementNoShock => "Movement detected. No shock.",
             Prompt::ContinueCpr => "Continue CPR.",
+            Prompt::DeviceTooHot => "Device too hot. Shocks delayed until it cools.",
+            Prompt::ShockAdvisedTooHot => "Shock advised. Device too hot to charge.",
+            Prompt::TooHotNoShock => "Device too hot. No shock.",
+            Prompt::ReplacePadsHeat => "Pads heat damaged. Replace pads after use.",
         }
     }
 }

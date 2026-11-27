@@ -125,6 +125,9 @@ pub enum Rule {
     /// With compression sensing, the bridge fired while the responder's
     /// hands had been on the chest for longer than [`HANDS_ON_ALLOWANCE_MS`].
     FiredWhileHandsOn,
+    /// The charger started while the TRUE capacitor or cell temperature was
+    /// above the 60 °C charging limit (D-41, D-48), with healthy sensors.
+    ChargedWhenTooHot,
 }
 
 impl Rule {
@@ -147,6 +150,7 @@ impl Rule {
             Rule::LeftWithoutInstruction => "responder left without an instruction",
             Rule::SilentAtPowerOn => "device silent after switch-on",
             Rule::FiredWhileHandsOn => "bridge fired while hands were on the chest",
+            Rule::ChargedWhenTooHot => "charger started above the 60 °C charging limit",
         }
     }
 }
@@ -269,6 +273,12 @@ pub struct RunResult {
     /// Analysis windows started on already-settled filters because the
     /// chest was confirmed still (D-47).
     pub fresh_windows: u16,
+    /// Highest inside temperature of the device, °C (thermal model).
+    pub peak_interior_c: f64,
+    /// Inside temperature at the end, °C (thermal model).
+    pub final_interior_c: f64,
+    /// "Shock" answers held back because the device was too hot (D-51).
+    pub shocks_held_for_heat: u16,
 }
 
 impl RunResult {
@@ -332,7 +342,10 @@ pub const fn is_instruction(p: Prompt) -> bool {
 /// responder keeps doing what they were last told.
 #[must_use]
 pub const fn is_neutral(p: Prompt) -> bool {
-    matches!(p, Prompt::LowBattery | Prompt::AdultMode | Prompt::ReplacePads)
+    matches!(
+        p,
+        Prompt::LowBattery | Prompt::AdultMode | Prompt::ReplacePads | Prompt::ReplacePadsHeat
+    )
 }
 
 /// How long an informational prompt may stand before an instruction must
@@ -381,6 +394,7 @@ pub struct Simulation {
     milestone_next: u8,
     cap_was_charged: bool,
     overvoltage_reported: bool,
+    charger_was_running: bool,
 }
 
 /// Why a simulation could not be built.
@@ -437,6 +451,9 @@ impl Simulation {
         plant.compression_per_min = scenario.responder.compression_per_min;
         plant.compression_ohms = scenario.responder.compression_ohms;
         plant.cardiac_ohms = scenario.cardiac_ohms;
+        plant.thermal.ambient_c = scenario.ambient_c;
+        plant.thermal.interior_c = scenario.interior_c;
+        plant.thermal.peak_c = scenario.interior_c;
         let plant = Rc::new(RefCell::new(plant));
         Ok(Simulation {
             scenario: scenario.clone(),
@@ -480,6 +497,7 @@ impl Simulation {
             milestone_next: 0,
             cap_was_charged: false,
             overvoltage_reported: false,
+            charger_was_running: false,
         })
     }
 
@@ -749,7 +767,30 @@ impl Simulation {
         self.observe_supervisor_events();
         self.observe_supervisor_alarm();
         self.observe_capacitor();
+        self.observe_heat();
         self.check_not_silent();
+    }
+
+    /// Rule: the charger never starts above the 60 °C charging limit (true
+    /// temperatures), unless a temperature sensor was made faulty (then the
+    /// firmware is designed to carry on rather than block every shock).
+    fn observe_heat(&mut self) {
+        let (running, hot, sensors_healthy, limit) = {
+            let p = self.plant.borrow();
+            let t = &p.thermal;
+            let healthy = t.faults.iter().all(|f| *f == crate::thermal::TempSensorFault::Healthy)
+                && t.offsets.iter().all(|o| o.abs() < 0.05);
+            let limit = f64::from(self.config.capacitor_charge_max.0.min(self.config.cell_discharge_max.0)) / 10.0;
+            (p.charger_running(), t.hottest_charge_part_c(), healthy, limit)
+        };
+        if running && !self.charger_was_running && sensors_healthy && hot > limit + 0.2 {
+            self.violate(
+                Rule::ChargedWhenTooHot,
+                format!("charger started at {hot:.1} °C"),
+                None,
+            );
+        }
+        self.charger_was_running = running;
     }
 
     /// The supervisor's own fault alarm: log it, and the responder treats it
@@ -936,6 +977,28 @@ impl Simulation {
             Event::StandbyRecord { readiness, full_energy_cycles, rescue_charges } => format!(
                 "Periodic self-test record: {readiness:?}; {full_energy_cycles} full-energy test charges, {rescue_charges} rescue charges so far"
             ),
+            Event::StandbyReadiness { reasons, capacitor_charges, pad_hot_s } => format!(
+                "Standby readiness: {:?}; {capacitor_charges} capacitor charges so far; pads {:.1} h above 50 °C",
+                reasons.iter().map(aed_core::Reason::name).collect::<Vec<_>>(),
+                f64::from(pad_hot_s) / 3_600.0
+            ),
+            Event::HeatChargeInhibit(why) => format!("Charging held back for heat ({why:?})"),
+            Event::HeatChargeAllowed => "Cool enough to charge again".to_string(),
+            Event::SelfTestChargeSkippedForHeat => {
+                "Self-test: charge steps skipped, too hot to charge (D-51)".to_string()
+            }
+            Event::PrechargeSkippedWarm => {
+                "Warm (above 55 °C): this analysis does not charge; it charges only if a shock is advised".to_string()
+            }
+            Event::ShockHeldForHeat => "Shock advised but too hot to charge: CPR, analyse again next cycle".to_string(),
+            Event::TemperatureSensorFault(p, f) => {
+                format!("Temperature sensor {} not trusted ({f:?})", p.name())
+            }
+            Event::TemperaturesUnknown => {
+                "No temperature reading can be trusted: heat will not hold a shock back".to_string()
+            }
+            Event::SupervisorTooHot(t) => format!("Supervisor: too hot ({:.1} °C), holds charging back", f64::from(t.0) / 10.0),
+            Event::SupervisorTempIgnored(w) => format!("Supervisor: ignores its own temperature reading ({w:?})"),
             Event::FreshAnalysisWindow => {
                 "Chest confirmed still: analysis window starts now, filters already settled (D-47)".to_string()
             }
@@ -1000,8 +1063,17 @@ impl Simulation {
                     ReleaseReason::Fault(f) => {
                         format!("Lets go of the discharge path: fault {f:?}")
                     }
+                    ReleaseReason::TooHot => {
+                        "Lets go of the discharge path: its own temperature reading is over its limit"
+                            .to_string()
+                    }
                 },
                 Event::SupervisorFaultLatched(f) => format!("FAULT latched: {f:?}"),
+                Event::SupervisorTooHot(t) => format!(
+                    "Too hot ({:.1} °C on its own sensor): holds charging back",
+                    f64::from(t.0) / 10.0
+                ),
+                Event::SupervisorTempIgnored(w) => format!("Ignores its own temperature reading ({w:?})"),
                 _ => continue,
             };
             self.log(Source::Supervisor, text);
@@ -1154,6 +1226,16 @@ impl Simulation {
             Action::Touch(ms) => {
                 self.plant.borrow_mut().touch(ms);
                 self.log(Source::Responder, format!("Presses on the chest ({ms} ms)"));
+            }
+            Action::SetAmbient(c) => {
+                self.plant.borrow_mut().thermal.ambient_c = c;
+                self.log(Source::Hardware, format!("Surroundings now {c:.1} °C."));
+            }
+            Action::TempSensor(point, fault) => {
+                if let Some(slot) = self.plant.borrow_mut().thermal.faults.get_mut(point.index()) {
+                    *slot = fault;
+                }
+                self.log(Source::Hardware, format!("Temperature sensor {} now {fault:?}.", point.name()));
             }
             Action::Ventilate(on) => {
                 self.plant.borrow_mut().ventilating = on;
@@ -1334,6 +1416,9 @@ impl Simulation {
             compressions_counted: self.rescue.counters().compressions,
             hands_on_aborts: self.rescue.counters().hands_on_aborts,
             fresh_windows: self.rescue.counters().fresh_windows,
+            peak_interior_c: self.plant.borrow().thermal.peak_c,
+            final_interior_c: self.plant.borrow().thermal.interior_c,
+            shocks_held_for_heat: self.rescue.counters().shocks_held_for_heat,
         }
     }
 }
@@ -1367,6 +1452,7 @@ pub fn abort_text(r: AbortReason) -> String {
         AbortReason::PlanRefused(e) => format!("no shock plan ({e:?})"),
         AbortReason::ConfirmationStale => "rhythm confirmation too old".to_string(),
         AbortReason::HandsOnChest => "chest compressed or moving after the advice".to_string(),
+        AbortReason::TooHot => "the supervisor's temperature reading went over its limit".to_string(),
     }
 }
 
@@ -1384,5 +1470,6 @@ pub const fn refusal_text(r: PermitRefusal) -> &'static str {
         PermitRefusal::VoltageDisagreesWithMain => "its voltage reading disagrees with main's",
         PermitRefusal::VoltageNotAtPlan => "voltage not at the planned charge",
         PermitRefusal::PadsOutOfRange => "its pad reading is out of range",
+        PermitRefusal::TooHot => "its own temperature reading is over its limit",
     }
 }

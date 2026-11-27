@@ -15,6 +15,7 @@ Read this before reading any result.
 - **Processor timing.** The controllers tick at exact intervals (main every 2 ms, supervisor every 1 ms). No interrupt latency, jitter, stack limits, watchdog, or the time the rhythm analysis takes to compute.
 - **People.** The responder is a script: stops compressions a fixed time after being told, restarts a fixed time after "Start CPR", may re-attach pads, and (when scripted) presses on the chest or gives breaths. Real people hesitate, talk, touch the patient.
 - **Real pad impedance.** The compression-sensing channel (decision D-36) is a cartoon: each compression is a smooth bump of a fixed size, each breath a slow bump, each heartbeat a small dip; the sizes come from published figures and from the Paris recordings (see `plant.rs`), but real signals are far messier (see `crates/aed-cpr-eval/REPORT.md`). How the front end behaves after a shock, and the charger's noise, are guesses.
+- **Real heat.** The device's temperature is one number for the whole inside (`src/thermal.rs`), following the surroundings with a first-order lag (630 J/K, 0.49 W/K: about 21 minutes) and warmed by the charges burned in the internal load, the charger's losses and 0.5 W of electronics, all parts-study figures, not measurements. The capacitor, the cells, the discharge resistors and the pads are not separate; each sensor can be given an offset instead. No sunlight on the case, no pouch, no heating of the cells by the current they deliver.
 - **Patient physiology.** Rhythms change only when the script says so (or after a shock, if the script says that shock works). Pad resistance is fixed unless scripted.
 
 ## How to run it
@@ -29,6 +30,8 @@ cargo run -p aed-sim -- campaign 300 1         # random campaign: 300 runs from 
 cargo run -p aed-sim -- campaign 300 1 --no-chest   # the same, firmware without compression sensing
 cargo run -p aed-sim -- campaign 300 1 --extended   # adds compression-sensing variations (touches, breaths, ...)
 cargo run -p aed-sim -- random 154             # replay one campaign run by its seed
+cargo run -p aed-sim -- record-demo > rec.txt  # a record download (D-09) from a simulated week
+cargo run -p aed-sim -- read-record rec.txt    # check its checksum and summarise it
 ```
 
 Add `--release` for speed (a 170-second rescue simulates in about 0.2 s; the 300-run campaign in about 4 s on 8 cores). The program exits with an error code if any safety rule was broken.
@@ -75,6 +78,10 @@ cargo test -p aed-sim --test findings -- --ignored --nocapture  # the known prob
 | `small-compressions` | Compressions of only 0.2 Ω (seen in some real patients): below the detector's threshold and not seen (documented weakness) |
 | `fault-impedance-lost` | The compression-sensing channel dies at switch-on: analysis held for 5 s, then heart signal only, shock given |
 | `fault-<name>` | One per injectable fault, listed below |
+| `hot-device-rescue` | Switched on at 63 °C (out of a hot car) into 25 °C air: "Device too hot. Shocks delayed until it cools.", analyses without charging, "Shock advised. Device too hot to charge." and CPR, shocks once cooled (D-51) |
+| `warm-device-rescue` | VF at 57 °C inside: above the 55 °C pre-charge limit it charges only once a shock is advised |
+| `temp-sensor-failed-main` | The main controller's capacitor temperature sensor dead from switch-on: still shocks |
+| `temp-sensor-stuck-supervisor` | The supervisor's temperature sensor stuck at 80 °C: distrusted by both controllers, still shocks |
 
 Injectable faults (each can be switched on at any time or a set time after the device enters a given state): main controller's voltage sensor wrong; supervisor's voltage sensor wrong; charger cannot reach its target; charger runs away past its target; discharge path stuck (will not empty); main controller freezes; message wire drops; pads fall off; cancel pressed (1 s); cancel stuck down (D-31); battery depleted; output bridge fails to fire. Sensors can also be given gain and offset errors or a stuck reading, the charger a regulation error (it charges to a multiple of the voltage asked for), each controller's clock a drift, and the message wire a delay and a loss rate. The responder can be made to never stop compressions, and to press the pads down when told ("Press pads firmly"), which changes the pad resistance to a scripted value.
 
@@ -95,6 +102,7 @@ Injectable faults (each can be switched on at any time or a set time after the d
 6. The capacitor is not left charged at the end unless a shock is being prepared (which, with charging during analysis, includes an analysis under way) or it is still emptying in the background.
 8. With compression sensing, the bridge never fires while the responder's hands have been on the chest (ground truth) for longer than 1 s (`HANDS_ON_ALLOWANCE_MS`, the detector's design bound for seeing a compression). Every shock fired with hands on at all is reported with how long they had been on.
 7. The responder is never left without an instruction: any purely informational message ("Shock delivered.", "No shock advised.", "Unable to analyse. No shock.", "Poor pad contact. No shock.") is followed by an instruction within 4 s, and the device speaks within 8 s of switching on. The supervisor's fault alarm counts as an instruction ("continue CPR"; the simulated responder restarts compressions when it sounds). If the main controller freezes, the supervisor's alarm must come on within 4 s; there is no exemption for a frozen main controller.
+9. The charger never starts while the TRUE capacitor or cell temperature is above the 60 °C charging limit (D-41, D-48), unless a temperature sensor has been made faulty in the scenario (the firmware is designed to carry on then rather than block every shock).
 
 Rule 1 cannot hold for a rhythm change in the last few seconds before the shock: the analysis looks at a 4-second window. The random campaign counts those cases separately (see "Known problems").
 
@@ -137,6 +145,19 @@ The cost (simulated, model energies, `tests/energy_and_timing.rs`): every analys
 `src/standby.rs` runs the device over simulated weeks in about a second: time between wakes is skipped, not simulated. The real `aed_core::TestSchedule` decides at each wake; each test it asks for runs millisecond by millisecond on a fresh simulated device (the same plant as the rescues) with the real `PeriodicTestRun` and the real supervisor. The surroundings are scripted: in use, on the dock, temperature, battery, a charger that weakens, a plant fault, the timer restarting. Not modelled: anything that happens while asleep (self-discharge, ageing, the dock's power path).
 
 `tests/standby.rs` (simulated): eight quiet weeks give 8 full-energy tests (each charging to about 1,950 V) and 48 daily checks (400 V), one a day, all ending with the capacitor truly empty; a charger that drops to 12 W fails the weekly test (it reaches about 1,650 V in the time limit) but not the daily check, the device shows "not ready", the test is retried daily (7 more charges, each counted) and a repair clears it; the same weak charger in a rescue passes the switch-on test, faults at the first charge and keeps guiding CPR, and once repaired the rescue shocks; a hot spell puts the weekly test off, counts it missed and shows "not ready" from the grace day on; a test due while in use runs as soon as the device is switched off; a stuck discharge path found by the daily check sounds the alarm and stops further tests; a timer restart makes both tests due at once.
+
+## Heat (D-41, D-48, D-51, D-52, D-53)
+
+`src/thermal.rs` is the thermal model (see "What it does NOT model"). Rescue scenarios set the surroundings and the device's starting temperature (`Scenario::ambient_c`, `interior_c`), and can change the surroundings or fail a sensor (`Action::SetAmbient`, `Action::TempSensor`); every run's summary reports the device's temperature. The standby simulation runs the real `aed_core::Standby` (self-test schedule, heat record, capacitor wear) with weather as a function of time (`StandbyScenario::weather`), sensor faults and offsets, pad changes, and the battery being taken out (the durable record is saved and restored; the timer restarts). It checks at every wake that no test charges outside its limits, the dock never charges outside 0-45 °C, the device is never "ready" while above 60 °C or within 30 minutes of it, nothing durable is lost across a power loss, and the heat record never loses the hottest reading.
+
+`tests/heat.rs` (all SIMULATED, one-node model):
+
+- **Hot device rescue** (63 °C into 25 °C air): two shocks held back for heat with "Shock advised. Device too hot to charge." and "Start CPR." at once; cool enough after about 2.4 minutes, first shock at about 4.7 minutes, at the next analysis (it never charges during CPR).
+- **Long no-shock rescue on a 50 °C day** (30 minutes of asystole, device starting at 50 °C): 15 charges burned off inside, the device peaks at **53.9 °C**, below the 55 °C pre-charge limit, so the rule does not act and the 60 °C limit is not reached (the parts study's estimate was about 54 °C after 30 minutes).
+- **The same in a 57 °C car** (device starting at 58 °C, asystole for 20 minutes then VF): charging during every analysis, 7 charges burned and the device reached **60.1 °C**; the VF was then held back three times ("Shock advised. Device too hot to charge.", CPR) and not shocked in the 6 minutes simulated. With the 55 °C pre-charge rule no charge is burned, the device peaks at **58.2 °C** and the VF is shocked at once (charging after the advice).
+- **Standby:** a hot afternoon in a car (ready, not ready above 60 °C, cooled below 45 °C for 30 minutes, re-tested, ready: about 47 minutes after the cabin cooled); a dashboard at 78 °C latches "service needed" through cooling and later tests; a 9-hour warm spell at 56 °C; the battery taken out (a gap, re-test, nothing durable lost); dead and stuck temperature sensors (main and supervisor); the pad heat allowance reached and cleared by a new pad set; capacitor wear "service soon" then "service due" with the weekly test continuing; dock charging stopped in the cold and the heat; and **240 days of mixed weather** (seasons, day and night, hot car afternoons, one dashboard, two power losses, an off-dock week, a use, a sensor offset) with every invariant held: about 76,000 wakes, 252 tests, 14 too-hot episodes, 43 hours above 60 °C, the heat record wrapped (3,598 hours overwritten) with its peak (85.0 °C) kept.
+
+`tests/record.rs`: a record written by the firmware (`aed_core::write_record`) after a simulated week with a hot afternoon, plus a simulated rescue's event record, is read back by the independent host reader (`src/record.rs`) field by field; a damaged record fails its checksum, and an unknown version is refused.
 
 ## Known problems found (integration findings)
 

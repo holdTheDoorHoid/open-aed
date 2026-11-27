@@ -44,6 +44,10 @@ pub enum Action {
     Touch(u32),
     /// Someone starts (`true`) or stops giving breaths every 6 s.
     Ventilate(bool),
+    /// The surroundings change to this temperature, °C.
+    SetAmbient(f64),
+    /// A temperature sensor fails (or is repaired).
+    TempSensor(aed_core::TempPoint, crate::thermal::TempSensorFault),
 }
 
 /// How the person doing the rescue behaves.
@@ -139,6 +143,10 @@ pub struct Scenario {
     /// Change in pad impedance from each heartbeat of a beating heart,
     /// ohms (see `Plant::cardiac_ohms`). Default 0.05 Ω.
     pub cardiac_ohms: f64,
+    /// The surroundings, °C. Default 20 °C.
+    pub ambient_c: f64,
+    /// The inside of the device at switch-on, °C. Default 20 °C.
+    pub interior_c: f64,
 }
 
 /// The safety outcome a scenario must show.
@@ -184,6 +192,8 @@ impl Scenario {
             expect: Expect::Shocks(1),
             chest_sensing: true,
             cardiac_ohms: 0.05,
+            ambient_c: 20.0,
+            interior_c: 20.0,
         }
     }
 
@@ -546,7 +556,57 @@ pub fn catalogue() -> Vec<Scenario> {
         Expect::NoShock,
         "from switch-on",
     ));
+    v.extend(heat_scenarios());
     v
+}
+
+/// Heat scenarios (D-41, D-48, D-51). Temperatures from the one-node
+/// thermal model in [`crate::thermal`] (parts study figures; simulated).
+fn heat_scenarios() -> Vec<Scenario> {
+    use aed_core::TempPoint;
+    use crate::thermal::TempSensorFault;
+    vec![
+        Scenario::base(
+            "hot-device-rescue",
+            "Adult VF; the device is switched on at 63 °C (out of a hot car) into 25 °C air: \
+             CPR guidance at once, analyses without charging, \"Shock advised. Device too hot \
+             to charge.\", then shocks once it has cooled below 59 °C (D-51)",
+        )
+        .with(|s| {
+            s.interior_c = 63.0;
+            s.ambient_c = 25.0;
+            s.duration_ms = 420_000;
+        }),
+        Scenario::base(
+            "warm-device-rescue",
+            "Adult VF at 57 °C inside, 50 °C air: above the 55 °C pre-charge limit the \
+             device charges only once a shock is advised, then shocks",
+        )
+        .with(|s| {
+            s.interior_c = 57.0;
+            s.ambient_c = 50.0;
+        }),
+        Scenario::base(
+            "temp-sensor-failed-main",
+            "Adult VF; the main controller's capacitor temperature sensor is dead from \
+             switch-on: the hottest other reading plus 5 °C stands in, and it shocks",
+        )
+        .with(|s| {
+            s.script
+                .push((Trigger::At(0), Action::TempSensor(TempPoint::Capacitor, TempSensorFault::Missing)));
+        }),
+        Scenario::base(
+            "temp-sensor-stuck-supervisor",
+            "Adult VF; the supervisor's temperature sensor is stuck at 80 °C: it is \
+             distrusted (by both controllers) and the device shocks",
+        )
+        .with(|s| {
+            s.script.push((
+                Trigger::At(0),
+                Action::TempSensor(TempPoint::Supervisor, TempSensorFault::StuckAt(80.0)),
+            ));
+        }),
+    ]
 }
 
 /// The named scenario, if it exists.

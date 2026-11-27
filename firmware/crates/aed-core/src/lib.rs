@@ -18,6 +18,14 @@
 //! * [`selftest`]: the self-test sequence.
 //! * [`schedule`]: the periodic self-tests while the device is off
 //!   (decision D-15): when to run them, the record, and the ready indicator.
+//! * [`heat`]: temperature sensing, the heat states, the charging limits,
+//!   the pad heat allowance and the heat record (decisions D-41, D-48,
+//!   D-51, D-52).
+//! * [`standby`]: the device while "off": one wake handler for the heat
+//!   record and the self-test schedule, the capacitor wear count (D-53),
+//!   and what must survive power loss.
+//! * [`readiness`]: the one readiness result, with every reason.
+//! * [`export`]: the record download by cable through the dock (D-09).
 //! * [`prompts`]: every spoken or displayed message.
 //! * [`events`]: the fixed-size event record.
 //! * [`link`]: the two messages the controllers exchange.
@@ -28,27 +36,41 @@ extern crate std;
 
 pub mod config;
 pub mod events;
+pub mod export;
 pub mod hal;
+pub mod heat;
 pub mod interlock;
 pub mod link;
 pub mod prompts;
+pub mod readiness;
 pub mod rescue;
 pub mod schedule;
 pub mod selftest;
+pub mod standby;
 pub mod supervisor;
 
 pub use config::{Config, ConfigError};
 pub use events::{Event, EventRecord, TimedEvent};
 pub use hal::{BatteryStatus, MainHardware, PadCartridge, ShockStatus, SupervisorHardware};
 pub use link::{MainStatus, SupervisorFault, SupervisorReport};
+pub use export::{crc32_update, write_record, EXPORT_FORMAT_VERSION};
+pub use heat::{
+    Assessment, ChargeContext, DeciC, HeatBand, HeatInhibit, HeatMonitor, SensorFault, SensorSet,
+    ServiceCheck, ServiceRefusal, TempPoint,
+};
 pub use prompts::Prompt;
+pub use readiness::{DeviceReadiness, Reason, ReasonSet};
 pub use rescue::{AbortReason, Counters, FaultKind, Rescue, RescueState, ShockOutcome};
 pub use schedule::{
     Deferral, NotReadyReason, PeriodicOutcome, PeriodicTest, PeriodicTestRun, Readiness,
-    TestCounters, TestSchedule, WakeDecision, WakeInputs,
+    TestCounters, TestGate, TestSchedule, WakeDecision, WakeInputs,
+};
+pub use standby::{
+    CapacitorWear, DurableRecord, DurableStore, Standby, StandbyDecision, StandbyInputs,
+    StoreError, WearStatus,
 };
 pub use selftest::{SelfTest, SelfTestFailure, SelfTestPass, SelfTestProgress};
-pub use supervisor::{PermitRefusal, ReleaseReason, Supervisor};
+pub use supervisor::{PermitRefusal, ReleaseReason, Supervisor, TempIgnored};
 
 #[cfg(test)]
 #[allow(

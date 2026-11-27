@@ -429,6 +429,11 @@ pub struct Plant {
     last_shock_ms: Option<u32>,
     events: Vec<PlantEvent>,
     bridge_fail_reported: bool,
+    /// The device's inside temperature and its six sensors (D-48).
+    pub thermal: crate::thermal::Thermal,
+    /// The electronics are on (they warm the inside); true in a rescue.
+    pub electronics_on: bool,
+    heat_accounted_j: (f64, f64),
 }
 
 impl Plant {
@@ -486,6 +491,9 @@ impl Plant {
             last_shock_ms: None,
             events: Vec::new(),
             bridge_fail_reported: false,
+            thermal: crate::thermal::Thermal::at(20.0),
+            electronics_on: true,
+            heat_accounted_j: (0.0, 0.0),
         }
     }
 
@@ -708,6 +716,13 @@ impl Plant {
             }
         }
         self.max_cap_v = self.max_cap_v.max(self.cap_v);
+        // Heat: what was burned in the load stays inside, and the charger's
+        // own losses (thermal model, parts study §4).
+        let (charged, dumped) = self.heat_accounted_j;
+        let heat = (self.dump_energy_j - dumped)
+            + (self.charger_energy_j - charged) * self.thermal.config.charger_loss_per_j;
+        self.heat_accounted_j = (self.charger_energy_j, self.dump_energy_j);
+        self.thermal.step(dt, heat, self.electronics_on);
         std::mem::take(&mut self.events)
     }
 
