@@ -21,6 +21,7 @@
 //!
 //! The data are not part of the repository; see the crate README.
 
+pub mod cardially;
 pub mod condition;
 pub mod eval;
 pub mod report;
