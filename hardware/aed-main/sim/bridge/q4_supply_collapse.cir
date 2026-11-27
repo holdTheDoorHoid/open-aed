@@ -1,0 +1,109 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+* Question 4: supply collapse during phase 1 (QHA + QLB conducting) - turn-off order, shoot-through, linear region.
+* Event at tev (into phase 1). Supplies:
+*  BRIDGE_5V (b5v): feeds the high-side carriers (amplitude tracks it, WP-G 6.2) and the MGJ2 low-side supply.
+*    Sheet 12 rail-collapse detector (WP-D 3.5): 50 k / 100 pF (5 us) + TLV7031 (3 us) at 4.5 V -> fault latch ->
+*    low sides off at once, high sides after RUN_D20 (20.2-36.4 us).
+*  MGJ2 output (low-side +20.7/-5 V about the Kelvin source): 12 uF per rail, ~13 mA load -> ~1.1 V/ms decay when
+*    its input dies [CALC WP-G 6.6]; UCC5350 UVLO2 falling 10.3-11 V, output low below it.
+*  BRIDGE_3V3 (logic, 555, UCC5350 VCC1): holds >= 2.5 ms after BRIDGE_5V collapses (WP-D 3.4); its own loss
+*    makes the UCC5350 outputs low (VCC1 UVLO) and stops the carrier at the same moment.
+* Scenarios (mode):
+*  1 = BRIDGE_5V falls to 0 in tfall; MGJ2 decays at 1.1 V/ms from then on.
+*  2 = MGJ2 output alone collapses (fall time tlsf, to 0); BRIDGE_5V stays. Nothing on sheet 12 sees it.
+*  3 = BRIDGE_3V3 lost: low-side command and carrier stop together (no fault latch needed).
+.include bridge_common.inc
+.param v0=1950 rp=25 t1=3m mode=1 tev=1.3m tfall=1u tlsf=10m thoff=20.2u tuvl=3u tc=55
+.param ths=200u
+Vgnd0 rtn 0 0
+Cmain capi rtn 100u
+Vchg vchg 0 {v0}
+Rchg vchg capi 1G
+XB capi rtn oa ob gha ghb gla glb lss tjha tjla tjhb tjlb bus isn hbridge params: tc={tc}
+XP oa ob patient params: rp={rp} lpat=1.5u
+* BRIDGE_5V
+Vb5 b5v 0 PWL(0 5 {tev} 5 {tev+(mode==1 ? tfall : 1)} {mode==1 ? 0 : 5})
+* MGJ2 rail factor k(t): mode 1 -> 1.1 V/ms decay after tev (to 0 after ~19 ms); mode 2 -> to 0 in tlsf
+Vk kf 0 PWL(0 1 {tev} 1 {tev+(mode==1 ? 18.8m : (mode==2 ? tlsf : 1))} {mode==3 ? 1 : 0})
+Bpos vp lss V = 20.7*V(kf)
+Bneg vn lss V = -5*V(kf)
+* commands
+Vcha cha0 0 PWL(0 0 {ths+2u} 0 {ths+2u+20n} 1)
+Vclb clb0 0 PWL(0 0 {ths+100u} 0 {ths+100u+20n} 1 {ths+100u+t1} 1 {ths+100u+t1+20n} 0)
+* BRIDGE_3V3 good (0/1)
+V33 ok33 0 PWL(0 1 {tev} 1 {tev+20n} {mode==3 ? 0 : 1})
+* rail-collapse detector -> fault latch
+Rbf b5v bf 50k
+Cbf bf 0 100p
+Bset 0 fl I = 2m*0.5*(1+tanh(100*(4.5-V(bf))))*V(ok33) + 5m*0.5*(1+tanh(50*(V(fl)-0.2)))
+* (the last term is positive feedback: once set past 0.2 V the latch snaps to 1 V, so a slowly crossing
+*  input cannot leave the commands half-way)
+Cfl fl 0 10p
+.ic v(fl)=0
+Rfl fl 0 1e9
+Dfl fl one dclamp
+Vone one 0 1
+.model dclamp d (is=1e-12 n=1)
+Bfl fla 0 V = min(max(V(fl),0),1)
+Tl1 fla 0 fld 0 Z0=50 TD={tuvl}
+Rl1 fld 0 50
+* buffer so that the second delay line does not load the first (a mismatch there gave partial logic levels)
+Efb fldb 0 fld 0 1
+Tl2 fldb 0 flh 0 Z0=50 TD={thoff}
+Rl2 flh 0 50
+Bcha cha 0 V = min(max(V(cha0),0),1) * (1 - min(max(V(flh),0),1)) * V(ok33)
+Bclb clb 0 V = min(max(V(clb0),0),1) * (1 - min(max(V(fld),0),1)) * V(ok33)
+Vcla cla 0 0
+Vchb chb 0 0
+XDLA cla vp vn gla lss lsdrv
+XDLB clb vp vn glb lss lsdrv
+XDHA cha b5v gha oa hsdrv
+XDHB chb b5v ghb ob hsdrv
+.options method=trap reltol=1e-3 abstol=1e-6 vntol=1e-4 itl4=100
+.control
+set noaskquit
+* Times below are measured from the event (tev = 1.3 ms). t_fault = sheet-12 fault latch set; tblk = when each
+* switch starts blocking (VDS passes 500 V, i.e. who turned off first); ti0 = bridge current below 1 A;
+* lin = time QHA / QLB spend with VDS over 100 V while carrying over 2 A (linear region);
+* I_QLA / I_QHB = largest forward current in the switches that must stay off (shoot-through check).
+let tstop_req = 1.42e-3
+tran 10n 1.42m 1.25m 50n
+let iha = v.xb.vmha#branch
+let ilb = v.xb.vmlb#branch
+let vha = v(xb.dha)-v(xb.oai)
+let vlb = v(xb.dlb)-v(lss)
+let pha = vha*iha
+let plb = vlb*ilb
+meas tran eha integ pha from=1.3m
+meas tran elb integ plb from=1.3m
+meas tran tjha max tjha
+meas tran tjlb max tjlb
+meas tran tha when vha=500 td=1.3m rise=1
+meas tran tlb when vlb=500 td=1.3m rise=1
+meas tran ti0 when ilb=1 td=1.3m fall=1
+meas tran tfl when v(fl)=0.5 rise=1
+let linh = (vha gt 100) * (iha gt 2)
+let linl = (vlb gt 100) * (ilb gt 2)
+meas tran lh integ linh from=1.3m
+meas tran ll integ linl from=1.3m
+meas tran iqla max v.xb.vmla#branch
+meas tran iqhb max v.xb.vmhb#branch
+let vgsla = v(gla)-v(lss)
+let vgshb = v(ghb)-v(ob)
+meas tran vgla max vgsla
+meas tran vghb max vgshb
+meas tran vdlbmax max vlb
+let ehm = eha*1000
+let elm = elb*1000
+let thus = (tha-1.3e-3)*1e6
+let tlus = (tlb-1.3e-3)*1e6
+let ti0us = (ti0-1.3e-3)*1e6
+let tflus = (tfl-1.3e-3)*1e6
+let lhus = lh*1e6
+let llus = ll*1e6
+let n = length(time)-1
+let te = time[n]
+echo "RESULT CASE_LABEL | t_fault=$&tflus us | tblk QHA=$&thus QLB=$&tlus us | ti0=$&ti0us us | E QHA=$&ehm QLB=$&elm mJ | Tj QHA=$&tjha QLB=$&tjlb C | lin QHA=$&lhus QLB=$&llus us | I_QLA_max=$&iqla I_QHB_max=$&iqhb A | Vgs_max QLA=$&vgla QHB=$&vghb V | VDS_QLB_max=$&vdlbmax V | t_end=$&te of $&tstop_req"
+.endc
+.end

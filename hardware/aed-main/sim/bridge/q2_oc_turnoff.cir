@@ -1,0 +1,77 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+* Question 2 (WP-G finding F-2): low-side turn-off at the over-current trip.
+* Phase 1 starts normally (QHA on beforehand, QLB times it) into a SHORT (0.01 ohm) at the pads (patient lead
+* inductance lpat in the loop) or at the board connector (lpat = 0). The current rises at V/(L_S + lpat); the OC
+* comparator (shunt, 100 ohm / 1 nF, threshold octhr) sets the fault latch; sheet 12 drops G_LB after tdl
+* (<= 65 ns, WP-D section 3.6); the UCC5350 adds td (65 typ / 100 ns max); QLB turns off through 33 ohm.
+* Stray inductance lst (half in the bus to the drains, half in the return), cable to the capacitor lcap,
+* snubber csn + rsn (as drawn: 2 x 10 nF X7R in series, ~3 nF effective at 2 kV [EST], 10 ohm).
+.include bridge_common.inc
+.param v0=2200 rp=0.01 lpat=1.5u octhr=89.7 tdl=65n tdrv=100n lst=50n lcap=200n csn=3n rsn=10 tc=55 thoff=20.2u
+.param cloc=1p ccl=1p rcl=10k
+.param ths=200u
+Vgnd0 rtn 0 0
+Cmain capi rtn 100u
+Vchg vchg 0 {v0}
+Rchg vchg capi 1G
+XB capi rtn oa ob gha ghb gla glb lss tjha tjla tjhb tjlb bus isn hbridge
++ params: lst={lst} lcap={lcap} csn={csn} rsn={rsn} tc={tc} cloc={cloc} ccl={ccl} rcl={rcl}
+XP oa ob patient params: rp={rp} lpat={lpat}
+Vpos vp lss 20.7
+Vneg vn lss -5
+Vb5 b5v 0 5
+Vcha cha0 0 PWL(0 0 {ths+2u} 0 {ths+2u+20n} 1)
+Vclb clb0 0 PWL(0 0 {ths+100u} 0 {ths+100u+20n} 1)
+Roc isn oc1 100
+Coc oc1 0 1n
+Bset 0 fl I = 2m*0.5*(1+tanh(2*(abs(V(oc1))-octhr))) + 5m*0.5*(1+tanh(50*(V(fl)-0.2)))
+* (the last term is positive feedback: once set past 0.2 V the latch snaps to 1 V, so a slowly crossing
+*  input cannot leave the commands half-way)
+Cfl fl 0 10p
+.ic v(fl)=0
+Rfl fl 0 1e9
+Dfl fl one dclamp
+Vone one 0 1
+.model dclamp d (is=1e-12 n=1)
+Bfl fla 0 V = min(max(V(fl),0),1)
+Tl1 fla 0 fld 0 Z0=50 TD={tdl}
+Rl1 fld 0 50
+* buffer so that the second delay line does not load the first (a mismatch there gave partial logic levels)
+Efb fldb 0 fld 0 1
+Tl2 fldb 0 flh 0 Z0=50 TD={thoff}
+Rl2 flh 0 50
+Bcha cha 0 V = min(max(V(cha0),0),1) * (1 - min(max(V(flh),0),1))
+Bclb clb 0 V = min(max(V(clb0),0),1) * (1 - min(max(V(fld),0),1))
+Vcla cla 0 0
+Vchb chb 0 0
+XDLA cla vp vn gla lss lsdrv params: td={tdrv}
+XDLB clb vp vn glb lss lsdrv params: td={tdrv}
+XDHA cha b5v gha oa hsdrv
+XDHB chb b5v ghb ob hsdrv
+.options method=trap reltol=1e-3 abstol=1e-6 vntol=1e-4 itl4=100
+.control
+set noaskquit
+let tstop_req = 325e-6
+tran 2n 325u 290u 20n
+let idl = v.xb.vmlb#branch
+let vdl = v(xb.dlb)-v(lss)
+let vdhb = v(xb.dhb)-v(xb.obi)
+let vdha = v(xb.dha)-v(xb.oai)
+let vbus = v(bus)
+let pl = vdl*idl
+meas tran ioff find idl when vdl=100 rise=1
+meas tran ipk max idl
+meas tran vmax max vdl
+meas tran vhb max vdhb
+meas tran vha max vdha
+meas tran vbusmax max vbus
+meas tran eoff integ pl from=300u to=325u
+meas tran tj max tjlb
+meas tran ifw max v.xb.vfw#branch
+let em = eoff*1000
+let n = length(time)-1
+let te = time[n]
+echo "RESULT CASE_LABEL | Ipk=$&ipk A | I_off=$&ioff A | VDS_QLB_max=$&vmax V | VDS_QHB_max=$&vhb V | VDS_QHA_max=$&vha V | Vbus_max=$&vbusmax V | E_off=$&em mJ | Tj_QLB=$&tj C | I_Dfw_max=$&ifw A | t_end=$&te of $&tstop_req"
+.endc
+.end

@@ -1,0 +1,109 @@
+* battery.cir - (A) MAX17320 short-circuit release against loads on VBAT_SYS (I-10, WP-A C-3);
+*               (B) battery load test driven by a toggling BAT_LOAD_EN (I-25)
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* (A) After a short-circuit or over-discharge trip the MAX17320 keeps its FETs off and sources a test current into
+*     PCKP (30 uA, ADI MAX17320 datasheet 'Overcurrent Protection', as quoted in specs/01 group gauge; its tolerance
+*     was not found, so 15 / 30 uA are both run). It releases when PCKP rises above 1 V.
+*     Loads (every part on VBAT_PACK / VBAT_SYS in the pin tables, see notes.md table): R107 1 k (PCKP -> VBAT_PACK),
+*     F101 2 mohm, ceramics 60 uF total, R316 4.7 M + R317 3.3 M (U304 EN divider), and sub-UVLO leakage of the
+*     disabled ICs (TPS629210 x2, TPS62130, TPS70933, TPS25982, BQ25887 BAT, CSD17573 IDSS, SMBJ12A) taken as
+*     1 uA each, 8 uA total [EST: datasheets give these at nominal VIN only]. Rx = the extra resistive load swept.
+* (B) Load test (specs/01 group load): BAT_LOAD_EN (R110 100 k) -> C108 2.2 uF X7R -> LT_NODE (R111 118 k to GND)
+*     -> R112 10 k -> U102 TLV7031 (+); threshold R113/R114 100 k / 100 k from 3V3_MAIN with R116 1 M hysteresis
+*     from LOAD_G; U102 drives Q103 CSD17573Q5B gate directly (R115 100 k pull-down); load R102 + R103 = 0.80 ohm.
+*     Q103 model: VDMOS, VTO 1.5 V, RDS(on) ~2 mohm at VGS 3.2 V, CISS 4 nF [EST: TI SLPS... curves not read];
+*     comparator output 100 ohm, 10 mA limit [EST].  Battery: 7.4 V behind 65 mohm.
+*     lt=0 as drawn; lt=1 proposed: BAS116 in series with R111 (LT_NODE drains through it only while positive) plus
+*     R117 4.7 M from LT_NODE to GND, and R112 raised to 100 k.
+
+.include models/behavioural.lib
+.param ipck=30u rx=1e12 lt=0 fpwm=100 duty=0.5 ten=10m
+
+* ================= (A) PCKP release
+* test current with an assumed 3 V compliance [EST]
+Bpck 0 pckp I = {ipck} * min(1, max(0, (3 - v(pckp))/0.5))
+R107 pckp vpack 1k
+C210 vpack 0 10u
+RF101 vpack vsys 2m
+Cvs vsys 0 50u
+R316 vsys en304 4.7Meg
+R317 en304 0 3.3Meg
+Bleak vsys 0 I = 8u * min(1, max(v(vsys),0)/0.3)
+Rx vsys 0 {rx}
+* the protector has just tripped: the rail starts discharged
+.ic v(pckp)=0 v(vpack)=0 v(vsys)=0 v(en304)=0
+
+* ================= (B) load test
+Vbatt bocv 0 7.4
+Rbatt bocv vbl 65m
+Cbl vbl 0 10u
+V3 v33 0 3.3
+Ven enp 0 PULSE(0 3.3 {ten} 1u 1u {duty/fpwm} {1/fpwm})
+Ren enp en 25
+R110 en 0 100k
+C108 en ltn 2.2u
+R111a ltn ltd {lt ? 1m : 118k}
+D111 ltd ltr bas116
+R111b ltr 0 {lt ? 118k : 1m}
+Rbyp ltd ltr {lt ? 1e12 : 1m}
+R117 ltn 0 {lt ? 4.7Meg : 1e12}
+R112 ltn ltin {lt ? 100k : 10k}
+R113 v33 lvth 100k
+R114 lvth 0 100k
+R116 lg lvth 1Meg
+Xcmp ltin lvth lgi v33 0 cmp params: vos=0 hyst=5m od=0
+Rgo lgi lg 100
+R115 lg 0 100k
+R102 vbl lmid 0.40
+R103 lmid ld 0.40
+M103 ld lg 0 0 nfet
+.model nfet VDMOS(VTO=1.5 KP=300 RD=0.5m RS=0.5m CGS=3.5n CGDMAX=0.8n CGDMIN=0.15n)
+
+.control
+set noaskquit
+* ---- (A)  (load test held off: its enable starts at 100 s)
+alterparam ten=100
+foreach ip 30u 15u
+  alterparam ipck=$ip
+  foreach r 1e12 1Meg 100k 68k 47k 33k 22k 10k
+    alterparam rx=$r
+    reset
+    tran 10m 30 0 10m
+    meas tran vend find v(pckp) at=29.9
+    meas tran trel when v(pckp)=1.0 rise=1
+    echo "RESULT pckp Ipckp= $ip Rx= $r PCKP_final_V= $&vend release_time_s= $&trel"
+  end
+end
+* ---- (B)
+alterparam ten=10m
+alterparam rx=1e12
+foreach l 0 1
+  alterparam lt=$l
+  * stuck high (one rising edge, then held): on-time
+  alterparam fpwm=0.1
+  alterparam duty=0.999
+  reset
+  tran 50u 1.0 0 50u
+  meas tran t_on when i(Vbatt)=-5 fall=1
+  meas tran t_off when i(Vbatt)=-5 rise=1
+  let ton = (t_off - t_on)*1000
+  echo "RESULT loadtest lt= $l stuck_high on_time_ms= $&ton"
+  foreach f 10 100
+    foreach d 0.25 0.5
+      alterparam fpwm=$f
+      alterparam duty=$d
+      reset
+      tran 20u 1.6 0 50u
+      let pr = (i(Vbatt))^2 * 0.80
+      let pq = -i(Vbatt) * v(ld)
+      meas tran pres avg pr from=1.0 to=1.6
+      meas tran pq103 avg pq from=1.0 to=1.6
+      meas tran ltmin min v(ltn) from=1.0 to=1.6
+      echo "RESULT loadtest lt= $l f= $f duty= $d P_resistors_avg_W= $&pres P_Q103_avg_W= $&pq103 LT_NODE_min_V= $&ltmin"
+    end
+  end
+end
+.endc
+.end

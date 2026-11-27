@@ -1,0 +1,126 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* ovp_limits.cir — the three over-voltage limits (questions I-2 and I-22).
+*  Part 1 (control-language Monte Carlo, 200,000 samples per limit, uniform within each stated tolerance,
+*  which is harsher than Gaussian) and worst-case sums, for:
+*   L1  firmware over-voltage limit on the main chain (D-28 accuracy 1 % + 7 V), reading 'fwlim'
+*   L2  hardware over-voltage comparator OVP_TRIP on 08 (TLV9031 + ADR3425 + supervisor string), nominal 'ovpnom'
+*   L3  LT3751 primary-side trip (RVOUT 40.2 k / RBG), true capacitor volts = sensed - secondary drops
+*  against the window: top of a normal adult charge 2,008.6 V (HARDWARE_DESIGN §B4.4) and the capacitor
+*  rating 2,200 V continuous / 2,420 V for 10 s (D-41).
+*  Part 2 (transient): the proposed LATCHING OVP comparator (I-22), behavioural TLV9031.
+* Sources of each tolerance are given next to it. Nothing here is a maker's model.
+
+* ---- Part 2 circuit: proposed latching OVP comparator on 08 (values in the notes)
+* tap = VCAPS_BUF (supervisor chain buffered, = Vcap/1,002); comparator IN- = VREF_OVP; IN+ = OVP_SENSE;
+* Rin (VCAPS_BUF -> OVP_SENSE) = Rf (OVP_TRIP -> OVP_SENSE) = 100 k: trip at tap = 2 x Vref; once high the
+* output holds IN+ above Vref for any tap >= 0 (release would need tap < 2 Vref - VOH < 0): LATCHED.
+* Reset: OVP_RST_N (new net from the supervisor, 05 -> 08) through 100 nF / 100 k AC coupling to a BSS138 that
+* pulls OVP_SENSE to GND through 1 k: only an edge resets; a stuck reset line cannot hold the latch clear.
+.include models/datasheet_models.lib
+.param vref=1.0529 voh=3.15
+V3 v33 0 PWL(0 0 1m 3.3)
+VTAP tapsrc 0 PWL(0 0 10m 0 20m 2.0 30m 2.2 40m 2.2 50m 0.5 60m 0.0 100m 0.0 110m 2.2 130m 2.2 140m 0)
+RTB tapsrc tap 10
+VREFS vrefn 0 {vref}
+RIN tap sense 100k
+RF otrip sense 100k
+* behavioural comparator: push-pull to 3V3_SUP (VOH = v33 - 0.15 V), 2 mV internal hysteresis, 1 us response
+BCMP ocmp 0 V={ v(v33) > 1.6 ? (v(sense) > v(vrefn) ? v(v33)-0.15 : 0) : 0 }
+RCO ocmp otrip 50
+CCO otrip 0 20p
+ROL otrip 0 100k
+* reset: OVP_RST_N pulses (active high here for clarity) at 70 ms; held stuck high from 105 ms to 140 ms
+VRST rst 0 PWL(0 0 70m 0 70.01m 3.3 70.5m 3.3 70.51m 0 105m 0 105.01m 3.3 140m 3.3)
+CRS rst rg 100n
+RRG rg 0 100k
+MRS sense2 rg 0 0 BSS138
+RRS sense sense2 1k
+
+.control
+set noaskquit
+set rndseed = 20261127
+* =================== Part 1: limits ======================================================
+let n = 200000
+* ---- L1 firmware limit on the main chain: reading = Vtrue x (1+g) + o, |g| <= 1 %, |o| <= 7 V (D-28)
+foreach fw 2150 2070
+  let g = 0.01*sunif(vector(n))
+  let o = 7*sunif(vector(n))
+  let vt = ($fw - o)/(1 + g)
+  let lo = ($fw - 7)/1.01
+  let hi = ($fw + 7)/0.99
+  let a = vecmin(vt)
+  let b = vecmax(vt)
+  echo "L1 firmware_limit reading=$fw : MonteCarlo true trip min=$&a max=$&b | worst case $&lo .. $&hi"
+end
+* ---- L2 OVP comparator: trip = nominal x (1+e_ref)(1+e_div)(1+e_gain)(1+e_str) + offset term
+* e_ref  +-0.24 %  ADR3425: 0.1 % initial, 8 ppm/K x 45 K, 30 ppm/1000 h, 70 ppm hysteresis (WP-C §3.4 / sheet 08 note)
+* e_div  +-0.2 % + 2 x 25 ppm/K x 45 K = +-0.425 %  reference divider, two 0.1 % 25 ppm/K resistors (sheet 08)
+* e_gain +-0.07 %  (1 + Rin/Rf) with 0.1 % parts, k = 0.365 (as drawn); k = 1 (latch): +-0.1 %
+* e_str  +-0.675 %  supervisor string ratio: 0.2 % tolerance + 0.225 % temperature + 0.25 % life (WP-C)
+* offset +-2 mV TLV9031 over temperature (SNOSDA3H §5.7) referred to Vref: as drawn 2/1,580 = 0.127 %;
+*        latch with Vref = 1.053 V: 0.19 %
+foreach cfg 1 2 3
+  if $cfg = 1
+    set nm = "as_drawn_2160V_k0.365"
+    let nom = 2160
+    let eg = 0.0007
+    let eo = 0.00127
+    let edv = 0.00425
+  end
+  if $cfg = 2
+    set nm = "proposed_latch_2110V_k1"
+    let nom = 2110
+    let eg = 0.001
+    let eo = 0.0019
+    let edv = 0.00425
+  end
+  if $cfg = 3
+    set nm = "proposed_latch_2110V_k1_with_REF_DIVIDER_in_one_package_(ratio_0.05%,_5ppm/K_tracking)"
+    let nom = 2110
+    let eg = 0.001
+    let eo = 0.0019
+    let edv = 0.0005 + 2*5e-6*45
+  end
+  let vtr = nom*(1+0.0024*sunif(vector(n)))*(1+edv*sunif(vector(n)))*(1+eg*sunif(vector(n)))*(1+0.00675*sunif(vector(n)))*(1+eo*sunif(vector(n)))
+  let wlo = nom*(1-0.0024)*(1-edv)*(1-eg)*(1-0.00675)*(1-eo)
+  let whi = nom*(1+0.0024)*(1+edv)*(1+eg)*(1+0.00675)*(1+eo)
+  let a = vecmin(vtr)
+  let b = vecmax(vtr)
+  echo "L2 OVP $nm : MonteCarlo min=$&a max=$&b | worst case $&wlo .. $&whi"
+end
+* ---- L3 LT3751 primary-side trip (WP-E §3.6): sensed = Vcmp x N x RVOUT/RBG (Vcmp 0.955..1.005 V,
+* N 50 +-1 %, RVOUT/RBG +-0.2 %, RVOUT/RVTRANS mismatch +-0.84 V) + overdrive 0..+40 mV on Vcmp
+* (datasheet: 20 mV typ / 40 mV max for a 2 us pulse) ; true = sensed - drops, drops 18.7..48.3 V (WP-E EST)
+foreach rbg 931 909 887 876 866
+  let vc = 0.98 + 0.025*sunif(vector(n))
+  let od = 0.02 + 0.02*sunif(vector(n))
+  let nn = 50*(1 + 0.01*sunif(vector(n)))
+  let rr = 40200/$rbg*(1 + 0.002*sunif(vector(n)))
+  let dr = 33.5 + 14.8*sunif(vector(n))
+  let mm = 0.84*sunif(vector(n))
+  let vtr = (vc + od)*nn*rr + mm - dr
+  let vtr0 = vc*nn*rr + mm - dr
+  let lo = 0.955*50*0.99*40200/$rbg*0.998 - 0.84 - 48.3
+  let hi0 = 1.005*50*1.01*40200/$rbg*1.002 + 0.84 - 18.7
+  let hi = 1.045*50*1.01*40200/$rbg*1.002 + 0.84 - 18.7
+  let a = vecmin(vtr0)
+  let b = vecmax(vtr)
+  echo "L3 primary_trip RBG=$rbg : MonteCarlo (overdrive 0..40 mV) min=$&a max=$&b | worst case $&lo .. $&hi0 (no overdrive) .. $&hi (max overdrive)"
+end
+
+* =================== Part 2: latching comparator transient ===============================
+tran 2u 150m
+meas tran ttrip when v(otrip)=1.6 rise=1
+meas tran vtapat find v(tap) at=$&ttrip
+meas tran olatch find v(otrip) at=65m
+meas tran oreset find v(otrip) at=80m
+meas tran ttrip2 when v(otrip)=1.6 rise=1 td=100m
+meas tran ostuck find v(otrip) at=139m
+meas tran opow find v(otrip) at=5m
+let vcap_trip = vtapat*1002
+echo "LATCH power-up(tap 0): OVP_TRIP=$&opow V | trips at tap=$&vtapat V (= $&vcap_trip V capacitor) | tap back at 0 V: OVP_TRIP=$&olatch V (latched) | after reset pulse: $&oreset V | re-trip with reset line STUCK high at t=$&ttrip2 s; OVP_TRIP at 139 ms = $&ostuck V"
+quit
+.endc
+.end

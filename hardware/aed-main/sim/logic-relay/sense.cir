@@ -1,0 +1,159 @@
+* sense.cir - (A) I_SHOCK headroom at the main controller's ADC (I-21, WP-B C-4)
+*             (B) open main voltage-tap wire must read as a fault (I-23, WP-C C-3)
+*             (C) main divider drift budget over temperature and life (I-16, WP-C §4)
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* (A) specs/13_hv_bridge.toml: shunt R1302 2 mohm +-1 % (+250 ppm/K x 50 K: +-2.25 % band), INA240A1 gain 20 (gain
+*     error +-0.2 %, offset +-25 uV: TI SBOS662C as quoted in WP-G), supplied from BRIDGE_5V (4.71-5.25 V: WP-D §3.4 and
+*     03 group 'five'); output saturates at VS - vsw, vsw 0...0.2 V (WP-G reads 'VS - 0.2 V max'; the best case 0 V is
+*     used for the overdrive check); divider R1355 10.0 k / R1356 20.0 k (1 %, 100 ppm/K: +-2 % band) -> I_SHOCK;
+*     04: R423 1 k + 4.7 nF -> STM32U585 ADC, VREF+ = VDDA = 3V3_MAIN 3.26-3.34 V (TPS629210 -1.3/+1.1 %).
+*     Over-current trip OC_DET_N 82-98 A (WP-G); legitimate peak <= 80 A (aed-waveform config max_peak_current_amps).
+*     div=0 as drawn (2/3), div=1 proposed R1355 13.3 k (ratio 0.6006).
+* (B) specs/07_sense_main.toml: tap source 40.26 k (sheet 11) + 10 k clamp resistor -> VCAP_M_TAP -> R701 100 k ->
+*     VCAPM_IN (C701 10 nF C0G) -> OPA333 follower (IB +-1 nA over temperature, WP-C assumption) -> R704 10 k / C704
+*     100 nF -> LMV761 against LOWV_REF = VREF_M x 1.00 k / 47.4 k with R707 1.62 M hysteresis; LOWV_OK high = 'below
+*     60 V'. Board leakage 100 G to GND. pu=1 adds the proposed R718 1 G from VREF_M (2.5 V, REF3425) to VCAPM_IN.
+*     The wire breaks at t = 0 with the node at 0 V (capacitor discharged before switch-on).
+* (C) Main string 40.2 M (HVCR2512, +-100 ppm/K: Stackpole family page, page only) over bottom leg 40.3 k
+*     (thin film 25 ppm/K), signs opposite (worst case, as WP-C); factory calibration at 25 C; life drift of the
+*     string "drift" swept (negative = string grows = reading low).
+
+.include models/behavioural.lib
+.param div=0 vs=5.0 vsw=0 ksh=1 kg=1 kdt=1 kdb=1 vdda=3.3
+.param pu=0 ibias=1n
+.param tcs=100e-6 tcb=-25e-6 drift=0
+
+* ================= (A)
+Ishk 0 shp 0
+Rsh shp 0 {2m*ksh}
+Bina inao 0 V = max(0.0, min({vs}-{vsw}, 20*{kg}*v(shp)))
+R1355 inao ishk {(div ? 13.3k : 10.0k)*kdt}
+R1356 ishk 0 {20.0k*kdb}
+R423 ishk adc 1k
+C432 adc 0 4.7n
+* ADC pin protection diode to VDDA (to report overdrive current)
+Vdda vdda 0 {vdda}
+Dpin adc vdda dpin
+.model dpin D(IS=1e-12 N=1.0)
+
+* ================= (B)
+Vref vrefm 0 2.5
+V33 v33 0 3.3
+Vcapv vcap 0 0
+Rstr vcap tap 40.2Meg
+Rbot tap 0 40.3k
+Rcl tap tapo 10k
+Swire tapo vcmt wctl 0 swwire
+.model swwire SW(VT=0.5 VH=0.1 RON=1 ROFF=1e14)
+Vwire wctl 0 PULSE(1 0 0 1u 1u 10 20)
+R701 vcmt vin 100k
+C701 vin 0 10n
+Rleak vin 0 100G
+Ib vin 0 {ibias}
+R718 vrefm vin {pu ? 1G : 1e16}
+Bbuf buf 0 V = max(0, min(3.3, v(vin)))
+R704 buf ls 10k
+C704 ls 0 100n
+R705 vrefm lref 46.4k
+R706 lref 0 1.00k
+R707 lok lref 1.62Meg
+Xlv ls lref lokn v33 0 cmp params: vos=0 hyst=1m od=0
+* LMV761: LOWV_OK is high when LOWV_SENSE is BELOW the reference -> invert the comparator sense
+Blok lok 0 V = 3.3 - v(lokn)
+
+* ================= (C)
+Vhv hv 0 1950
+Rs hv dt {40.2Meg*(1+drift)} tc1={tcs}
+Rb dt 0 40.3k tc1={tcb}
+
+.control
+set noaskquit
+* ---------- (A)
+foreach dv 0 1
+  alterparam div=$dv
+  * nominal transfer and the signal at the over-current trip maximum (98 A) with everything high
+  alterparam vs=5.0
+  alterparam vsw=0
+  alterparam ksh=1.0225
+  alterparam kg=1.002
+  alterparam kdt=0.98
+  alterparam kdb=1.02
+  alterparam vdda=3.26
+  reset
+  dc Ishk 0 150 1
+  meas dc v98 find v(ishk) at=98
+  meas dc v80 find v(ishk) at=80
+  let hr = 3.26 - v98
+  echo "RESULT ishock div= $dv high_gain_corner V_at_80A= $&v80 V_at_98A= $&v98 headroom_to_VDDA_min_at_98A_V= $&hr"
+  * saturation with the INA output at the highest BRIDGE_5V and the divider at its high-ratio corner
+  alterparam vs=5.25
+  reset
+  dc Ishk 0 200 1
+  meas dc vsat max v(ishk)
+  meas dc ipin max i(Vdda)
+  echo "RESULT ishock div= $dv saturated_I_SHOCK_V= $&vsat (VDDA min 3.26 V) pin_overdrive_current_A= $&ipin"
+  * low-gain corner: smallest signal (resolution)
+  alterparam vs=4.71
+  alterparam ksh=0.9775
+  alterparam kg=0.998
+  alterparam kdt=1.02
+  alterparam kdb=0.98
+  alterparam vdda=3.34
+  reset
+  dc Ishk 0 150 1
+  meas dc v1 find v(ishk) at=1
+  meas dc v029 find v(ishk) at=0.29
+  let mva = v1*1000
+  echo "RESULT ishock div= $dv low_gain_corner mV_per_A= $&mva V_at_test_current_0.29A= $&v029"
+end
+* ---------- (B)
+alterparam div=0
+foreach p 0 1
+  alterparam pu=$p
+  foreach ib -1n 1n
+    alterparam ibias=$ib
+    reset
+    tran 1m 5 0 1m
+    meas tran vin5 find v(vin) at=4.9
+    meas tran tlow when v(lok)=1.65 fall=1
+    echo "RESULT opentap pullup= $p IB= $ib VCAPM_IN_after_5s_V= $&vin5 (= cap reading x1000 V) LOWV_OK_goes_low_at_s= $&tlow"
+  end
+end
+* normal-reading error of the proposed pull-up (wire intact) at 0 / 50 / 1950 V
+alterparam pu=1
+alterparam ibias=1n
+foreach vc 0 50 1950
+  alter vcapv dc = $vc
+  alter vwire pulse = [ 1 1 0 1u 1u 10 20 ]
+  reset
+  alter vcapv dc = $vc
+  alter vwire pulse = [ 1 1 0 1u 1u 10 20 ]
+  op
+  let ideal = $vc*40.3k/(40.2Meg+40.3k)
+  let err_V = (v(vin) - ideal)*998.5
+  echo "RESULT tap_error_with_pullup Vcap= $vc reading_error_V= $&err_V"
+end
+* ---------- (C)  string TCR 100 ppm/K (HVCR as drawn) and 25 ppm/K (thin-film string, proposed)
+foreach tc 100e-6 25e-6
+alterparam tcs=$tc
+alterparam drift=0
+reset
+option temp=25
+op
+let r0 = v(dt)
+set r0val = "$&r0"
+foreach d 0 0.003 0.006 0.008 0.009
+  alterparam drift=$d
+  reset
+  foreach t -20 25 70
+    option temp=$t
+    op
+    let e = (v(dt)/$r0val - 1)*100
+    echo "RESULT divider string_tcr= $tc life_drift= $d temp= $t ratio_error_pct= $&e"
+  end
+end
+end
+.endc
+.end

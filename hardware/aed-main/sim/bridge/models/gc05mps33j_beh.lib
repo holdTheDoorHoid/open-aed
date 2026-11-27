@@ -1,0 +1,12 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Behavioural model of the GeneSiC/Navitas GC05MPS33J (3.3 kV 5 A SiC MPS diode), BUILT BY THIS PROJECT
+* FROM THE DATASHEET (Rev 22/Apr, https://www.genesicsemi.com/sic-schottky-mps/GC05MPS33J/GC05MPS33J.pdf,
+* read 2026-11-27). The maker's SPICE zip (…/GC05MPS33J_SPICE.zip) returned HTTP 500 on 2026-11-27.
+*  - Forward: datasheet Fig 10 "forward curve model" at 25 C: VBI = 0.97 V, RDIFF = 0.24 Ohm.
+*    Here: IS 1.5e-12, N 1.5 (0.97 V at 0.1 A) + RS 0.24 Ohm. Linear to 126 A this gives ~31 V, which
+*    OVERSTATES the drop of an MPS diode at high current (its PiN part injects); used as given.
+*  - Capacitance: 337 pF at 1 V, 14 pF at 1,700 V (Table) -> CJO 437 pF, VJ 1.5 V, M 0.49.
+*  - Schottky: no stored charge (TT 0). BV 3300 V. Self-heating not modelled.
+.model gc05mps33j d (is=1.5e-12 n=1.5 rs=0.24 cjo=437p vj=1.5 m=0.49 tt=0 bv=3300 ibv=50u)

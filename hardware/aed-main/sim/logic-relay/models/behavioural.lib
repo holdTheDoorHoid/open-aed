@@ -1,0 +1,54 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Behavioural models written for this project from datasheet figures (no maker's SPICE file was downloaded).
+* Every number below is copied from the datasheet table named beside it, or marked [EST].
+*
+* ---------------------------------------------------------------------------------------------------------------
+* Diodes. Shockley fits to datasheet forward-voltage points; ngspice handles temperature (EG, XTI defaults for Si).
+*   BAV99 (onsemi BAV99LT1/D Rev.14): VF max 715 mV @ 1 mA, 855 mV @ 10 mA, 1.0 V @ 50 mA (25 C).
+*     bav99max : fits the MAX column: VF(1 mA) = 0.715 V, VF(10 mA) = 0.85 V at 25 C.
+*     bav99typ : VF(1 mA) ~ 0.58 V [EST: typical small-signal switching diode; datasheet gives only a curve]
+*     bav99low : VF(1 mA) ~ 0.50 V [EST: low-drop bound used for the 'consent lasts longest' corner]
+*   BAS116 (onsemi BAS116LT1/D Rev.14): VF max 0.9 V @ 1 mA; IR <= 5 nA @ 75 V (25 C), <= 80 nA @ 150 C.
+*     Leakage is added separately in each netlist as a current source (worst case 80 nA, conservative at 70 C).
+*   SS14 (Vishay 88746): VF <= 0.50 V @ 1 A.
+* ---------------------------------------------------------------------------------------------------------------
+.model bav99max D(IS=3.15e-10 N=1.85 RS=3.4 CJO=1.5p TT=4n BV=100 EG=1.11 XTI=3)
+.model bav99typ D(IS=2.5e-9 N=1.75 RS=1.0 CJO=1.5p TT=4n BV=100 EG=1.11 XTI=3)
+.model bav99low D(IS=1.0e-8 N=1.70 RS=0.8 CJO=1.5p TT=4n BV=100 EG=1.11 XTI=3)
+.model bas116 D(IS=5e-12 N=1.9 RS=2 CJO=2p BV=85 EG=1.11 XTI=3)
+.model ss14 D(IS=1e-5 N=1.3 RS=0.06 CJO=100p BV=40)
+*
+* ---------------------------------------------------------------------------------------------------------------
+* Schmitt-trigger gate, SN74LVC1G14 / 1G17 / 2G14 class (TI SCES218AA, SCES351Y Table 5-1).
+*   Thresholds passed as fractions of VCC: VT+ 0.487-0.640 VCC, VT- 0.297-0.438 VCC at 3.3 V (WP-D §3 conversion).
+*   Hysteresis is made by feeding the output state back into the threshold. Output resistance 23 ohm
+*   (VOL 0.55 V @ 24 mA at 3.0 V, SCES351Y). Propagation ~5 ns. inv=1 inverting, inv=0 buffer.
+* ---------------------------------------------------------------------------------------------------------------
+.subckt schmitt in out vcc gnd params: ftp=0.56 ftm=0.38 inv=1
+Bth th gnd V = v(vcc,gnd)*({ftm} + ({ftp}-{ftm}) * ( {inv} ? v(s,gnd)/max(v(vcc,gnd),0.1) : 1 - v(s,gnd)/max(v(vcc,gnd),0.1) ))
+Bs si gnd V = v(vcc,gnd)*0.5*(1 + (1-2*{inv})*tanh((v(in,gnd)-v(th,gnd))/2m))
+Rs si s 1k
+Cs s gnd 5p
+Bo oi gnd V = v(s,gnd)
+Ro oi out 23
+.ends schmitt
+*
+* ---------------------------------------------------------------------------------------------------------------
+* Comparator TLV7031 (push-pull) / TLV7041 (open drain) (TI SLVSE13J).
+*   VOS +-8 mV (max), hysteresis 3-25 mV (passed in), tPD ~3 us (RC 4.3 us), output held LOW (7031) below 1.6 V.
+*   Output resistance 100 ohm [EST from the VOH/VOL rows]. od=1 gives an open-drain pull-down output.
+* ---------------------------------------------------------------------------------------------------------------
+.subckt cmp inp inn out vcc gnd params: vos=0 hyst=10m od=0
+Bc ci gnd V = (v(vcc,gnd) > 1.6) * v(vcc,gnd) * 0.5*(1+tanh((v(inp,gnd)-v(inn,gnd)-{vos} - {hyst}*(0.5 - v(cs,gnd)/max(v(vcc,gnd),0.1)))/0.2m))
+Rc ci cs 1k
+Cc cs gnd 4.3n
+Bpp opp gnd V = v(cs,gnd)
+Rpp opp outpp 100
+Rsel1 outpp out {od ? 1e12 : 1m}
+* open-drain: a switch to ground when the internal state is low
+Sod out gnd cslow gnd swod
+Bslow cslow gnd V = {od} * (v(vcc,gnd) > 1.6) * (v(vcc,gnd) - v(cs,gnd))
+.model swod SW(VT=1.0 VH=0.1 RON=50 ROFF=1e12)
+.ends cmp

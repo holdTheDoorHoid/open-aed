@@ -1,0 +1,162 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* datasheet_models.lib — behavioural / level-1 models BUILT BY HAND FROM DATASHEET FIGURES for the
+* open-aed charger and storage simulations (hardware/aed-main/sim/charger-storage).
+* No maker SPICE model was obtained (2026-11-27): Littelfuse/IXYS publishes none for the D2 depletion parts
+* that could be found; onsemi and Diodes Inc. model download links refused automated access or 404'd.
+* Every figure below names its source. [DS] = maker datasheet; [WP-F]/[WP-E] = figures as read by the
+* capture engineer in hardware/aed-main/capture-notes; [EST] = engineering estimate, not from a datasheet.
+* These are NOT makers' models. They reproduce the datasheet's limit values, not the real curves.
+
+* ---------------------------------------------------------------------------------------------------
+* Depletion MOSFET, 1,000 V: Littelfuse/IXYS IXTT10N100D2
+*   [DS] DS100326A(4/17) "Preliminary Technical Information", values as read in WP-F.md §3.1:
+*   VGS(off) -2.5..-4.5 V (VDS 25 V, 1 mA); RDS(on) <= 1.5 ohm (VGS 0, 5 A); ID(on) >= 10 A;
+*   Ciss 5,320 pF, Coss 300 pF, Crss 70 pF (VDS 25 V); IDSX(off) <= 10 uA at 1,000 V, -5 V, 25 C;
+*   <= 250 uA at 125 C. BVDSX normalised 0.94 at -20 C (Fig. 11, curve reading).
+*   Model: level-1 NMOS, VTO = voff (parameter), KP 4 A/V^2 [EST: gives IDSS ~ 24 A, gfs ~ 2 S at 0.5 A];
+*   RD 1.4 ohm to make RDS(on) ~1.5 ohm; Cgs linear (Ciss - Crss); Cgd and Cds as junction capacitances
+*   (M 0.5, VJ 0.7) fitted to Crss/Coss at 25 V; body diode; off-state leakage as an ohmic resistor
+*   rleak (parameter; 100 Mohm = 10 uA at 1,000 V). Breakdown NOT modelled: the simulations report the
+*   voltage a device is asked to block and compare it with the rating.
+.subckt DEP_10N100D2 d g s params: voff=-3.5 rleak=100meg
+M1 di g s s NDEP10
+.model NDEP10 nmos(level=1 vto={voff} kp=4 lambda=0.001)
+RDR d di 1.4
+RLK d s {rleak}
+CGS g s 5.25n
+DGD g di DCGD10
+.model DCGD10 d(is=1e-30 n=50 cjo=424p m=0.5 vj=0.7)
+DBD s di DBODY10
+.model DBODY10 d(is=1e-12 n=1.3 rs=0.02 cjo=1.39n m=0.5 vj=0.7 tt=500n)
+.ends DEP_10N100D2
+
+* ---------------------------------------------------------------------------------------------------
+* Depletion MOSFET, 1,700 V: Littelfuse/IXYS IXTT2N170D2 (TO-268, same package as the 10N100D2)
+*   [DS] IXYS DS100418B(02/12), read 2026-11-27 from a datasheets.com mirror of the IXYS PDF:
+*   VDSX 1,700 V (TJ 25-150 C); BVDSX >= 1,700 V (VGS -5 V, 250 uA); VGS(off) -2.0..-4.0 V (VDS 25 V,
+*   250 uA); IDSX(off) <= 25 uA at VDSX, 25 C; <= 500 uA at 125 C; RDS(on) <= 6.5 ohm (VGS 0, 1 A);
+*   ID(on) >= 2 A; gfs 1.4/2.2 S; Ciss 3,650 pF, Coss 206 pF, Crss 80 pF; Qg 110 nC; RthJC 0.22 K/W;
+*   SOA 204 W at 1,700 V, 120 mA, TC 75 C, 5 s. Temperature coefficient of BVDSX not read (Fig. 12 is
+*   a curve); ASSUMED the same as the 10N100D2 (0.94 at -20 C) [EST].
+.subckt DEP_2N170D2 d g s params: voff=-3.0 rleak=68meg
+M1 di g s s NDEP17
+.model NDEP17 nmos(level=1 vto={voff} kp=0.6 lambda=0.001)
+RDR d di 6.0
+RLK d s {rleak}
+CGS g s 3.57n
+DGD g di DCGD17
+.model DCGD17 d(is=1e-30 n=50 cjo=485p m=0.5 vj=0.7)
+DBD s di DBODY17
+.model DBODY17 d(is=1e-12 n=1.3 rs=0.1 cjo=760p m=0.5 vj=0.7 tt=2.8u)
+.ends DEP_2N170D2
+
+* ---------------------------------------------------------------------------------------------------
+* Generic depletion MOSFET with every figure a parameter, so one netlist can switch part:
+*   dev = 1 -> IXTT10N100D2 values above; dev = 2 -> IXTT2N170D2 values above (see DEPSEL below).
+.subckt DEPMOS d g s params: voff=-3.5 rleak=100meg kp=4 rd=1.4 cgs=5.25n cgd0=424p cds0=1.39n
+M1 di g s s NDEPG
+.model NDEPG nmos(level=1 vto={voff} kp={kp} lambda=0.001)
+RDR d di {rd}
+RLK d s {rleak}
+CGS g s {cgs}
+DGD g di DCGDG
+.model DCGDG d(is=1e-30 n=50 cjo={cgd0} m=0.5 vj=0.7)
+DBD s di DBODYG
+.model DBODYG d(is=1e-12 n=1.3 rs=0.05 cjo={cds0} m=0.5 vj=0.7 tt=1u)
+.ends DEPMOS
+* Parameter sets (use in a netlist as .param expressions of 'dev'):
+*   kp      dev1 4      dev2 0.6        rd   dev1 1.4   dev2 6.0
+*   cgs     dev1 5.25n  dev2 3.57n      cgd0 dev1 424p  dev2 485p     cds0 dev1 1.39n dev2 760p
+*   voff nominal dev1 -3.5 (+-1.0)  dev2 -3.0 (+-1.0)
+*   rleak at max datasheet leakage: dev1 25 C 100M, 70 C 23.5M, -20 C 426M;
+*                                   dev2 25 C 68M,  70 C 17.7M, -20 C 262M  (log interpolation [EST])
+*   rating VDSX: dev1 1,000 V (940 V at -20 C, Fig. 11); dev2 1,700 V (1,598 V at -20 C ASSUMED same factor)
+
+* ---------------------------------------------------------------------------------------------------
+* GP02-40 4 kV small-signal rectifier (proposed gate-steering diode, not on the sheets).
+* [DS] Vishay GP02-40 (datasheet 88523, as recalled; NOT re-read 2026-11-27 [UNVERIFIED]): VRRM 4,000 V,
+* IF(AV) 0.25 A, VF <= 3.0 V at 0.25 A, IR <= 5 uA at VRRM 25 C. Leakage modelled as 2 Gohm at 25 C.
+.subckt GP0240 a k
+D1 a k DGP02
+RLK a k 2g
+.model DGP02 d(is=1e-10 n=3.2 rs=1 bv=4200 ibv=5u cjo=5p tt=2u)
+.ends GP0240
+
+* ---------------------------------------------------------------------------------------------------
+* SMF15CA bidirectional TVS (gate clamp). [DS as quoted in WP-F §3.4]: VBR 16.7-18.5 V, VC 24.4 V at
+* 8.2 A, IR <= 1 uA at 15 V. Two back-to-back junctions; RS from (24.4-17.6)/8.2.
+.subckt SMF15CA a1 a2
+D1 a1 m DTVS15
+D2 a2 m DTVS15
+.model DTVS15 d(is=1e-12 n=1 bv=17.6 ibv=1m nbv=1.5 rs=0.8 cjo=200p)
+.ends SMF15CA
+
+* ---------------------------------------------------------------------------------------------------
+* BAT54 Schottky (one half of BAT54S). [DS] Diodes Inc. DS11005: VF <= 0.24 V at 0.1 mA, <= 0.32 V at
+* 1 mA, <= 0.40 V at 10 mA (25 C); IR <= 2 uA at 25 V; CT 10 pF. IS/N fitted to the max-VF points.
+* Leakage at 60-70 C [EST] 1 uA/V as WP-F. Temperature via XTI/EG (Schottky EG 0.69).
+.model BAT54 d(is=2.0e-8 n=1.15 rs=1.5 bv=30 ibv=10u cjo=10p m=0.5 eg=0.69 xti=2)
+
+* BAV199 low-leakage diode (one half). [DS] Diodes DS30232: VF <= 0.9 V at 1 mA..1.25 V at 150 mA;
+* IR <= 5 nA at 75 V (25 C); trr 3 us. Fitted [EST].
+.model BAV199 d(is=2e-12 n=1.9 rs=1 bv=85 ibv=5n cjo=2p tt=3u)
+
+* MMSZ4688 4.7 V low-current zener. [DS] onsemi: VZ 4.47-4.94 V at IZT 50 uA; IR <= 10 uA at 3 V.
+* Breakdown softness NBV fitted [EST] so VZ falls ~0.2 V from 50 uA to 10 uA. Temperature coefficient
+* NOT read from a datasheet: corners +-0.94 mV/K (TBV1 +-2e-4) [EST]. bvz is a parameter for corners.
+.subckt ZENER a k params: bvz=4.7 tbv=0
+DZ a k DZM
+.model DZM d(is=1e-14 n=1 bv={bvz} ibv=50u nbv=4.8 tbv1={tbv} rs=20)
+.ends ZENER
+
+* ---------------------------------------------------------------------------------------------------
+* TLP187 photo-Darlington optocoupler. [DS] Toshiba TLP187 Rev 6.0 as read in WP-F §5: CTR >= 1,000 %
+* at IF 1 mA, VCE 1 V; saturated CTR >= 500 % at 10 mA; VCE(sat) <= 1.0 V; dark current <= 0.2 uA at
+* 200 V (25 C), <= 20 uA at 85 C; VCEO 300 V. LED VF fitted [EST]: 1.10 V at 1 mA, 25 C (isled
+* parameter for corners); output = ctr x I(LED) collapsing below a ~0.75 V Darlington saturation knee.
+* idark parameter. ctr is the low-IF CTR (WP-F derates to 500 % new / 250 % end of life).
+.subckt TLP187 an ka c e params: ctr=5 isled=4.7e-14 idark=0.2u
+DL an kx DLED
+.model DLED d(is={isled} n=1.8 rs=10 eg=1.42 xti=3 cjo=20p)
+VS kx ka 0
+BC c e I = {ctr}*max(i(VS),0)*(1-exp(-max(v(c,e)-0.55,0)/0.12)) + {idark}*(1-exp(-max(v(c,e),0)/0.1))
+RCE c e 1g
+.ends TLP187
+
+* ---------------------------------------------------------------------------------------------------
+* BSS138 N-MOSFET (release switch, OVP driver). [DS] onsemi BSS138: VGS(th) 0.8-1.5 V; RDS(on) <= 3.5 ohm
+* at 4.5 V... 6 ohm max at 4.5 V (WP-E quotes 6 ohm); Ciss 27 pF. Level-1 fit [EST].
+.model BSS138 nmos(level=1 vto=1.2 kp=0.12 rd=1.0 rs=0.5 cgso=1.2e-6 cgdo=0.5e-6 lambda=0.01 w=20u l=1u)
+
+* MMBFJ177 P-channel JFET (release pilot). [DS] onsemi MMBFJ177LT1 Rev 9: IDSS 1.5-20 mA,
+* VGS(off) 0.8-2.5 V, rDS(on) <= 300 ohm. PJF with VTO = -vp (pinch-off at VGS = +vp). beta fitted so
+* IDSS = beta*vp^2 ~ 5 mA at vp = 1.5 V [EST]; vp is a parameter.
+.subckt J177 d g s params: vp=1.5
+J1 d g s PJ177
+.model PJ177 pjf(vto={-vp} beta={5m/(vp*vp)} lambda=0.01 rd=20 rs=20 cgs=6p cgd=6p is=1e-14)
+.ends J177
+
+* ---------------------------------------------------------------------------------------------------
+* UX-F5B 8 kV / 0.35 A fast HV rectifier (Sanken). [DS as quoted in WP-E]: VF 11 V typ / 14 V max at
+* 0.35 A; trr 70 ns typ / 150 ns max. Modelled as one junction with large N (stacked die) [EST]:
+* VF 11 V at 0.35 A; ttr parameter sets stored charge (TT ~ trr).
+.subckt UXF5B a k params: ttr=100n vfadd=0
+D1 a m DUX
+.model DUX d(is=1e-9 n=18 rs=4 bv=8000 ibv=1u cjo=3p tt={ttr})
+VX m k {vfadd}
+.ends UXF5B
+
+* ES3D 200 V 3 A ultrafast (clamp steering). [DS] Vishay ES3D: VF <= 0.9 V at 3 A, trr <= 20 ns.
+.model ES3D d(is=1e-9 n=1.7 rs=0.03 bv=220 ibv=10u cjo=45p tt=20n)
+
+* SMCJ45A unidirectional TVS. [DS as quoted in WP-E]: VBR 50.0-55.3 V, ~73-75 V at 21-23 A [UNVERIFIED in
+* WP-E]. BV 52.6 V nominal; RS (74-52.6)/22 = 0.97 ohm.
+.model SMCJ45A d(is=1e-12 n=1 bv=52.6 ibv=1m nbv=1.5 rs=0.97 cjo=1.5n)
+
+* BSC070N10LS5 100 V logic-level MOSFET (primary switch), modelled as a switch with Coss.
+* [DS] Infineon: RDS(on) 7 mohm max at 10 V (WP-E uses 8.5 mohm at 5 V gate, 1.55x hot); Coss ~ 600 pF
+* at 50 V [EST from the class]; body diode. One device; the sheet has two in parallel.
+.model SWPRI sw(vt=2.5 vh=0.1 ron=8.5m roff=1meg)
+.model DBODYP d(is=1e-11 n=1.2 rs=5m cjo=2.4n m=0.5 vj=0.7 tt=40n)

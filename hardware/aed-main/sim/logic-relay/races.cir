@@ -1,0 +1,69 @@
+* races.cir - two timing races around the timers that firmware waits depend on (sheets 09 and 12)
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* (A) XFER after a bounce of the relay's auxiliary contact. The contact leaves rest at t = 1 ms; at t = 9 ms it
+*     re-touches for 'wb' (a bounce), then leaves for good. XFER's RC (R1275 110 k, C1253 100 n) is emptied through
+*     D1212 BAS116 during the bounce, but only down to roughly the diode's knee, so the next count starts from
+*     there. Question: how long after the LAST release does XFER rise (rule: >= 10 ms)?
+* (B) Window re-arm release. All consents absent long enough: RA_RC (R969 549 k, C958 100 n) is charged and
+*     REARM_N holds WSTART cleared. At t = 100 ms a consent returns (ANY_N falls). How long until REARM_N is
+*     released (pull-up R972 100 k, 10 pF)? A consent-chain edge (CHAIN rising) inside that time is lost, and the
+*     150 ms window then never starts for that attempt (WSTART stays cleared = window open, SW4 stays on).
+* Nominal parts; models/behavioural.lib.
+
+.include models/behavioural.lib
+.param wb=50u fix=0
+V33 r33 0 3.3
+V50 r50 0 5.08
+* (A) K_LEFT AND K_EN as seen at XF_SRC
+Vx xi 0 PWL(0 0 1m 0 1.001m 3.3 9m 3.3 9.001m 0 {9m+wb} 0 {9.001m+wb} 3.3 60m 3.3)
+* fix=1 (proposed): K_REST_N filtered 10 k / 1 nF before U1210 (10 us), and a 2N7002 with 10 ohm across C1253
+* driven by K_AT_REST (contact back at rest) so every bounce empties the RC completely.
+Rf xi xf {fix ? 10k : 1m}
+Cf xf 0 1n
+Xsb xf xs r33 0 schmitt params: ftp=0.56 ftm=0.38 inv=0
+Rxd xs xsrc 25
+Sdis xrc 0 katr 0 swdis
+.model swdis SW(VT=1.65 VH=0.2 RON=13 ROFF=1e12)
+Bkatr katr 0 V = {fix} * (3.3 - v(xs))
+R1274 xsrc 0 100k
+R1275 xsrc xrc 110k
+D1212 xrc xsrc bas116
+C1253 xrc 0 100n
+R1276 r33 xth 56.2k
+R1277 xth 0 100k
+Xxc xrc xth xfer r33 0 cmp params: vos=0 hyst=10m od=0
+R1278 xfer 0 100k
+* (B) ANY_N high (all absent) from t = 0, falls at 100 ms
+Va ai 0 PWL(0 5.08 100m 5.08 100.01m 0 200m 0)
+Rad ai anyn 25
+R968 anyn 0 100k
+R969 anyn arc 549k
+D906 arc anyn bas116
+C958 arc 0 100n
+R970 r50 ath 56.2k
+R971 ath 0 100k
+Xac ath arc rearmn r50 0 cmp params: vos=0 hyst=10m od=1
+R972 rearmn r50 100k
+Cpin rearmn 0 10p
+
+.control
+set noaskquit
+foreach fx 0 1
+alterparam fix=$fx
+foreach w 1u 10u 50u 200u
+  alterparam wb=$w
+  reset
+  tran 2u 130m 0 2u
+  meas tran tx when v(xfer)=1.65 rise=1
+  let lastrel = 9m + $w
+  let dx = (tx - lastrel)*1000
+  echo "RESULT race XFER fix= $fx bounce_width= $w XFER_after_last_release_ms= $&dx (rule >= 10 ms; 10.4-12.2 ms without a bounce)"
+end
+end
+meas tran trel when v(rearmn)=2.5 rise=1
+let drel = (trel - 100m)*1e6
+echo "RESULT race REARM_N_released_after_consent_returns_us= $&drel"
+.endc
+.end

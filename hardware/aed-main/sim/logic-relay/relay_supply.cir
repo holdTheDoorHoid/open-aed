@@ -1,0 +1,137 @@
+* relay_supply.cir - patient-relay coil supply inrush, VBAT_SYS droop, logic-rail margins, transfer time (I-15)
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Circuit (specs/14_patient_interface.toml groups boostin, boost, holdup, coil; capture-notes/WP-H.md §3.5):
+*   Q1401 DMP3013SFV P-FET input disconnect, R1401 100 k gate-source, C1401 68 nF gate-drain (Miller slew),
+*   R1402 47 k to Q1402 (2N7002, switch here) driven by K_EN; TPS61089 boost (average model: input current limited to
+*   ILIM = 1.03 M / R1406, 8.1 A typ; soft start [EST] 2 ms; efficiency 0.9 [EST]; rectifier passes VIN to VOUT when
+*   VOUT < VIN); 3 x 22 uF on K_VBOOST; D1401 -> K_VCOIL 2 x 3300 uF; DRV110 regulating coil current to IPEAK
+*   0.857 A for 33 ms then IHOLD 0.496 A (average model, fast-decay freewheel at -13 V); coil 12 ohm (15 ohm hot),
+*   inductance 60 mH [EST: not published for any candidate relay].
+*   Relay mechanics [EST]: armature starts when the coil current reaches the pick-up current 0.67 A (8 V / 12 ohm,
+*   G17 class), contacts change over 10 ms later (chosen so that rated 12 V gives the 15 ms operate time of §B7.2).
+* Battery and VBAT_SYS (specs/01, 03): 2 x Molicel P28A, DC resistance per cell 20 mohm at 25 C, 80 mohm at -20 C
+*   [EST: P28A datasheet gives AC impedance only]; protector FETs + 2 mohm sense + 1.92 mohm fuse + connector + wiring
+*   25 mohm [EST]; 200 nH wiring; 60 uF ceramics on VBAT_SYS (C110, C301, C304, C307, C312, C1001, C1002, C210).
+*   Other loads: 5V0_SYS buck 0.5 A out [EST, sheets 09/12/13 during a shock] at 90 %, 3V3 rails 0.6 W total.
+*   5V0_SYS in dropout = VIN - 0.5 A x 0.232 ohm (WP-B/03 group 'five': RDS + L + fuse); BRIDGE_5V = 5V0_SYS - 0.25 A x
+*   4 x 79 mohm (SW1-SW4).
+* mode 0 = as drawn: K_EN at t = 1 ms turns on Q1401, the boost and the DRV110 together.
+* mode 1 = proposed: the reservoir was pre-charged earlier (separate enable); K_EN at 1 ms only starts the DRV110;
+*          boost ILIM lowered to 2.5 A (R1406 412 k).
+* mode 2 = proposed pre-charge event itself: Q1401 slew C1401 = 680 nF, ILIM 2.5 A or 2.0 A (R1406 412 k or 515 k),
+*          coil not driven.
+
+.param mode=0 ocv=7.4 rcell=20m rcoil=12 lcoil=60m creserv=6.6m
+.param c1401={mode==2 ? 680n : 68n}
+.param ilimp=2.5
+.param ilim={mode==0 ? 8.1 : ilimp}
+.param tss=2m eta=0.9
+
+* ---- battery and VBAT_SYS
+Vocv ocv 0 {ocv}
+Rcells ocv bp {2*rcell}
+Vibat bp bp2 0
+Rpath bp2 bw 25m
+Lw bw vbs 200n
+Cvb vbs vbsc 60u
+Rcvb vbsc 0 5m
+* other loads (constant power, switched off below their UVLO)
+B5 vbs 0 I = (v(vbs) > 2.7) * (0.5*5.08/0.9) / max(v(vbs), 2.7)
+B33 vbs 0 I = (v(vbs) > 2.5) * 0.6 / max(v(vbs), 2.5)
+* derived rails (signals only)
+B5v v5 0 V = min(5.08, v(vbs) - 0.5*0.232)
+Bb5 b5v 0 V = v(v5) - 0.25*0.316
+
+* ---- enables
+Vken ken 0 PULSE(0 1 1m 1u 1u 1 2)
+Bq2 q2c 0 V = {mode==1} ? 0 : v(ken)
+* mode 1: Q1401 already fully on (reservoir pre-charged), represented by its on-resistance
+Rq1401on vbs kvin {mode==1 ? 17m : 1e9}
+Bbst ben 0 V = {mode==1} ? 1 : v(ken)
+Bcoil cen 0 V = {mode==2} ? 0 : v(ken)
+
+* ---- Q1401 input disconnect
+R1401 vbs kpg 100k
+C1401 kpg kvin {c1401}
+R1402 kpg kpgd 47k
+S1402 kpgd 0 q2c 0 swq
+.model swq SW(VT=0.5 VH=0.1 RON=3 ROFF=1e10)
+* Q1401 as a square-law P-MOSFET (VTH 1.8 V, beta 60 A/V^2 [EST: RDS(on) ~ 17 mohm at VGS -4.5 V, DMP3013SFV])
+Bq1401 vbs kvin I = 60 * ( max(0,v(vbs,kpg)-1.8)*min(max(v(vbs,kvin),0), max(0,v(vbs,kpg)-1.8)) - 0.5*min(max(v(vbs,kvin),0), max(0,v(vbs,kpg)-1.8))^2 )
+Cgs1401 vbs kpg 3n
+Ckvin kvin 0 44u
+Rkvin kvin 0 1Meg
+
+* ---- TPS61089 average model
+Dpass kvin kvb dpass
+.model dpass D(IS=1e-4 N=1.5 RS=20m)
+Bvset vset 0 V = {mode==1} ? 11.96 : 11.96*min(1, max(0, time-1m)/{tss})*v(ben)
+Biin kvin 0 I = v(ben) * min(1, max(0, v(kvin)-2.5)/0.2) * min({ilim}, max(0, 20*(v(vset) - v(kvb))))
+Biout 0 kvb I = {eta} * v(kvin) * v(ben) * min(1, max(0, v(kvin)-2.5)/0.2) * min({ilim}, max(0, 20*(v(vset) - v(kvb)))) / max(v(kvb), 1)
+Ckvb kvb 0 66u
+D1401 kvb kvc dres
+.model dres D(IS=1e-5 N=1.3 RS=15m)
+Cres kvc kvcc {creserv}
+Rres kvcc 0 30m
+Rbl kvc 0 50k
+* reservoir state at t = 0: empty as drawn (mode 0, 2), pre-charged in mode 1
+.ic v(kvb)={mode==1 ? 11.96 : 0} v(kvc)={mode==1 ? 11.7 : 0}
+
+* ---- DRV110 + coil (current regulated, fast decay)
+Bset iset 0 V = (time < 34m) ? 0.857 : 0.496
+Bapp ca 0 V = v(cen) * ( v(kvc) * 0.5*(1 - tanh((i(Vcs) - v(iset))/5m)) - 13 * 0.5*(1 + tanh((i(Vcs) - v(iset))/5m)) ) + (1-v(cen))*(-13)*(i(Vcs) > 1m)
+Vcs ca cb 0
+Rcoil cb cc {rcoil}
+Lcoil cc 0 {lcoil}
+Bkc kvc 0 I = max(0, i(Vcs)) * max(0, v(ca) + 13) / max(v(kvc) + 13, 1)
+
+.control
+set noaskquit
+foreach md 0 1
+  alterparam mode=$md
+  foreach oc 8.4 7.4 6.0
+    foreach rc 20m 80m
+      alterparam ocv=$oc
+      alterparam rcell=$rc
+      reset
+      tran 5u 60m 0 5u
+      meas tran ibpk max i(Vibat) from=0.5m to=60m
+      meas tran vbmin min v(vbs) from=0.5m to=60m
+      meas tran v5min min v(v5) from=0.5m to=60m
+      meas tran b5min min v(b5v) from=0.5m to=60m
+      meas tran tpick when i(Vcs)=0.67 rise=1
+      meas tran kvcmax max v(kvc)
+      let tover2a_ms = 0
+      if ibpk > 2.0
+        meas tran ib20 when i(Vibat)=2.0 fall=last
+        let tover2a_ms = (ib20 - 1m)*1000
+      end
+      let tpick_ms = (tpick - 1m)*1000
+      let ttrans_ms = tpick_ms + 10
+      echo "RESULT relay mode= $md ocv= $oc rcell= $rc Ibat_peak_A= $&ibpk VBAT_SYS_min_V= $&vbmin 5V0_SYS_min_V= $&v5min BRIDGE_5V_min_V= $&b5min coil_pickup_ms= $&tpick_ms contacts_transfer_ms= $&ttrans_ms Ibat_above_2A_until_ms= $&tover2a_ms"
+    end
+  end
+end
+* pre-charge event with the proposed parts (no coil)
+alterparam mode=2
+foreach il 2.5 2.0
+alterparam ilimp=$il
+foreach oc 7.4 6.0
+  foreach rc 20m 80m
+    alterparam ocv=$oc
+    alterparam rcell=$rc
+    reset
+    tran 20u 400m 0 20u
+    meas tran ibpk max i(Vibat) from=0.5m to=400m
+    meas tran vbmin min v(vbs) from=0.5m to=400m
+    meas tran v5min min v(v5) from=0.5m to=400m
+    meas tran tfull when v(kvc)=11.0 rise=1
+    let tfull_ms = (tfull-1m)*1000
+    echo "RESULT relay_precharge ilim= $il ocv= $oc rcell= $rc Ibat_peak_A= $&ibpk VBAT_SYS_min_V= $&vbmin 5V0_SYS_min_V= $&v5min reservoir_at_11V_ms= $&tfull_ms"
+  end
+end
+end
+.endc
+.end

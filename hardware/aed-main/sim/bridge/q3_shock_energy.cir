@@ -1,0 +1,82 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Question 3: shock energy through the sheet-13 bridge.
+*  3a  normal biphasic truncated exponential (phase timings from firmware/crates/aed-waveform/DESIGN_TABLE.md);
+*  3b  issue I-13: the firmware fails and only a hardware time limit ends the pulse:
+*      P1-frozen = phase-1 low-side command stuck high, phase 1 runs t1 = the limit, then the turn-off order,
+*                  no phase 2 (p2en = 0);
+*      P2-frozen = phase 1 as planned, phase-2 command stuck, phase 2 runs t2 = the limit.
+* Sequence (HARDWARE_DESIGN.md F-4): CMD_HA; +100 us CMD_LB (phase 1, length t1); CMD_LB low; +15 us G_HA low and
+* G_HB high; CMD_LA at end of phase 1 + 0.5 ms (phase 2, length t2); CMD_LA low; +15 us G_HB low.
+* Carrier synchronisation delay 2 us. Defaults = adult, 25 ohm. run.sh sweeps the .param lines below.
+.include bridge_common.inc
+.param v0=1950
+.param rp=25
+.param t1=3e-3
+.param t2=2e-3
+.param p2en=1
+.param lpat=1.5u
+.param lst=50n
+.param tc=55
+.param ths=200u
+.param tlb={ths+100u}
+.param tla={tlb+t1+0.5m}
+Vgnd0 rtn 0 0
+Cmain capi rtn 100u
+Vchg vchg 0 {v0}
+Rchg vchg capi 1G
+XB capi rtn oa ob gha ghb gla glb lss tjha tjla tjhb tjlb bus isn hbridge params: lst={lst} tc={tc}
+XP oa ob patient params: rp={rp} lpat={lpat}
+* low-side rails (MGJ2 +20.7 / -5 V about the Kelvin source)
+Vpos vp lss 20.7
+Vneg vn lss -5
+Vb5 b5v 0 5
+* commands (0/1 V logic, 20 ns edges)
+Vcla cla 0 PWL(0 0 {tla} 0 {tla+20n} {p2en} {tla+t2} {p2en} {tla+t2+20n} 0)
+Vclb clb 0 PWL(0 0 {tlb} 0 {tlb+20n} 1 {tlb+t1} 1 {tlb+t1+20n} 0)
+Vcha cha 0 PWL(0 0 {ths+2u} 0 {ths+2u+20n} 1 {tlb+t1+15u} 1 {tlb+t1+15u+20n} 0)
+Vchb chb 0 PWL(0 0 {tlb+t1+17u} 0 {tlb+t1+17u+20n} {p2en} {tla+t2+15u} {p2en} {tla+t2+15u+20n} 0)
+XDLA cla vp vn gla lss lsdrv
+XDLB clb vp vn glb lss lsdrv
+XDHA cha b5v gha oa hsdrv
+XDHB chb b5v ghb ob hsdrv
+.options method=trap reltol=1e-3 abstol=1e-6 vntol=1e-4 itl4=100
+.control
+set noaskquit
+let tstop_req = 30.5e-3
+tran 1u 30.5m 0 1u
+let ip = v.xp.vpat#branch
+let pdel = ip*(v(xp.p3)-v(xp.p4))
+meas tran edel integ pdel
+let pha = (v(xb.dha)-v(xb.oai))*v.xb.vmha#branch
+let plb = (v(xb.dlb)-v(lss))*v.xb.vmlb#branch
+let phb = (v(xb.dhb)-v(xb.obi))*v.xb.vmhb#branch
+let pla = (v(xb.dla)-v(lss))*v.xb.vmla#branch
+let prs = v.xb.vmha#branch*v.xb.vmha#branch*3.9 + v.xb.vmhb#branch*v.xb.vmhb#branch*3.9
+meas tran eha integ pha
+meas tran elb integ plb
+meas tran ehb integ phb
+meas tran ela integ pla
+meas tran ers integ prs
+meas tran ipk1 max ip
+meas tran ipk2 min ip
+meas tran tjha max tjha
+meas tran tjlb max tjlb
+meas tran tjhb max tjhb
+meas tran tjla max tjla
+let vdlb = v(xb.dlb)-v(lss)
+let vdla = v(xb.dla)-v(lss)
+meas tran vlbmax max vdlb
+meas tran vlamax max vdla
+let vc = v(capi)
+let n = length(vc)-1
+let vend = vc[n]
+let te = time[n]
+let ehm = eha*1000
+let elm = elb*1000
+let ehbm = ehb*1000
+let elam = ela*1000
+echo "RESULT CASE_LABEL | Edel=$&edel J | Ipk1=$&ipk1 A | Ipk2=$&ipk2 A | E_mJ QHA=$&ehm QLB=$&elm QHB=$&ehbm QLA=$&elam | E_RS=$&ers J | Tj QHA=$&tjha QLB=$&tjlb QHB=$&tjhb QLA=$&tjla | VDSmax QLB=$&vlbmax QLA=$&vlamax | Vcap_end=$&vend | t_end=$&te of $&tstop_req"
+.endc
+.end

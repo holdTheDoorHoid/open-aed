@@ -1,0 +1,86 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Behavioural electro-thermal model of the Microchip MSC080SMA330B4N (3.3 kV, 80 mOhm SiC MOSFET).
+* BUILT BY THIS PROJECT FROM THE DATASHEET, NOT THE MAKER'S MODEL. Microchip's SPICE download
+* (microchip.com software library) returned HTTP 403 to automated retrieval on 2026-11-27.
+* Datasheet used: DS00005914A (2025), copy from https://docs.rs-online.com/a067/A700000015733917.pdf,
+* read 2026-11-27.
+*
+* Figures used and how:
+*  - Channel: square law Id = K*(Vgs-Vt)^2 in saturation, level-1 linear region below it.
+*    Fitted to Fig 1-2 (Tj 25 C, VDS 35 V): 6 V -> ~3 A, 8 V -> ~16 A, 10 V -> ~38 A, 12 V -> ~65 A,
+*    14 V -> ~100 A  =>  K = 1.03 A/V^2, Vt = 4.06 V (extrapolated square-law threshold, not the 3 mA
+*    VGS(th) of Table 1-3).  Fig 1-4 (150 C): 6 V -> ~13 A, 10 V -> ~65 A => Vt = 2.77 V.
+*    Vt(T) = vt25 - 0.0103*(T-25) [linear between the two fits]. K held constant with temperature
+*    (the 150 C fit gives a higher K, but mobility falls with T at high VGS; constant K is the
+*    middle choice) [EST].
+*  - Mobility degradation th (default 0): kp/(1+th*Vov). th=0 gives ~230 A at VGS 20 V in saturation;
+*    th=0.06 gives ~170 A. Fig 1-2 is not saturated at 35 V for VGS >= 16 V, so the true value is
+*    unknown; netlists run th=0 (more current, worse for shoot-through) and report th as a sensitivity.
+*  - Channel-length modulation lam = 1e-4 /V (+22 % current at 2.2 kV) [ASSUMPTION: the datasheet gives
+*    no saturation data above 35 V; SiC short-circuit currents at kV are known to exceed the low-VDS curves].
+*  - RDS(on) 106 mOhm MAX at 20 V/25 C (Table 1-3) = channel (1/(2*K*16 V) = 30 mOhm) + rd25 76 mOhm.
+*    Temperature factor of Fig 1-5: f(T) = 1 + 0.0072*(T-25) + 1.92e-5*(T-25)^2 (1.41 at 75, 2.2 at 150).
+*  - Gate: internal ESR 3.7 Ohm (Table 1-4); Cgs = Ciss - Crss = 3.46 nF; Cgd = 2.02 nF/(1+V)^0.8, i.e.
+*    4 pF at 2.4 kV (Crss) and ~49 nC from 0 to 2.65 kV (QGD 51 nC, Table 1-4); 1.2 nF at 1 V.
+*    (modelled as the capacitance of a junction that never conducts).
+*  - Coss: body-diode junction capacitance CJO 3.1 nF, VJ 1 V, M 0.5 -> 64 pF at 2.4 kV, ~300 nC at
+*    2.4 kV (Fig 1-7/1-8, +/-20 %).
+*  - Body diode: IS 1e-15, N 3.4, RS 25 mOhm -> 4.1 V at 30 A (Table 1-5: 4.2 V typ at VGS -5 V).
+*    Reverse recovery not modelled (Qrr 818 nC is mostly capacitive in SiC).
+*  - Thermal: Foster network fitted to the single-pulse Zth of Fig 1-18 as read in WP-G section 4
+*    (0.016 C/W at 10 us ... 0.28 plateau) and EXTRAPOLATED below 10 us as sqrt(t)
+*    (0.0051 at 1 us, 0.0016 at 0.1 us). The fit is within +/-1.5 % of those points. Case node held at
+*    the parameter tc (starting junction temperature). Node tj carries the junction temperature in
+*    volts = degrees C. The electrical parameters follow tj (electro-thermal).
+*  - No avalanche, no short-circuit failure, no gate leakage, no turn-off SOA: the datasheet publishes
+*    none of these, so the model cannot say when the part is destroyed. Judge results against Tj 150 C
+*    (rating) and treat anything beyond it as "outside every published figure".
+*
+* Pins: d g s tj    (g = external gate pin; tj = thermal output node, leave it to a probe)
+.subckt msc080b d g s tj params: tc=55 vt25=4.06 kp=1.03 lam=1e-4 rd25=0.0755 th=0
+Rgi g gi 3.7
+Cgs gi s 3.46n
+* gate-drain capacitance as a never-conducting junction (IS 1e-30, N 50: < 1e-20 A at +20 V forward)
+Dcgd gi d dcgd_msc
+.model dcgd_msc d (is=1e-30 n=50 cjo=2.02n vj=1 m=0.8 fc=0.5)
+* drain series resistance (temperature dependent)
+Brd d di I = V(d,di) / ( rd25*(1 + 0.0072*(V(tj)-25) + 1.92e-5*(V(tj)-25)^2) )
+* channel
+Bch di s I = kp/(1+th*0.1*ln(1+exp((V(gi,s)-(vt25-0.0103*(V(tj)-25)))/0.1)))*(1+lam*abs(V(di,s))) * sgn(V(di,s)) *
++ ( abs(V(di,s)) < 0.1*ln(1+exp((V(gi,s)-(vt25-0.0103*(V(tj)-25)))/0.1)) ?
++   2*0.1*ln(1+exp((V(gi,s)-(vt25-0.0103*(V(tj)-25)))/0.1))*abs(V(di,s)) - V(di,s)^2 :
++   (0.1*ln(1+exp((V(gi,s)-(vt25-0.0103*(V(tj)-25)))/0.1)))^2 )
+* body diode with Coss as its junction capacitance; current measured by Vbd
+Vbd s sb 0
+Dbody sb di dbody_msc
+.model dbody_msc d (is=1e-15 n=3.4 rs=0.025 cjo=3.1n vj=1 m=0.5 bv=4000)
+* dissipated power into the thermal network
+Bpwr 0 tj I = V(d,di)^2/( rd25*(1 + 0.0072*(V(tj)-25) + 1.92e-5*(V(tj)-25)^2) )
++ + V(di,s)*( kp/(1+th*0.1*ln(1+exp((V(gi,s)-(vt25-0.0103*(V(tj)-25)))/0.1)))*(1+lam*abs(V(di,s))) * sgn(V(di,s)) *
++ ( abs(V(di,s)) < 0.1*ln(1+exp((V(gi,s)-(vt25-0.0103*(V(tj)-25)))/0.1)) ?
++   2*0.1*ln(1+exp((V(gi,s)-(vt25-0.0103*(V(tj)-25)))/0.1))*abs(V(di,s)) - V(di,s)^2 :
++   (0.1*ln(1+exp((V(gi,s)-(vt25-0.0103*(V(tj)-25)))/0.1)))^2 ) )
++ + abs(I(Vbd)*V(s,di))
+* Foster network, tau / R from the fit (C = tau/R)
+Vcase tcase 0 {tc}
+R1 tj t1 0.00186
+C1 tj t1 53.8u
+R2 t1 t2 0.00067
+C2 t1 t2 746u
+R3 t2 t3 0.00329
+C3 t2 t3 608u
+R4 t3 t4 0.01060
+C4 t3 t4 943u
+R5 t4 t5 0.00934
+C5 t4 t5 5.35m
+R6 t5 t6 0.02161
+C6 t5 t6 11.57m
+R7 t6 t7 0.04678
+C7 t6 t7 21.4m
+R8 t7 t8 0.07920
+C8 t7 t8 50.5m
+R9 t8 tcase 0.10777
+C9 t8 tcase 139m
+.ends msc080b

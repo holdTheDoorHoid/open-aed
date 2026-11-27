@@ -1,0 +1,326 @@
+* det_permit.cir - consent detector PERMIT_CLK -> PERMIT_OK (sheet 09, group det_pd; TEST_PERMIT is identical)
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Circuit copied from hardware/aed-main/specs/09_interlock.toml (R922-R932, C921-C929, D901-D902, U910, U911).
+* Models: models/behavioural.lib (datasheet-figure behavioural models, see that file).
+* Corners (each part's band = tolerance + temperature drift + life, as in capture-notes/WP-D.md §3):
+*   C0G +-5.5 %, thin film +-0.35 %, thick film +-2 %, 3V3_SUP 3.2-3.4 V, -20 / +70 C (diodes only; everything
+*   else carries temperature inside its band), TLV7031 VOS +-8 mV, hysteresis 3-25 mV, LVC Schmitt VT+ 0.487-0.640,
+*   VT- 0.297-0.438 of VCC.
+* Corner 1 = nominal. Corner 2 'HOLD' = everything that makes the consent drop EARLY (cold, low supply, high diode
+* drop, small pump caps, high threshold). Corner 3 'LONG' = everything that makes consent last LONGEST (hot, high
+* supply, low diode drop, large pump caps, low threshold, wide hysteresis).
+
+.include models/behavioural.lib
+
+.param vdd=3.3 tdeg=25
+.param dis=2.5e-9 dn=1.75 drs=1.0
+.param kcc=1 kch=1 krb=1 kthtop=1 kthbot=1 vos=0 hyst=10m
+.param kfr=1 kfc=1 ftp=0.56 ftm=0.38
+.param rip=0 fr=20k tramp=1n icon=1
+* clock: first edge t0, period per, pulse width pw, number of pulses np
+.param t0=1m per=1m pw=0.5m np=20 tstop=40m
+
+.model bavp D(IS={dis} N={dn} RS={drs} CJO=1.5p TT=4n BV=100 EG=1.11 XTI=3)
+
+* 3V3_SUP with optional ripple (PFM bursts of the TPS629210 at light load, [EST] 20 kHz)
+Vsup sup0 0 SIN({vdd} {rip} {fr})
+Bsup sup 0 V = v(sup0)*min(1, time/{tramp})
+* supervisor GPIO on 3V3_SUP (25 ohm), then the board wiring
+Vclk clki 0 PULSE(0 {vdd} {t0} 0.1u 0.1u {pw} {per} {np})
+Rdrv clki pclk 25
+R922 pclk 0 100k
+R923 pclk f1 {4.7k*kfr}
+C921 f1 0 {3.9n*kfc}
+R924 f1 f2 {47k*kfr}
+C922 f2 0 {390p*kfc}
+R925 f2 0 1Meg
+* U910: gate 1 squares and inverts (PH1), gate 2 re-inverts (PH2)
+Xg1 f2 ph1 sup 0 schmitt params: ftp={ftp} ftm={ftm} inv=1
+Xg2 ph1 ph2 sup 0 schmitt params: ftp={ftp} ftm={ftm} inv=1
+C923 sup 0 100n
+* phase 1 pump
+R926 ph1 p1a {470*1.0}
+C924 p1a p1b {220n*kcc}
+C925 p1b x1 {220n*kcc}
+D901a 0 x1 bavp temp={tdeg}
+D901b x1 h bavp temp={tdeg}
+* phase 2 pump
+R927 ph2 p2a 470
+C926 p2a p2b {220n*kcc}
+C927 p2b x2 {220n*kcc}
+D902a 0 x2 bavp temp={tdeg}
+D902b x2 h bavp temp={tdeg}
+* hold node PD_H
+C928 h 0 {100n*kch}
+R928 h 0 {71.5k*krb}
+R929 h 0 {71.5k*krb}
+* threshold 0.301 x 3V3_SUP
+R930 sup th {464k*kthtop}
+R931 sup th {464k*kthtop}
+R932 th 0 {100k*kthbot}
+* U911 TLV7031, PERMIT_OK with R902 100k pull-down on sheet 09
+Xc h th ok sup 0 cmp params: vos={vos} hyst={hyst} od=0
+R902 ok 0 100k
+* squared copy of PERMIT_OK for counting transitions (not part of the circuit)
+Bsq oksq 0 V = 0.5*(1+tanh((v(ok)-1.65)/0.05))
+* pump nodes start discharged (otherwise the DC solution leaves the floating pump nodes at an arbitrary level)
+* (phase 1 sits high at rest because gate 1 inverts a low line: its coupling capacitors start charged)
+.ic v(h)=0 v(x1)=0 v(x2)=0 v(p1a)={vdd*icon} v(p1b)={vdd*icon/2} v(p2b)=0 v(p2a)=0
+
+.control
+set noaskquit
+set wr_singlescale
+option interp
+let ncorner = 3
+foreach corner 1 2 3
+  if $corner = 1
+    alterparam vdd=3.3
+    alterparam tdeg=25
+    alterparam dis=2.5e-9
+    alterparam dn=1.75
+    alterparam drs=1.0
+    alterparam kcc=1
+    alterparam kch=1
+    alterparam krb=1
+    alterparam kthtop=1
+    alterparam kthbot=1
+    alterparam vos=0
+    alterparam hyst=10m
+    alterparam kfr=1
+    alterparam kfc=1
+    alterparam ftp=0.56
+    alterparam ftm=0.38
+    set cname = NOMINAL
+  end
+  if $corner = 2
+    alterparam vdd=3.2
+    alterparam tdeg=-20
+    alterparam dis=3.15e-10
+    alterparam dn=1.85
+    alterparam drs=3.4
+    alterparam kcc=0.945
+    alterparam kch=0.945
+    alterparam krb=0.9965
+    alterparam kthtop=0.9965
+    alterparam kthbot=1.0035
+    alterparam vos=8m
+    alterparam hyst=3m
+    alterparam kfr=1.02
+    alterparam kfc=1.055
+    alterparam ftp=0.64
+    alterparam ftm=0.297
+    set cname = HOLD_EARLY_DROP
+  end
+  if $corner = 3
+    alterparam vdd=3.4
+    alterparam tdeg=70
+    alterparam dis=1.0e-8
+    alterparam dn=1.70
+    alterparam drs=0.8
+    alterparam kcc=1.055
+    alterparam kch=1.055
+    alterparam krb=1.0035
+    alterparam kthtop=1.0035
+    alterparam kthbot=0.9965
+    alterparam vos=-8m
+    alterparam hyst=25m
+    alterparam kfr=0.98
+    alterparam kfc=0.945
+    alterparam ftp=0.487
+    alterparam ftm=0.438
+    set cname = LONG_CONSENT
+  end
+
+  * ---- T1: 1 kHz, duty 30 %, 20 pulses: time to valid; hold after the last edge
+  alterparam t0=1m
+  alterparam per=1m
+  alterparam pw=0.3m
+  alterparam np=20
+  reset
+  tran 2u 40m 0 2u
+  let vh = v(sup)/2
+  meas tran ton when v(ok)=1.6 rise=1
+  meas tran toff when v(ok)=1.6 fall=last
+  meas tran vhpk max v(h) from=15m to=21m
+  meas tran vthr avg v(th) from=15m to=21m
+  let lastedge = 1m + 19*1m + 0.3m
+  let t_valid_ms = (ton - 1m)*1000
+  let hold_ms = (toff - lastedge)*1000
+  echo "RESULT det $cname T1_1kHz_d30 valid_after_first_edge_ms= $&t_valid_ms hold_after_last_edge_ms= $&hold_ms hold_node_peak_V= $&vhpk threshold_V= $&vthr"
+
+  * ---- T1b: 1 kHz, duty 70 %
+  alterparam pw=0.7m
+  reset
+  tran 2u 40m 0 2u
+  meas tran toff when v(ok)=1.6 fall=last
+  let lastedge = 1m + 19*1m + 0.7m
+  let hold_ms = (toff - lastedge)*1000
+  echo "RESULT det $cname T1b_1kHz_d70 hold_after_last_edge_ms= $&hold_ms"
+
+  * ---- T2: 5 kHz, duty 50 %, 100 pulses: invalid after the last edge
+  alterparam per=0.2m
+  alterparam pw=0.1m
+  alterparam np=100
+  reset
+  tran 1u 40m 0 1u
+  meas tran toff when v(ok)=1.6 fall=last
+  meas tran vhpk max v(h) from=15m to=21m
+  let lastedge = 1m + 99*0.2m + 0.1m
+  let coll_ms = (toff - lastedge)*1000
+  echo "RESULT det $cname T2_5kHz collapse_after_last_edge_ms= $&coll_ms hold_node_peak_V= $&vhpk"
+
+  * ---- T3: line goes high once and stays high (stuck high / one transition / slow edge after the Schmitt)
+  alterparam per=1
+  alterparam pw=0.9
+  alterparam np=1
+  reset
+  tran 2u 30m 0 2u
+  * fraction of the supply: the comparator output is rail to rail, so its integral is the time it was high
+  let hi = v(ok)/(v(sup)+1e-6)
+  let ih = integ(hi)
+  let tstuck_ms = ih[length(ih)-1]*1000
+  meas tran vhpk max v(h)
+  echo "RESULT det $cname T3_stuck_high consent_ms= $&tstuck_ms hold_node_peak_V= $&vhpk"
+
+  * ---- T4: single positive glitch of width w on PERMIT_CLK (from a quiet low line)
+  foreach w 5u 10u 15u 20u 30u 50u 100u 300u 1m
+    alterparam per=1
+    alterparam pw=$w
+    alterparam np=1
+    reset
+    tran 1u 30m 0 1u
+    * fraction of the supply: the comparator output is rail to rail, so its integral is the time it was high
+    let hi = v(ok)/(v(sup)+1e-6)
+    let ih = integ(hi)
+    let tg_ms = ih[length(ih)-1]*1000
+    echo "RESULT det $cname T4_glitch_w= $w consent_ms= $&tg_ms"
+  end
+
+  * ---- T5: 100 kHz square wave (pin left on a fast clock): must give nothing
+  alterparam per=10u
+  alterparam pw=5u
+  alterparam np=1000
+  reset
+  tran 0.2u 12m 0 0.2u
+  meas tran okmax max v(ok)
+  meas tran f2pp pp v(f2) from=5m to=11m
+  echo "RESULT det $cname T5_100kHz ok_max_V= $&okmax schmitt_input_pp_V= $&f2pp"
+end
+
+* ---- T6 (nominal parts): 30 mV p-p, 20 kHz ripple on 3V3_SUP during the collapse - count PERMIT_OK edges
+alterparam vdd=3.3
+alterparam tdeg=25
+alterparam dis=2.5e-9
+alterparam dn=1.75
+alterparam drs=1.0
+alterparam kcc=1
+alterparam kch=1
+alterparam krb=1
+alterparam kthtop=1
+alterparam kthbot=1
+alterparam vos=0
+alterparam kfr=1
+alterparam kfc=1
+alterparam ftp=0.56
+alterparam ftm=0.38
+alterparam per=1m
+alterparam pw=0.5m
+alterparam np=20
+alterparam rip=15m
+foreach hy 3m 25m
+  alterparam hyst=$hy
+  reset
+  tran 1u 35m 0 1u
+  let tv = integ(abs(deriv(v(oksq))))
+  let edges = tv[length(tv)-1]
+  echo "RESULT det RIPPLE_30mVpp_20kHz hyst= $hy PERMIT_OK_transitions= $&edges (2 = clean on/off)"
+end
+alterparam rip=0
+alterparam hyst=10m
+* ---- T0: supervisor power-up, 3V3_SUP rising in 1 ms (TPS629210 soft start [EST]), PERMIT_CLK held low
+alterparam tramp=1m
+alterparam icon=0
+alterparam per=1
+alterparam pw=0.5
+alterparam np=1
+alterparam t0=1
+foreach corner 1 3
+  if $corner = 3
+    alterparam vdd=3.4
+    alterparam tdeg=70
+    alterparam dis=1.0e-8
+    alterparam dn=1.70
+    alterparam drs=0.8
+    alterparam kcc=1.055
+    alterparam kch=1.055
+    alterparam krb=1.0035
+    alterparam kthtop=1.0035
+    alterparam kthbot=0.9965
+    alterparam vos=-8m
+    alterparam hyst=25m
+  end
+  reset
+  tran 2u 30m 0 2u
+  * fraction of the supply: the comparator output is rail to rail, so its integral is the time it was high
+  let hi = v(ok)/(v(sup)+1e-6)
+  let ih = integ(hi)
+  let tpu = ih[length(ih)-1]*1000
+  meas tran vhpk max v(h)
+  echo "RESULT det POWERUP corner= $corner consent_after_3V3_SUP_rise_ms= $&tpu hold_node_peak_V= $&vhpk"
+end
+* ---- T7 (proposed): bleed resistors R928/R929 71.5 k -> 64.9 k; hold at the HOLD corner, collapse at the LONG corner
+alterparam tramp=1n
+alterparam icon=1
+alterparam t0=1m
+alterparam per=1m
+alterparam pw=0.3m
+alterparam np=20
+alterparam vdd=3.2
+alterparam tdeg=-20
+alterparam dis=3.15e-10
+alterparam dn=1.85
+alterparam drs=3.4
+alterparam kcc=0.945
+alterparam kch=0.945
+alterparam krb=0.9045
+alterparam kthtop=0.9965
+alterparam kthbot=1.0035
+alterparam vos=8m
+alterparam hyst=3m
+alterparam kfr=1.02
+alterparam kfc=1.055
+alterparam ftp=0.64
+alterparam ftm=0.297
+reset
+tran 2u 40m 0 2u
+meas tran toff when v(ok)=1.6 fall=last
+let hold_ms = (toff - 20.3m)*1000
+echo "RESULT det PROPOSED_bleed_64k9 HOLD_corner 1kHz hold_after_last_edge_ms= $&hold_ms (need >= 3)"
+alterparam vdd=3.4
+alterparam tdeg=70
+alterparam dis=1.0e-8
+alterparam dn=1.70
+alterparam drs=0.8
+alterparam kcc=1.055
+alterparam kch=1.055
+alterparam krb=0.9109
+alterparam kthtop=1.0035
+alterparam kthbot=0.9965
+alterparam vos=-8m
+alterparam hyst=25m
+alterparam kfr=0.98
+alterparam kfc=0.945
+alterparam ftp=0.487
+alterparam ftm=0.438
+alterparam per=0.2m
+alterparam pw=0.1m
+alterparam np=100
+reset
+tran 1u 40m 0 1u
+meas tran toff when v(ok)=1.6 fall=last
+let coll_ms = (toff - 20.9m)*1000
+echo "RESULT det PROPOSED_bleed_64k9 LONG_corner 5kHz collapse_after_last_edge_ms= $&coll_ms (need <= 8)"
+.endc
+.end

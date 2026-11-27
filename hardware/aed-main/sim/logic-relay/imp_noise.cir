@@ -1,0 +1,106 @@
+* imp_noise.cir - compression (impedance) sensing noise budget and charger interference (I-14)
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Small-signal model at the 64 kHz carrier of sheet 15 (specs/15_frontend_main.toml groups drive, sense, rld):
+*   drive taps: RESP_MODP/N -> R1505/R1506 2.0 k -> 2 x 24 k DPCR in parallel -> 2 x 4.7 nF in series -> pad;
+*   sense taps: pad -> 51 k DPCR -> 10 k -> 2.2 nF -> IN1P/N, each input biased by 10 M to AVDD and 10 M to GND,
+*   ADS1292R input capacitance 5 pF [EST]; ECG branch 10 k -> 470 pF across, RLD 10 M to each ECG node;
+*   C1505 470 pF sits ACROSS the shared clamp nodes (via R1509/R1510 10 k) and so also loads the 64 kHz signal.
+*   patient between the pads: rp (25 or 175 ohm, plus 1 ohm for the sensitivity); the supervisor's drive taps
+*   loading the pads (~4.2 k at 64 kHz, design §B3.4 R-17) as 4.2 k across the pads.
+* The excitation is a +-0.5 V differential AC source; results are scaled to the target excitation current.
+* Charger interference: a stray capacitance 'cs' from a node swinging 1 V at 64 kHz into pad A only (all of it is
+*   asymmetry). Scale with the harmonic amplitude of the charger node near 64 kHz (see notes.md).
+* Noise: ngspice .noise gives the thermal noise of every resistor at IN1P-IN1N. Chip noise 0.13 uV/rtHz is the
+*   WP-H estimate from the ADS1292R datasheet respiration figure (40 mohm p-p, 30 uA, gain 4; SBAS502C).
+
+.param rp=175 cs=0.1p dz=0 split=0
+Vmp mp 0 DC 0 AC 0.5
+Vmn mn 0 DC 0 AC 0.5 180
+* drive taps
+R1505 mp ma1 2.0k
+R1501 ma1 ma2 12k
+C1501 ma2 pada 2.35n
+R1506 mn mb1 2.0k
+R1503 mb1 mb2 12k
+C1503 mb2 padb 2.35n
+* patient (plus the supervisor's taps)
+Rp pada padb {rp+dz}
+Rsup pada padb 4.2k
+* sense taps A
+R1507 pada sa 51k
+R1511 sa rsa 10k
+C1506 rsa in1p 2.2n
+R1516 in1p 0 10Meg
+R1515 in1p 0 10Meg
+Cinp in1p 0 5p
+* split=1 (proposed): the ECG branch gets its own 51 k DPCR from the pad, so C1505 no longer loads the respiration tap
+Rlinka sa sae {split ? 1e12 : 1m}
+Rnewa pada sae {split ? 51k : 1e12}
+R1509 sae ecga 10k
+* sense taps B
+R1508 padb sb 51k
+R1512 sb rsb 10k
+C1519 rsb in1n 2.2n
+R1518 in1n 0 10Meg
+R1517 in1n 0 10Meg
+Cinn in1n 0 5p
+Rlinkb sb sbe {split ? 1e12 : 1m}
+Rnewb padb sbe {split ? 51k : 1e12}
+R1510 sbe ecgb 10k
+C1505 ecga ecgb 470p
+R1513 ecga 0 10Meg
+R1514 ecgb 0 10Meg
+* charger injection
+Vinj inj 0 DC 0 AC 0
+Cs inj pada {cs}
+
+.control
+set noaskquit
+foreach sp 0 1
+alterparam split=$sp
+foreach r 25 175
+  alterparam rp=$r
+  alterparam dz=0
+  reset
+  ac lin 1 64k 64k
+  let vd1 = mag(v(in1p)-v(in1n))
+  let iexc = mag(i(Vmp))
+  set vd1s = "$&vd1"
+  set iexs = "$&iexc"
+  alterparam dz=1
+  reset
+  ac lin 1 64k 64k
+  let vd2 = mag(v(in1p)-v(in1n))
+  let sens = abs(vd2 - $vd1s)/$iexs
+  set senss = "$&sens"
+  alterparam dz=0
+  reset
+  alter vmp ac = 0
+  alter vmn ac = 0
+  alter vinj ac = 1
+  ac lin 1 64k 64k
+  let vinjd = mag(v(in1p)-v(in1n))
+  set vinjs = "$&vinjd"
+  alter vmp ac = 0.5
+  alter vmn ac = 0.5
+  alter vinj ac = 0
+  noise v(in1p,in1n) vmp lin 2 64000 64001
+  let en = onoise_total
+  set ens = "$&en"
+  foreach iex 80u 100u
+    let att = $senss * $iex
+    let enres = $ens
+    let etot = sqrt(2*enres^2 + (0.13u)^2) * sqrt(9.5)
+    let zn = etot / att * 1000
+    let zinj = $vinjs / att
+    let enn = enres*1e9
+    let etu = etot*1e6
+    let curr = $iexs
+    echo "RESULT impedance split= $sp rp= $r Iexc= $iex loop_current_per_V_A= $&curr volts_per_ohm= $&att resistor_noise_nV_rtHz= $&enn total_noise_uV_rms_0.5to10Hz= $&etu noise_mohm_rms= $&zn interference_ohm_per_V_per_0.1pF_in_band= $&zinj"
+  end
+end
+end
+.endc
+.end

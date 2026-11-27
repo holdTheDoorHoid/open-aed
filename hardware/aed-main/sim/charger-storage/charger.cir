@@ -1,0 +1,216 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* charger.cir — the 10_hv_charger flyback (LT3751 in charge mode), modelled ONE SWITCHING CYCLE AT A TIME.
+* Questions I-11 (charge time across battery, temperature and tolerance corners; what brings the worst case
+* under 7 s) and the primary switch voltage stress / clamp dissipation versus transformer leakage.
+*
+* Method (stated simplifications):
+*  1. ON phase (analytic, in the control script): the primary current ramps from 0 in Lpri from VTRANS
+*     through R_on = switch (BSC070N10LS5 x2, 4.25 mohm x kron) + sense 5 mohm + primary winding 5 mohm [EST]
+*     until the sense voltage reaches vcs (LT3751: 100/106/112 mV, as read in WP-E), plus 180 ns
+*     propagation. Energy drawn and on-time follow from the RL ramp.
+*  2. OFF phase (this netlist, transistor-level): with the primary current at that peak and the switch
+*     opened at t = 0, the flyback is simulated into the capacitor held at vout: T1001 1:50 with leakage
+*     'leak' (coupling k = sqrt(1-leak)), switch Coss 1.2 nF [EST] + body diode, R1026/C1023 snubber,
+*     D1003 ES3D + D1004 SMCJ45A clamp to VTRANS, secondary winding 20 ohm [WP-E EST] and 15 pF, D1001+D1002
+*     UX-F5B (VF 11 V typ / 14 V max at 0.35 A, trr 70/150 ns), R1004 10 ohm. Measured: energy delivered
+*     to the capacitor, clamp and snubber energy, drain peak, flyback duration.
+*  3. Cycle period = on-time + flyback duration + 0.5 us (DCM detection and restart delay [EST]); output
+*     power P(V) = E_out/T; the charge time is integrated over V as t = sum C V dV / (P(V) - V^2/Rbleed).
+*  The LT3751 itself has only an encrypted LTspice model, which ngspice cannot run; a first attempt at a
+*  cycle-by-cycle closed-loop behavioural controller in ngspice was unstable and was abandoned.
+*  NOT modelled: core loss, winding AC resistance and proximity effect, gate-drive power (~0.1 W), the
+*  VTRANS ripple (VTRANS = pack - 0.2 V at full load: 10 A x (17 mohm path + 4.5 mohm eFuse), WP-E),
+*  temperature of the transformer, LT3751 minimum on/off times.
+* Models: models/datasheet_models.lib (hand-built from datasheets).
+.include models/datasheet_models.lib
+.param vt=7.0 ipk=21.4 lp=7.5u leak=0.01 nturn=50 vout=1000 trr=100n vfadd=0 tsim=20u
+.param kc={sqrt(1-leak)}
+.param ls={lp*nturn*nturn}
+
+VTR vt 0 {vt}
+LPRI vt drn {lp} ic={ipk}
+LSEC 0 sec {ls} ic=0
+K1 LPRI LSEC {kc}
+* switch off for the whole flyback: Coss + body diode to the sense node
+COSS drn src 1.2n ic=0.1
+DBP src drn DBODYP
+RSNS src 0 5m
+* snubber and clamp (D1004 cathode on the clamp node, anode on VTRANS)
+RSNB vt snb 10
+CSNB snb drn 1n ic={vt}
+DCL drn clp ES3D
+VCLX clp clx 0
+DTVS vt clx SMCJ45A
+* secondary (polarity: sec is negative while the switch is on, positive in the flyback)
+RWS sec s1 20
+CSEC sec 0 15p
+XD1 s1 s2 UXF5B params: ttr={trr} vfadd={vfadd}
+XD2 s2 s3 UXF5B params: ttr={trr} vfadd={vfadd}
+R1004 s3 s4 10
+VISEC s4 vo 0
+VOUT vo 0 {vout}
+BPO pout 0 V=v(vo)*i(VISEC)
+BPC pcl 0 V=v(clp,vt)*i(VCLX)
+BPS psn 0 V=v(vt,snb)*v(vt,snb)/10
+
+.control
+set noaskquit
+* ---------------- corner definitions ---------------------------------------------------------------
+* each corner: vpack vcs rsns lp kron trr vfadd cap rbl  (rbl = always-connected bleed, ohm)
+* rbl 6.66 Mohm: bleeder + both sense strings + both sharing strings (WP-F §8)
+foreach cn 1 2 3 4 5 6 7 8
+  set rbl = 6.66e6
+  set leakv = 0.01
+  set rwp = 5e-3
+  if $cn = 1
+    set cname = "NOMINAL_7V2_25C"
+    set vpack = 7.2
+    set vcs = 0.106
+    set rsns = 5.0e-3
+    set lpv = 7.5e-6
+    set kron = 1.0
+    set trrv = 70e-9
+    set vfa = 0
+    set cap = 100e-6
+  end
+  if $cn = 2
+    set cname = "FULL_8V4_25C"
+    set vpack = 8.4
+  end
+  if $cn = 3
+    set cname = "TYPICAL_COLD_5V8"
+    set vpack = 5.8
+    set vfa = 1.5
+  end
+  if $cn = 4
+    set cname = "WORST_5V5_vcs100mV_R+1%_L-10%_hotFET_trr150_VFmax_C+5%"
+    set vpack = 5.5
+    set vcs = 0.100
+    set rsns = 5.05e-3
+    set lpv = 6.75e-6
+    set kron = 1.55
+    set trrv = 150e-9
+    set vfa = 3.0
+    set cap = 105e-6
+  end
+  if $cn = 5
+    set cname = "WORST_but_Rsense_4.7mohm(R1001)"
+    set rsns = 4.747e-3
+  end
+  if $cn = 6
+    set cname = "WORST_but_Rsense_4.5mohm(R1001)"
+    set rsns = 4.545e-3
+  end
+  if $cn = 7
+    set cname = "WORST_but_Rsense_4.7mohm_and_Lpri_8.2uH_min(7.5uH+10/-0%)"
+    set rsns = 4.747e-3
+    set lpv = 7.5e-6
+  end
+  if $cn = 8
+    set cname = "WORST_with_extra_10Mohm_capacitor_bleed(I-5)"
+    set rsns = 5.05e-3
+    set lpv = 6.75e-6
+    set rbl = 4.0e6
+  end
+  * ----- derived per-corner quantities
+  let vtv = $vpack - 0.2
+  let ron = 4.25e-3*$kron + $rsns + $rwp
+  let itrip = $vcs/$rsns
+  let ipkv = itrip + 180e-9*vtv/$lpv
+  * on-time to reach itrip on an RL ramp, then 180 ns more
+  let ton = -($lpv/ron)*ln(1 - itrip*ron/vtv) + 180e-9
+  * energy drawn from VTRANS during the on-time: VT x integral of i dt (RL ramp; overshoot linearised)
+  let tau = $lpv/ron
+  let t1 = ton - 180e-9
+  let qon = (vtv/ron)*(t1 - tau*(1 - exp(-t1/tau))) + 180e-9*(itrip + ipkv)/2
+  let edrawn = vtv*qon
+  set ipks = $&ipkv
+  echo "CORNER $cname | VT=$&vtv Ipk=$&ipkv A on-time=$&ton s"
+  alterparam ipk = $ipks
+  alterparam lp = $lpv
+  alterparam trr = $trrv
+  alterparam vfadd = $vfa
+  alterparam vt = $&vtv
+  alterparam leak = $leakv
+  * ----- sweep the capacitor voltage
+  set tadult = 0
+  set tchild = 0
+  set vprev = 0
+  set pprev = 0
+  foreach vv 25 50 100 200 400 700 1000 1150 1300 1600 1800 1950 2008.6 2200
+    alterparam vout = $vv
+    let ts = 1.3*50*$lpv*ipkv/($vv + 30) + 3e-6
+    alterparam tsim = $&ts
+    reset
+    tran 1n $&ts 0 10n uic
+    meas tran eout integ v(pout)
+    meas tran ecl integ v(pcl)
+    meas tran esn integ v(psn)
+    meas tran vdpk max v(drn)
+    meas tran ispk max i(VISEC)
+    let tdl = 0.3*50*$lpv*ipkv/($vv + 30)
+    meas tran toff when i(VISEC)=1m fall=1 td=$&tdl
+    let tcyc = ton + toff + 0.5e-6
+    let pout = eout/tcyc
+    let pin = edrawn/tcyc
+    let pnet = pout - $vv*$vv/$rbl
+    let ibat = pin/vtv
+    let fsw = 1e-3/tcyc
+    let eta = pout/(pin + ibat*ibat*0.0215)
+    let pcl = ecl/tcyc
+    let psn = esn/tcyc
+    * integrate t = C V dV / Pnet (trapezoid on 1/P x V); below 25 V take P proportional to V
+    if $vprev = 0
+      let dt = $cap*$vv*$vv/pnet
+    else
+      let dt = $cap*($vv - $vprev)*( $vv/pnet + $vprev/$pprev )/2
+    end
+    let tnew = $tadult + dt
+    if $vv <= 1950
+      set tadult = $&tnew
+    end
+    if $vv <= 1150
+      set tchild = $&tnew
+    end
+    if $vv > 1950
+      set tadult = $&tnew
+    end
+    echo "  V=$vv Pout_W=$&pout Pnet_W=$&pnet Ibat_A=$&ibat f_kHz=$&fsw eta_incl_path=$&eta Vdrain_pk=$&vdpk clamp_W=$&pcl snubber_W=$&psn Isec_pk=$&ispk t_cum_s=$&tnew"
+    set vprev = $vv
+    set pprev = $&pnet
+  end
+  echo "RESULT $cname charge_time_to_1150V_s=$tchild (to_2200V_s=$tadult; see the t_cum column for 1,950 V and 2,008.6 V)"
+end
+
+* ---------------- leakage sweep: drain stress and clamp dissipation ---------------------------------
+* worst for stress: full pack 8.4 V, maximum peak current (112 mV / 4.95 mohm + overshoot = 22.9 A), capacitor
+* at 2,200 V (largest reflected voltage), fast diodes.
+foreach lk 0.005 0.01 0.02 0.03
+  alterparam leak = $lk
+  alterparam vt = 8.2
+  alterparam ipk = 22.9
+  alterparam lp = 7.5u
+  alterparam vout = 2200
+  alterparam trr = 70n
+  alterparam vfadd = 0
+  alterparam tsim = 10u
+  reset
+  tran 1n 10u 0 5n uic
+  meas tran vdpk max v(drn)
+  meas tran ecl integ v(pcl)
+  meas tran esn integ v(psn)
+  meas tran eout integ v(pout)
+  meas tran toff when i(VISEC)=1m fall=1 td=0.5u
+  * cycle at 8.2 V: on-time ~ L Ipk / VT
+  let tcyc = 7.5e-6*22.9/8.2 + toff + 0.5e-6
+  let pcl = ecl/tcyc
+  let psn = esn/tcyc
+  let eclu = ecl*1e6
+  let fk = 1e-3/tcyc
+  echo "LEAK leakage=$lk Vdrain_peak=$&vdpk V (switch rating 100 V) clamp_uJ_per_cycle=$&eclu clamp_W=$&pcl snubber_W=$&psn f_kHz=$&fk"
+end
+quit
+.endc
+.end

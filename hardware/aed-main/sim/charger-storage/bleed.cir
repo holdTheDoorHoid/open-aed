@@ -1,0 +1,46 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* bleed.cir — I-5: a bleed resistor INSIDE the off-board storage capacitor (C1101, 100 uF), so that the
+* capacitor empties on its own if its connector J1101 opens or the capacitor is removed.
+* Case A: capacitor alone with only its internal bleed rint (everything on the board disconnected).
+* Case B: capacitor connected: internal bleed in parallel with the always-connected board loads
+*         (bleeder 19.92 M, sense strings 40.24 M and 39.84 M, two sharing strings 40 M each = 6.66 Mohm,
+*         WP-F §8); used for the droop while the device holds its charge during rhythm analysis.
+* The capacitor's own dielectric leakage (film: very high resistance) and dielectric absorption (charge
+* creeping back after a discharge, SAFETY.md §2) are NOT modelled.
+.param rint=10meg cap=105u v0=2200 rboard=6.66meg
+C1 a 0 {cap} ic={v0}
+RINT a 0 {rint}
+RBRD a b {rboard}
+VSW b 0 0
+.control
+set noaskquit
+foreach r 2.2meg 4.7meg 10meg 22meg 47meg 1e15
+  alterparam rint = $r
+  * --- case A: board disconnected (rboard huge)
+  alterparam rboard = 1e15
+  reset
+  tran 1 30000 0 5 uic
+  let t60 = -1
+  meas tran tt60 when v(a)=60 fall=1
+  if length(tt60) > 0
+    let t60 = tt60/60
+  end
+  set t60s = $&t60
+  * --- case B: connected to the board
+  alterparam rboard = 6.66meg
+  reset
+  tran 0.05 20 0 0.05 uic
+  meas tran v15 find v(a) at=15
+  let droop = 2200 - v15
+  let rtot = 1/(1/$r + 1/6.66e6)
+  let tau = rtot*105e-6
+  let ploss = 2008.6*2008.6/$r
+  let pextra = 2008.6*2008.6/$r
+  let dvdt = 2000/tau
+  echo "BLEED rint=$r | capacitor alone, 2200 V -> 60 V: $t60s min (-1 = never) | on the board: tau=$&tau s, droop in 15 s from 2200 V=$&droop V, droop rate at 2000 V=$&dvdt V/s | loss in the capacitor at 2008.6 V=$&ploss W"
+end
+quit
+.endc
+.end

@@ -1,0 +1,205 @@
+* timers.cir - every RC timer that a firmware wait or the 25 ms cap depends on (sheets 09 and 12)
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Circuits copied from hardware/aed-main/specs/12_bridge_logic.toml and 09_interlock.toml:
+*   XFER   R1274 R1275 110k C1253 100n D1212, U1239 at R1276 56.2k / R1277 100k     (relay transferred >= 10 ms)
+*   BTOK   R1280 36k C1256 100n D1213, U1241 SN74LVC1G17                             (test relay enabled >= 2 ms)
+*   RDY    R1206 R1207 221k C1208 100n D1202, U1204 at R1208 56.2k / R1209 100k     (rail ready >= 20 ms)
+*   CAP    R1288 249k C1264 100n +-2 % D1214, U1248/U1249 at R1289 31.6k / R1290 26.1k / R1291 100k  (25 ms cap, 40 ms backstop)
+*   KWIN/KCAP R1298 953k C1271 100n +-2 % D1215, U1254/U1255 at R1299 115k / R6201 66.5k / R6202 121k (coil window, coil cap)
+*   WINDOW R963 1.47M C954 100n D905, U929 at R964 56.2k / R965 100k on 5V0_SYS     (150 ms permit window)
+*   REARM  R968 R969 549k C958 100n D906, U932 TLV7041 at R970 56.2k / R971 100k, R972 100k pull-up (50 ms re-arm)
+* Every timer starts at t = 1 ms (its driving logic output steps high).
+* Corner parameter s: 0 = nominal, -1 = every part towards the EARLIEST expiry, +1 = towards the LATEST expiry.
+*   Bands (tolerance + temperature -20..+70 C + life, as capture-notes/WP-D.md §3): C0G 100 nF +-5.5 % (+-2.2 % where
+*   a +-2 % part is drawn), thin film +-0.35 %, thick film +-2 %, TLV7031 VOS +-8 mV, hysteresis 3 / 10 / 25 mV,
+*   BAS116 reverse leakage 0 or 80 nA (datasheet 150 C maximum, used as a bound), LVC1G17 VT+ 0.487-0.640 VCC and
+*   input leakage +-5 uA (SCES351Y II).
+* Supplies are ideal here (the timers are ratiometric: RC driven from a logic output on the same rail as the
+* threshold divider). Rail start-up is in rail_up.cir.
+
+.include models/behavioural.lib
+
+.param s=0
+.param v33=3.3 v50=5.08
+.param ileakmax=80n
+.param ileak={s<0 ? ileakmax : 0}
+.param vos={8m*s}
+.param hyst={s>0 ? 25m : (s<0 ? 3m : 10m)}
+.param ftp17={0.5635+0.0765*s}
+.param iin17={-5u*s}
+.param tst=1m rcap=249k ctol=0.022
+
+V33 r33 0 {v33}
+V50 r50 0 {v50}
+
+* driving logic outputs (LVC / LV1T / TPS3840 push-pull, 25 ohm [EST])
+Vgo33 g33i 0 PULSE(0 {v33} {tst} 5n 5n 1 2)
+Vgo50 g50i 0 PULSE(0 {v50} {tst} 5n 5n 1 2)
+
+* ---------------- XFER (12): K_LEFT AND K_EN -> 110k / 100n -> TLV7031 at 0.640 x BRIDGE_3V3
+Rxd g33i xsrc 25
+R1274 xsrc 0 100k
+R1275 xsrc xrc {110k*(1+0.0035*s)}
+D1212 xrc xsrc bas116
+Ilx xsrc xrc {ileak}
+C1253 xrc 0 {100n*(1+0.055*s)}
+R1276 r33 xth {56.2k*(1-0.0035*s)}
+R1277 xth 0 {100k*(1+0.0035*s)}
+Xxc xrc xth xfer r33 0 cmp params: vos={vos} hyst={hyst} od=0
+R1278 xfer 0 100k
+
+* ---------------- BTOK (12): BTEST_EN_I -> 36k / 100n -> SN74LVC1G17
+Rbd g33i bsrc 25
+R1280 bsrc brc {36k*(1+0.02*s)}
+D1213 brc bsrc bas116
+Ilb bsrc brc {ileak}
+Iinb 0 brc {iin17}
+C1256 brc 0 {100n*(1+0.055*s)}
+Xbs brc btok r33 0 schmitt params: ftp={ftp17} ftm=0.37 inv=0
+R1281 btok 0 100k
+* proposed BTOK: same driver, R 49.9 k thin film, C 100 nF C0G, TLV7031 at 0.640 x BRIDGE_3V3 (56.2 k / 100 k)
+Rbp g33i bpsrc 25
+Rbp2 bpsrc bprc {49.9k*(1+0.0035*s)}
+Dbp bprc bpsrc bas116
+Ilbp bpsrc bprc {ileak}
+Cbp bprc 0 {100n*(1+0.055*s)}
+Rbpt r33 bpth {56.2k*(1-0.0035*s)}
+Rbpb bpth 0 {100k*(1+0.0035*s)}
+Xbpc bprc bpth btokp r33 0 cmp params: vos={vos} hyst={hyst} od=0
+Rbpo btokp 0 100k
+
+* ---------------- RDY (12): RST_N -> 221k / 100n -> TLV7031 at 0.640 x BRIDGE_3V3
+Rrd g33i rstn 25
+R1206 rstn 0 100k
+R1207 rstn rrc {221k*(1+0.0035*s)}
+D1202 rrc rstn bas116
+Ilr rstn rrc {ileak}
+C1208 rrc 0 {100n*(1+0.055*s)}
+R1208 r33 rth {56.2k*(1-0.0035*s)}
+R1209 rth 0 {100k*(1+0.0035*s)}
+Xrc rrc rth rdy r33 0 cmp params: vos={vos} hyst={hyst} od=0
+R1210 rdy 0 100k
+
+* ---------------- CAP (12): ACT -> 249k / 100n +-2 % -> TLV7031 at 0.6341 (CAPC_N) and 0.7996 (HOLDCAP_N)
+Rcd g33i act 25
+R1288 act crc {rcap*(1+0.0035*s)}
+D1214 crc act bas116
+Ilc act crc {ileak}
+C1264 crc 0 {100n*(1+ctol*s)}
+R1289 r33 cth2 {31.6k*(1-0.0035*s)}
+R1290 cth2 cth {26.1k*(1-0.0035*s)}
+R1291 cth 0 {100k*(1+0.0035*s)}
+* the TLV7031s give 'not expired' (high) while the RC is below: compare threshold (+) with RC (-)
+Xcc cth crc capcn r33 0 cmp params: vos={-vos} hyst={hyst} od=0
+Xch cth2 crc holdcapn r33 0 cmp params: vos={-vos} hyst={hyst} od=0
+R1293 capcn 0 100k
+R1292 holdcapn 0 100k
+
+* ---------------- coil timer (12): KON -> 953k / 100n +-2 % -> 0.400 (KWIN_N) and 0.620 (KCAP_N)
+Rkd g33i kon 25
+R1298 kon krc {953k*(1+0.0035*s)}
+D1215 krc kon bas116
+Ilk kon krc {ileak}
+C1271 krc 0 {100n*(1+0.022*s)}
+R1299 r33 kth2 {115k*(1-0.0035*s)}
+R6201 kth2 kth1 {66.5k*(1-0.0035*s)}
+R6202 kth1 0 {121k*(1+0.0035*s)}
+Xkw kth1 krc kwinn r33 0 cmp params: vos={-vos} hyst={hyst} od=0
+Xkc kth2 krc kcapn r33 0 cmp params: vos={-vos} hyst={hyst} od=0
+R6203 kwinn 0 100k
+R6204 kcapn 0 100k
+
+* ---------------- WINDOW (09): WSTART -> 1.47M / 100n -> TLV7031 at 0.640 x 5V0_SYS (WIN_OPEN_I high while below)
+Rwd g50i wst 25
+R962 wst r50 100k
+R963 wst wrc {1.47Meg*(1+0.0035*s)}
+D905 wrc wst bas116
+Ilw wst wrc {ileak}
+C954 wrc 0 {100n*(1+0.055*s)}
+R964 r50 wth {56.2k*(1-0.0035*s)}
+R965 wth 0 {100k*(1+0.0035*s)}
+Xwc wth wrc winopen r50 0 cmp params: vos={-vos} hyst={hyst} od=0
+R905 winopen 0 100k
+
+* ---------------- REARM (09): ANY_N -> 549k / 100n -> TLV7041 (open drain) at 0.640 x 5V0_SYS
+Rad g50i anyn 25
+R968 anyn 0 100k
+R969 anyn arc {549k*(1+0.0035*s)}
+D906 arc anyn bas116
+Ila anyn arc {ileak}
+C958 arc 0 {100n*(1+0.055*s)}
+R970 r50 ath {56.2k*(1-0.0035*s)}
+R971 ath 0 {100k*(1+0.0035*s)}
+* REARM_N goes LOW when the RC passes the threshold: open drain, output low while (threshold > RC) is FALSE
+Xac ath arc rearmn r50 0 cmp params: vos={-vos} hyst={hyst} od=1
+R972 rearmn r50 100k
+Cpin rearmn 0 10p
+
+.control
+set noaskquit
+foreach sv 0 -1 1
+  alterparam s=$sv
+  reset
+  tran 5u 200m 0 5u
+  meas tran t_xfer when v(xfer)=1.65 rise=1
+  meas tran t_btok when v(btok)=1.65 rise=1
+  meas tran t_rdy when v(rdy)=1.65 rise=1
+  meas tran t_cap when v(capcn)=1.65 fall=1
+  meas tran t_hcap when v(holdcapn)=1.65 fall=1
+  meas tran t_kwin when v(kwinn)=1.65 fall=1
+  meas tran t_kcap when v(kcapn)=1.65 fall=1
+  meas tran t_win when v(winopen)=2.5 fall=1
+  meas tran t_rearm when v(rearmn)=2.5 fall=1
+  meas tran t_btokp when v(btokp)=1.65 rise=1
+  let a10 = (t_btokp-1m)*1000
+  let a1 = (t_xfer-1m)*1000
+  let a2 = (t_btok-1m)*1000
+  let a3 = (t_rdy-1m)*1000
+  let a4 = (t_cap-1m)*1000
+  let a5 = (t_hcap-1m)*1000
+  let a6 = (t_kwin-1m)*1000
+  let a7 = (t_kcap-1m)*1000
+  let a8 = (t_win-1m)*1000
+  let a9 = (t_rearm-1m)*1000
+  echo "RESULT timers s= $sv XFER_ms= $&a1 BTOK_ms= $&a2 RDY_ms= $&a3 CAP_ms= $&a4 HOLDCAP_ms= $&a5 KWIN_ms= $&a6 KCAP_ms= $&a7 WINDOW_ms= $&a8 REARM_ms= $&a9 BTOK_proposed_ms= $&a10"
+end
+* sensitivity of the EARLY corner to the two leakage bounds (BAS116 80 nA is the 150 C datasheet maximum)
+alterparam s=-1
+foreach il 0 5n 20n
+  alterparam ileakmax=$il
+  reset
+  tran 5u 200m 0 5u
+  meas tran t_btok when v(btok)=1.65 rise=1
+  meas tran t_kwin when v(kwinn)=1.65 fall=1
+  meas tran t_kcap when v(kcapn)=1.65 fall=1
+  meas tran t_win when v(winopen)=2.5 fall=1
+  meas tran t_xfer when v(xfer)=1.65 rise=1
+  let a1 = (t_xfer-1m)*1000
+  let a2 = (t_btok-1m)*1000
+  let a6 = (t_kwin-1m)*1000
+  let a7 = (t_kcap-1m)*1000
+  let a8 = (t_win-1m)*1000
+  echo "RESULT timers_early_leak ileak= $il XFER_ms= $&a1 BTOK_ms= $&a2 KWIN_ms= $&a6 KCAP_ms= $&a7 WINDOW_ms= $&a8"
+end
+alterparam ileakmax=80n
+* ---- shorter cap options (I-13 / question 2): R1288 value and C1264 tolerance band
+foreach rc 249k 178k 162k 147k
+  alterparam rcap=$rc
+  foreach ct 0.022 0.012
+    alterparam ctol=$ct
+    foreach sv -1 0 1
+      alterparam s=$sv
+      reset
+      tran 5u 40m 0 5u
+      meas tran t_cap when v(capcn)=1.65 fall=1
+      let a4 = (t_cap-1m)*1000
+      echo "RESULT capopt R1288= $rc ctol= $ct s= $sv CAP_ms= $&a4"
+    end
+  end
+end
+alterparam rcap=249k
+alterparam ctol=0.022
+.endc
+.end

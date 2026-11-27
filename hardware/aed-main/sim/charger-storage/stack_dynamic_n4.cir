@@ -1,0 +1,111 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* stack_dynamic_n4.cir — DYNAMIC voltage sharing of one 4-device stack (I-3): fast step, shock-like fall, fast rise.
+* 11_hv_storage (stack A: Q1101..Q1104, sharing string R1107..R1110, C1101..C1104, gate resistors
+* R1115..R1117 100 k, gate-source R1121..R1123 10 Mohm, TVS D1101..D1104 SMF15CA), dump resistors
+* R1101..R1103 in series with the top. Bottom gate held at -vhold through 1 kohm (pump output, WP-F).
+* Control script: stack_dynamic.ctl. Configurations (switches as in the static netlist):
+*   cfg 1: as drawn (IXTT10N100D2, 10 Mohm string, 100 k straight to the tap, 10 Mohm gate-source)
+*   cfg 2: as drawn but IXTT2N170D2 (1,700 V)
+*   cfg 3: PROPOSED gate steering (diode GP02-40 in each upper gate feed, bypassed by rpar; gate-source
+*          raised to rgsfix) + stiffer string rstrfix, IXTT10N100D2
+*   cfg 4: as cfg 3 with IXTT2N170D2
+*   cfg 5: as cfg 4 plus a resistor rdsv and capacitor cdsv directly across EACH device (drain-source)
+* Models: models/datasheet_models.lib (hand-built from datasheets; no maker model obtained).
+.include models/datasheet_models.lib
+.param nst=4
+* configuration switches (altered by the control script)
+.param dev=1 gatefix=0 rstrfix=4.7meg rpar=22meg rgsfix=100meg dsrc=0 rdsv=10meg cdsv=3.3n
+.param rstr={gatefix ? rstrfix : 10meg}
+.param rbyp={gatefix ? rpar : 0.01}
+.param rgs={gatefix ? rgsfix : 10meg}
+* device figures by part (see models file)
+.param kpd={dev==1 ? 4 : 0.6} rdd={dev==1 ? 1.4 : 6.0} cgsd={dev==1 ? 5.25n : 3.57n}
+.param cgdd={dev==1 ? 424p : 485p} cdsd={dev==1 ? 1.39n : 760p}
+.param voffnom={dev==1 ? -3.5 : -3.0}
+.param vrate={dev==1 ? 1000 : 1700} vratecold={dev==1 ? 940 : 1598}
+.param leak25={dev==1 ? 100meg : 68meg} leak70={dev==1 ? 23.5meg : 17.7meg} leakm20={dev==1 ? 426meg : 262meg}
+.param leakt=100meg vofft=1.0 vcap=2200 vhold=7.4
+* per-element string tolerance; lk = fraction of max leakage (rleak = leakt/lk); vo = per-device cut-off
+.param rt1=1 rt2=1 rt3=1 rt4=1 rt5=1
+.param lk1=0.3 lk2=0.3 lk3=0.3 lk4=0.3 lk5=0.3
+.param vo1=-3.5 vo2=-3.5 vo3=-3.5 vo4=-3.5 vo5=-3.5
+.param rsh1=1e15 rsh2=1e15 rsh3=1e15 rsh4=1e15 rsh5=1e15
+.param rso1=1e15 rso2=1e15 rso3=1e15 rso4=1e15 rso5=1e15
+.param ct1=1 ct2=1 ct3=1 ct4=1 ct5=1
+
+VCAP hvp 0 PWL(0 0 50m 1000 100m 1000 100.001m 2200 0.25 2200 0.26 1200 0.45 1200 0.452 2200)
+RD1 hvp d1 1.5k
+RD2 d1 d2 1.5k
+RD3 d2 top 1.5k
+* bottom device (gate from the pump)
+VH gh 0 {-vhold}
+RH gh g1 1k
+X1 m1 g1 0 DEPMOS params: voff={vo1*vofft} rleak={leakt/lk1} kp={kpd} rd={rdd} cgs={cgsd} cgd0={cgdd} cds0={cdsd}
+XT1 g1 0 SMF15CA
+RS1 m1 0 {rsh1}
+RDS1 m1 0 {dsrc ? rdsv : 1e15}
+CDS1 m1 0 {dsrc ? cdsv : 1p}
+* upper devices: tap -> 100 k -> [steering diode || rbyp] -> gate; rgs gate-source; TVS gate-source
+X2 m2 g2 m1 DEPMOS params: voff={vo2*vofft} rleak={leakt/lk2} kp={kpd} rd={rdd} cgs={cgsd} cgd0={cgdd} cds0={cdsd}
+RG2 t1 x2 100k
+XD2 x2 g2 GP0240
+RB2 x2 g2 {rbyp}
+RGS2 g2 m1 {rgs}
+XT2 g2 m1 SMF15CA
+RS2 m2 m1 {rsh2}
+RDS2 m2 m1 {dsrc ? rdsv : 1e15}
+CDS2 m2 m1 {dsrc ? cdsv : 1p}
+X3 m3 g3 m2 DEPMOS params: voff={vo3*vofft} rleak={leakt/lk3} kp={kpd} rd={rdd} cgs={cgsd} cgd0={cgdd} cds0={cdsd}
+RG3 t2 x3 100k
+XD3 x3 g3 GP0240
+RB3 x3 g3 {rbyp}
+RGS3 g3 m2 {rgs}
+XT3 g3 m2 SMF15CA
+RS3 m3 m2 {rsh3}
+RDS3 m3 m2 {dsrc ? rdsv : 1e15}
+CDS3 m3 m2 {dsrc ? cdsv : 1p}
+X4 top g4 m3 DEPMOS params: voff={vo4*vofft} rleak={leakt/lk4} kp={kpd} rd={rdd} cgs={cgsd} cgd0={cgdd} cds0={cdsd}
+RG4 t3 x4 100k
+XD4 x4 g4 GP0240
+RB4 x4 g4 {rbyp}
+RGS4 g4 m3 {rgs}
+XT4 g4 m3 SMF15CA
+RS4 top m3 {rsh4}
+RDS4 top m3 {dsrc ? rdsv : 1e15}
+CDS4 top m3 {dsrc ? cdsv : 1p}
+* sharing string with 3.3 nF across each element; rso = string element shorted
+RS_1 t1 0 {rstr*rt1}
+RS_2 t2 t1 {rstr*rt2}
+RS_3 t3 t2 {rstr*rt3}
+RS_4 top t3 {rstr*rt4}
+RX_1 t1 0 {rso1}
+RX_2 t2 t1 {rso2}
+RX_3 t3 t2 {rso3}
+RX_4 top t3 {rso4}
+C_1 t1 0 {3.3n*ct1}
+C_2 t2 t1 {3.3n*ct2}
+C_3 t3 t2 {3.3n*ct3}
+C_4 top t3 {3.3n*ct4}
+* device drain-source voltages, max and min
+BV1 vds1 0 V=v(m1)
+BV2 vds2 0 V=v(m2)-v(m1)
+BV3 vds3 0 V=v(m3)-v(m2)
+BV4 vds4 0 V=v(top)-v(m3)
+BV5 vds5 0 V=0
+BMX vdsmax 0 V=max(max(v(vds1),v(vds2)),max(v(vds3),v(vds4)))
+BMN vdsmin 0 V=min(min(v(vds1),v(vds2)),min(v(vds3),v(vds4)))
+* standing current drawn from the capacitor by this stack and its string, in microamps
+BI istk 0 V=(v(hvp)-v(top))/4.5k*1e6
+* constants visible to the control script
+VPN pn 0 {nst}
+VPR pr 0 {vrate}
+VPC prc 0 {vratecold}
+VPS pstr 0 {rstr}
+VPV pvoffnom 0 {voffnom}
+VL1 pl25 0 {leak25}
+VL2 pl70 0 {leak70}
+VL3 plm20 0 {leakm20}
+.include stack_dynamic.ctl
+.end

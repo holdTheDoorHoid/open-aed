@@ -1,0 +1,87 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+* Question 1 (issue I-8, WP-G finding F-1, WP-D CI-10): one low-side switch failed short; the high side is
+* commanded on at the start of the sequence (its slow, deliberate turn-on: ~22 us to 15 V).
+*  Scenario D ("fault 18"): QLB shorted, QHA turns on -> current through the patient (diagonal).
+*  Scenario S (shoot-through): QLA shorted, QHA turns on -> current straight across the capacitor through
+*             R_S + L_S only (same leg; not covered by the fault table, see notes.md).
+* Protection as drawn (WP-G section 8, WP-D section 3/5): idle comparator on I_SHOCK (INA240, 400 kHz ->
+* 0.4 us; 1 k/100 pF -> 0.1 us; 5.0 A; TLV3501) and over-current comparator on the shunt (100 ohm/1 nF -> 0.1 us;
+* 89.7 A). Either sets the fault latch on sheet 12. The latch drops the low-side commands at once
+* (+ logic delay tdl + UCC5350 65 ns) and the high-side commands only after RUN_D20: 20.2-36.4 us (thoff).
+* When G_H drops, the carrier stops, HSx_RECT collapses (2.2 k x 1 nF) and the PNP empties the gate.
+* Parameters: v0 capacitor volts, rp patient ohms, sla/slb short resistance, tdl extra detection/logic delay,
+* thoff fault-to-high-side-off delay, ifilt idle-path filter time constant, ithr idle threshold, cg added
+* high-side gate capacitance, lst stray inductance.
+.include bridge_common.inc
+.param v0=1950 rp=25 sla=1e9 slb=0.05 tdl=0.1u thoff=20.2u ifilt=0.4u ithr=5 cg=94n lst=50n tc=55 th=0 rdis=1e9
+.param ths=200u
+Vgnd0 rtn 0 0
+Cmain capi rtn 100u
+Vchg vchg 0 {v0}
+Rchg vchg capi 1G
+XB capi rtn oa ob gha ghb gla glb lss tjha tjla tjhb tjlb bus isn hbridge
++ params: lst={lst} tc={tc} sla={sla} slb={slb} th={th}
+XP oa ob patient params: rp={rp} lpat=1.5u
+Vpos vp lss 20.7
+Vneg vn lss -5
+Vb5 b5v 0 5
+* ---- sheet 12 behaviour ----
+* firmware commands: CMD_HA at ths (+2 us carrier sync), CMD_LB 100 us later (the low side would start phase 1)
+Vcha cha0 0 PWL(0 0 {ths+2u} 0 {ths+2u+20n} 1)
+Vclb clb0 0 PWL(0 0 {ths+100u} 0 {ths+100u+20n} 1)
+* idle path: INA240 (first order, ifilt) then 1 k/100 pF (0.1 us); comparator at ithr amps
+Rif1 isn if1 1k
+Cif1 if1 0 {ifilt/1k}
+Rif2 if1 if2 1k
+Cif2 if2 0 100p
+* over-current path: 100 ohm / 1 nF on the shunt; 89.7 A
+Roc isn oc1 100
+Coc oc1 0 1n
+* fault latch: charged by either comparator, never discharged (C + clamp)
+Bset 0 fl I = 2m*0.5*(1+tanh(4*(abs(V(if2))-ithr))) + 2m*0.5*(1+tanh(2*(abs(V(oc1))-89.7))) + 5m*0.5*(1+tanh(50*(V(fl)-0.2)))
+* (the last term is positive feedback: once set past 0.2 V the latch snaps to 1 V, so a slowly crossing
+*  input cannot leave the commands half-way)
+Cfl fl 0 10p
+.ic v(fl)=0
+Rfl fl 0 1e9
+Dfl fl one dclamp
+Vone one 0 1
+.model dclamp d (is=1e-12 n=1)
+* delays: detection/logic (tdl) to the low-side commands; RUN_D20 (thoff) to the high-side commands
+Bfl fla 0 V = min(max(V(fl),0),1)
+Tl1 fla 0 fld 0 Z0=50 TD={tdl}
+Rl1 fld 0 50
+* buffer so that the second delay line does not load the first (a mismatch there gave partial logic levels)
+Efb fldb 0 fld 0 1
+Tl2 fldb 0 flh 0 Z0=50 TD={thoff}
+Rl2 flh 0 50
+Bcha cha 0 V = min(max(V(cha0),0),1) * (1 - min(max(V(flh),0),1))
+Bclb clb 0 V = min(max(V(clb0),0),1) * (1 - min(max(V(fld),0),1))
+Vcla cla 0 0
+Vchb chb 0 0
+XDLA cla vp vn gla lss lsdrv
+XDLB clb vp vn glb lss lsdrv
+XDHA cha b5v gha oa hsdrv params: cg={cg} rdis={rdis}
+XDHB chb b5v ghb ob hsdrv params: cg={cg} rdis={rdis}
+.options method=trap reltol=1e-3 abstol=1e-6 vntol=1e-4 itl4=100
+.control
+set noaskquit
+let tstop_req = 300e-6
+tran 20n 300u 150u 50n
+let pha = (v(xb.dha)-v(xb.oai))*v.xb.vmha#branch
+meas tran eha integ pha
+meas tran ipk max v.xb.vmha#branch
+meas tran tjmax max tjha
+meas tran tflt when v(fl)=0.5 rise=1
+let ipat = abs(v.xp.vpat#branch)
+meas tran ippat max ipat
+let vgs = v(gha)-v(oa)
+meas tran vgmax max vgs
+let ehm = eha*1000
+let tf = (tflt-202e-6)*1e6
+let n = length(time)-1
+let te = time[n]
+echo "RESULT CASE_LABEL | t_fault_after_carrier_us=$&tf | Ipk_QHA=$&ipk A | Ipk_patient=$&ippat A | E_QHA=$&ehm mJ | Tj_QHA_max=$&tjmax C | Vgs_QHA_max=$&vgmax V | t_end=$&te of $&tstop_req"
+.endc
+.end

@@ -1,0 +1,91 @@
+* rail_up.cir - BRIDGE_5V rise -> BRIDGE_ARMED_N -> BRIDGE_3V3 -> RST_N -> RDY (sheets 09 and 12)
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Question: how long after the firmware sees BRIDGE_ARMED_N low can the sequencer's RDY (rail ready) still be low?
+* (WP-D CI-1 "CMD_LB not earlier than 30 ms after BRIDGE_ARMED_N".)
+* Circuit (specs/09_interlock.toml group bridge_power, specs/12_bridge_logic.toml groups supply and reset):
+*   last series switch TPS22918 closes: BRIDGE_5V slews at SR = 0.55 x CT[pF] + 30 us/V (TI SLVSD76C Eq. 3),
+*   CT = 1 nF X7R; four switches 79 mohm each (SLVSD76C RON max) in series; C913 1 uF, R910 1 k; sheet 13 <= 10 uF
+*   (WP-D A-11) and <= 0.25 A (WP-G); Q901 2N7002 gate from BRIDGE_5V x 100k/110k, VGS(th) 1.0-2.5 V (NDS7002A/D).
+*   D1201 SS14 -> C1201 220 uF +-20 % (KEMET T520, datasheet not opened) + 1 uF -> TLV75533P (behavioural: output =
+*   min(3.3 V x k, Vin - dropout), dropout 0.1 V at 60 mA scaled from 238 mV at 500 mA, SBVS320D; internal soft start
+*   [EST] 0.5 ms) -> BRIDGE_3V3 (10 uF + 1 uF, 60 mA load above 2.5 V, WP-D A-9).
+*   TPS3840PL30: RST_N follows VDD once VDD > VIT+ (3.0 V +-1.5 % plus 75-125 mV hysteresis, SNVSB03E) for tSTRT
+*   100-350 us; modelled by a comparator and an RC delay.
+*   RDY: R1207 221 k / C1208 100 n / TLV7031 at 0.640 x BRIDGE_3V3 (same bands as timers.cir).
+* Corner s: -1 = everything early, +1 = everything late (relative to BRIDGE_ARMED_N, which is what firmware sees).
+
+.include models/behavioural.lib
+.param s=0
+* CT 1 nF X7R: +-10 % tolerance, +-15 % temperature [EST X7R] -> +-25 %
+.param ct={1000*(1+0.25*s)}
+.param sr={(0.55*ct+30)*1u}
+* VGS(th): late corner = low threshold (armed seen EARLY, so the remaining delay is LONGEST)
+.param vgsth={1.75-0.75*s}
+.param vitp={3.0*(1+0.015*s) + 0.1 + 0.025*s}
+.param tstrt={225u+125u*s}
+.param kldo={1-0.015*s}
+.param chold={221u*(1-0.2*s)}
+.param kc={1+0.055*s}
+.param kr={1+0.0035*s}
+.param vos={8m*s}
+.param hyst={s>0 ? 25m : (s<0 ? 3m : 10m)}
+.param v5=5.08
+
+* last switch: BRIDGE_5V ramps at 1/SR V per second from t = 1 ms (turn-on delay folded in)
+Bsw sw 0 V = min({v5}, max(0, (time-1m)/{sr}))
+Rsw sw b5 0.316
+C913 b5 0 1u
+R910 b5 0 1k
+C13 b5 0 10u
+B13 b5 0 I = 0.25 * min(1, max(0, v(b5)-3.5)/0.5)
+* BRIDGE_ARMED_N detector: gate = b5 x 100k/110k
+Barm armg 0 V = v(b5)*100/110
+* SS14 and the hold-up
+D1201 b5 bh ss14
+C1201 bh 0 {chold}
+C1202 bh 0 1u
+* LDO TLV75533P (behavioural)
+Bldo lo 0 V = max(0, min(3.3*{kldo}*min(1, max(0,(time-1.3m))/0.5m), v(bh) - 0.1))
+Vls lo lo2 0
+Rldo lo2 b3 0.5
+C1203 b3 0 10u
+C1204 b3 0 1u
+Bl3 b3 0 I = 0.060 * min(1, max(0, v(b3)-2.5)/0.3)
+* the LDO draws its output current from the hold-up
+Bli bh 0 I = max(0, i(Vls))
+* TPS3840: comparator then tSTRT delay (RC to 50 %)
+Bvit vok 0 V = (v(b3) > {vitp}) ? 1 : 0
+Rdl vok vd {tstrt/0.693/1n}
+Cdl vd 0 1n
+Brst rstn0 0 V = v(b3) * (v(vd) > 0.5 ? 1 : 0)
+Rrst rstn0 rstn 25
+R1206 rstn 0 100k
+R1207 rstn rrc {221k*kr}
+D1202 rrc rstn bas116
+C1208 rrc 0 {100n*kc}
+R1208 b3 rth {56.2k*(1-0.0035*s)}
+R1209 rth 0 {100k*(1+0.0035*s)}
+Xrc rrc rth rdy b3 0 cmp params: vos={vos} hyst={hyst} od=0
+R1210 rdy 0 100k
+
+.control
+set noaskquit
+foreach sv 0 -1 1
+  alterparam s=$sv
+  reset
+  tran 2u 40m 0 2u
+  let vg = 1.75-0.75*$sv
+  meas tran t_arm2 when v(armg)=$&vg rise=1
+  meas tran t_rst when v(rstn)=1.6 rise=1
+  meas tran t_rdy when v(rdy)=1.6 rise=1
+  meas tran b5_45 when v(b5)=4.5 rise=1
+  let ta = t_arm2*1000
+  let d1 = (t_rst - t_arm2)*1000
+  let d2 = (t_rdy - t_arm2)*1000
+  let d3 = (t_rdy - b5_45)*1000
+  echo "RESULT railup s= $sv armed_at_ms= $&ta RST_N_after_armed_ms= $&d1 RDY_after_armed_ms= $&d2 RDY_after_BRIDGE5V_4V5_ms= $&d3"
+end
+.endc
+.end
