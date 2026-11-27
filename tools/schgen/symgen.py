@@ -146,7 +146,7 @@ def build_library(path_toml: str) -> tuple[str, list]:
     with open(path_toml, "rb") as fh:
         data = tomllib.load(fh)
     lib = data["library"]["name"]
-    out = [S("kicad_symbol_lib"), [S("version"), S("20251024")], [S("generator"), "ws_symgen"],
+    out = [S("kicad_symbol_lib"), [S("version"), S("20251024")], [S("generator"), "aed_symgen"],
            [S("generator_version"), "1.0"]]
     names = set()
     for d in data.get("symbol", []):

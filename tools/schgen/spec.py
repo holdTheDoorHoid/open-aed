@@ -1,40 +1,40 @@
 """Sheet specification: load and validate the TOML files in ``hardware/<board>/specs``.
 
 A spec is a pin table, written so a reviewer who does not program can check it
-against the datasheet. See ``docs/17-kicad-workflow.md`` for the format; the
+against the datasheet. See ``docs/HARDWARE_WORKFLOW.md`` for the format; the
 short version::
 
     [sheet]
-    name = "07_gnss"                 # file stem and sheet name in the root
-    title = "GNSS receiver"          # title block
-    source = "docs/07-timing.md §5.1"
+    name = "01_power_battery"        # file stem and sheet name in the root
+    title = "Battery pack, protection and fuel gauge"   # title block
+    source = "docs/HARDWARE_DESIGN.md §4"
 
     [nets]
-    power  = ["GND", "3V3_GNSS"]     # drawn as power symbols (global)
-    global = ["PPS_GNSS"]            # global labels: signals that leave the sheet
+    power  = ["GND", "VBAT_SYS"]     # drawn as power symbols (global)
+    global = ["GAUGE_ALRT_N"]        # global labels: signals that leave the sheet
     hierarchical = []                # hierarchical labels (multi-instance sheets)
-    power_flags = ["3V3_GNSS"]       # PWR_FLAG while the rail's source sheet is a placeholder
+    power_flags = ["VBAT_SYS"]       # PWR_FLAG while the rail's source sheet is a placeholder
 
     [[group]]
-    id = "rx"
-    title = "Receiver"
+    id = "gauge"
+    title = "Fuel gauge and protector"
     note = "Why this group looks the way it does."
 
     [[part]]
-    ref = "U7101"
-    group = "rx"
-    lib_id = "ws_timing:NEO-F10T"
-    value = "NEO-F10T-00B"
-    footprint = "RF_GPS:ublox_NEO"
-    mpn = "NEO-F10T-00B"
-    manufacturer = "u-blox"
+    ref = "U101"
+    group = "gauge"
+    lib_id = "aed_power:MAX17320"
+    value = "MAX17320G10"
+    footprint = "Package_DFN_QFN:..."
+    mpn = "..."
+    manufacturer = "Analog Devices"
     datasheet = "https://..."
     dnp = false
     variant = "Fitted in every build"
     pins = '''
     # pin  name-in-symbol  net
-      1    SAFEBOOT_N      GNSS_SAFEBOOT_N
-      2    Reserved        NC          # NC = explicit no-connect flag
+      1    ALRT            GAUGE_ALRT_N
+      2    NC              NC          # NC = explicit no-connect flag
     '''
 
 Two-pin parts may use ``between = ["NET_A", "NET_B"]`` (pin 1, pin 2) instead of a
@@ -110,6 +110,7 @@ class Sheet:
     date: str = "2026-11-22"
     company: str = ""
     comments: list[str] = field(default_factory=list)
+    notice: str = ""  # set from hierarchy.toml [project] notice; first title-block comment on every sheet
     power: list[str] = field(default_factory=list)
     global_nets: list[str] = field(default_factory=list)
     hier_nets: list[str] = field(default_factory=list)

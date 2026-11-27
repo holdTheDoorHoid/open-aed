@@ -15,31 +15,31 @@ from dataclasses import dataclass, field
 from . import sexpr
 from .sexpr import Sym, find, find_all
 
-STOCK_SYMBOL_GLOB = (
-    "/home/hoid/.local/share/flatpak/runtime/org.kicad.KiCad.Library.Symbols/"
+STOCK_SYMBOL_GLOB = os.path.expanduser(
+    "~/.local/share/flatpak/runtime/org.kicad.KiCad.Library.Symbols/"
     "x86_64/stable/active/files/symbols"
 )
-STOCK_FOOTPRINT_DIR = (
-    "/home/hoid/.local/share/flatpak/runtime/org.kicad.KiCad.Library.Footprints/"
+STOCK_FOOTPRINT_DIR = os.path.expanduser(
+    "~/.local/share/flatpak/runtime/org.kicad.KiCad.Library.Footprints/"
     "x86_64/stable/active/files/footprints"
 )
 
 
 def stock_symbol_dir() -> str:
-    env = os.environ.get("WS_KICAD_SYMBOL_DIR")
+    env = os.environ.get("AED_KICAD_SYMBOL_DIR") or os.environ.get("WS_KICAD_SYMBOL_DIR")
     if env:
         return env
     hits = glob.glob(STOCK_SYMBOL_GLOB)
     if not hits:
         raise FileNotFoundError(
-            "KiCad stock symbol library not found; set WS_KICAD_SYMBOL_DIR "
+            "KiCad stock symbol library not found; set AED_KICAD_SYMBOL_DIR "
             f"(looked for {STOCK_SYMBOL_GLOB})"
         )
     return hits[0]
 
 
 def stock_footprint_dir() -> str:
-    return os.environ.get("WS_KICAD_FOOTPRINT_DIR", STOCK_FOOTPRINT_DIR)
+    return os.environ.get("AED_KICAD_FOOTPRINT_DIR") or os.environ.get("WS_KICAD_FOOTPRINT_DIR", STOCK_FOOTPRINT_DIR)
 
 
 @dataclass

@@ -1,10 +1,12 @@
 """Cross-sheet consistency check over all specs: single-ended inter-sheet nets, pull resistors per net, rails per sheet.
-Run from the repo root: python3 tools/xcheck.py [main-board|remote-head]   (report only; never fails the build)."""
+Run from the repo root: python3 tools/xcheck.py [aed-main]   (report only; never fails the build).
+Compare its output with hardware/aed-main/contract.md: every inter-sheet net there must appear here with the same
+driver and loads, and every pull must be on the sheet the contract names."""
 import glob, os, sys, difflib, collections
 sys.path.insert(0, ".")
 from tools.schgen import spec, project
 
-BOARD = sys.argv[1] if len(sys.argv) > 1 else "main-board"
+BOARD = sys.argv[1] if len(sys.argv) > 1 else "aed-main"
 sheets = [spec.load(p) for p in sorted(glob.glob(f"hardware/{BOARD}/specs/*.toml"))]
 # Hierarchical labels of multi-instance sheets: one root net per instance (hierarchy.toml pins = {...}).
 _hier = project.load_hierarchy(f"hardware/{BOARD}/hierarchy.toml")
@@ -58,7 +60,9 @@ for n in sorted(pulls):
     if len(pulls[n]) > 1:
         print(f"  {n}: " + "; ".join(f"{sh} {r} {v}->{to} {d}".strip() for sh, r, v, to, d in pulls[n]))
 
-OWNERS = {"main-board": ("09_supervisor", "09_expanders"), "remote-head": ("10_head_controller",)}[BOARD]
+# Sheets that hold a controller: a multi-sheet signal net with no endpoint on either is reported (it may be fine,
+# e.g. a rail-gated logic net between the interlock and the bridge, but each one should be explained by contract.md).
+OWNERS = {"aed-main": ("04_main_mcu", "05_supervisor_mcu")}.get(BOARD, ())
 print("== multi-sheet signal nets with no endpoint on " + " / ".join(OWNERS))
 for n in multi:
     if "power" in scope[n]: continue

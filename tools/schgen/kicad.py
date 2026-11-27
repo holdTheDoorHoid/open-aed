@@ -12,11 +12,11 @@ DEFAULT_PY = "flatpak run --command=python3 org.kicad.KiCad"
 
 
 def cli_cmd() -> list[str]:
-    return shlex.split(os.environ.get("WS_KICAD_CLI", DEFAULT_CLI))
+    return shlex.split(os.environ.get("AED_KICAD_CLI") or os.environ.get("WS_KICAD_CLI", DEFAULT_CLI))
 
 
 def py_cmd() -> list[str]:
-    return shlex.split(os.environ.get("WS_KICAD_PY", DEFAULT_PY))
+    return shlex.split(os.environ.get("AED_KICAD_PY") or os.environ.get("WS_KICAD_PY", DEFAULT_PY))
 
 
 def available() -> bool:

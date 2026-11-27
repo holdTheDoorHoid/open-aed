@@ -22,6 +22,8 @@ The aim is an open, well-documented, well-tested reference design built from par
 | [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | The draft target specification, with the reason for each number |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the device is divided up, the three checks before a shock, the rescue sequence |
 | [firmware/](firmware/) | Rust firmware and a simulator that runs it against a simulated patient |
+| [docs/HARDWARE_DESIGN.md](docs/HARDWARE_DESIGN.md) | The circuit design, block by block, with reasons and arithmetic. **Unreviewed; not for construction.** |
+| [hardware/](hardware/) | KiCad circuit diagrams generated from pin tables; see [docs/HARDWARE_WORKFLOW.md](docs/HARDWARE_WORKFLOW.md) |
 | [docs/PARTS_STUDY.md](docs/PARTS_STUDY.md) | Candidate parts and the size, weight and cost budget |
 | [docs/TEST_INSTRUMENT.md](docs/TEST_INSTRUMENT.md) | What the test load and measuring rig must do, and how its accuracy will be proven |
 | [docs/FINDINGS.md](docs/FINDINGS.md) | Problems the simulator has found so far |

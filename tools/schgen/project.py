@@ -24,6 +24,7 @@ class SheetEntry:
     instances: list[str]
     ref_step: int = 0
     note: str = ""
+    owner: str = ""  # capture work package (hierarchy.toml `owner`), shown on placeholder pages
     pins: dict[str, str | list[str]] = field(default_factory=dict)  # hier label -> root net template(s), see pin_net()
     spec_path: str | None = None  # set when a spec exists
     spec: spec.Sheet | None = None
@@ -47,6 +48,8 @@ class Hierarchy:
     netclass_patterns: list[dict]
     rules: dict
     root_uuid: str
+    notice: str = ""  # e.g. "NOT FOR CONSTRUCTION — unreviewed design": first title-block line of every sheet
+    company: str = ""
 
     @property
     def root_file(self) -> str:
@@ -76,6 +79,7 @@ def load_hierarchy(path: str) -> Hierarchy:
         e = SheetEntry(
             name=s["name"], title=s["title"], doc=s.get("doc", ""), instances=list(s.get("instances", [s["name"]])),
             ref_step=int(s.get("ref_step", 0)), note=s.get("note", ""), pins=dict(s.get("pins", {})),
+            owner=s.get("owner", ""),
         )
         sp = os.path.join(base, "specs", f"{e.name}.toml")
         if os.path.exists(sp):
@@ -98,6 +102,7 @@ def load_hierarchy(path: str) -> Hierarchy:
         lib_dir=os.path.normpath(os.path.join(base, pj.get("lib_dir", "../lib"))),
         net_classes=data.get("net_class", []), netclass_patterns=data.get("netclass_pattern", []),
         rules=data.get("rules", {}), root_uuid=uid(name, "root"),
+        notice=pj.get("notice", ""), company=pj.get("company", ""),
     )
 
 
@@ -106,19 +111,29 @@ def load_hierarchy(path: str) -> Hierarchy:
 
 def placeholder_spec(e: SheetEntry, hier: Hierarchy) -> spec.Sheet:
     note = (
-        f"PLACEHOLDER — this block is not captured yet.\n"
+        (f"{hier.notice}\n" if hier.notice else "")
+        + f"PLACEHOLDER — this block is not captured yet.\n"
         f"Design source: {e.doc}.\n"
         f"Instances: {', '.join(e.instances)}.\n"
         f"{e.note}\n"
-        "When it is captured, add hardware/main-board/specs/" + e.name + ".toml and run tools/build.sh; "
+        f"When it is captured, add hardware/{os.path.basename(hier.dir)}/specs/" + e.name + ".toml and run tools/build.sh; "
         "the generator then replaces this page."
     )
-    sh = spec.Sheet(name=e.name, title=e.title, source=e.doc, revision=hier.revision, date=hier.date)
+    sh = spec.Sheet(name=e.name, title=e.title, source=e.doc, revision=hier.revision, date=hier.date,
+                    comments=[f"Capture owner: {e.owner}"] if getattr(e, "owner", "") else [])
     sh.groups.append(spec.Group(id="placeholder", title=f"{e.name}: {e.title}", note=note))
     return sh
 
 
 # ---------------------------------------------------------------- generation
+
+
+def _stamp(sh: spec.Sheet, hier: Hierarchy) -> None:
+    """Project-wide title-block text: the notice line and the company field."""
+    if hier.notice and not sh.notice:
+        sh.notice = hier.notice
+    if hier.company and not sh.company:
+        sh.company = hier.company
 
 
 def pin_net(tmpl: str | list[str], inst: str, idx: int) -> str:
@@ -199,6 +214,7 @@ def generate(hier: Hierarchy, libs, log=print) -> dict[str, spec.Sheet]:
     for idx, e in enumerate(hier.sheets):
         sh = e.spec or placeholder_spec(e, hier)
         sh.revision = sh.revision or hier.revision
+        _stamp(sh, hier)
         errs = spec.check_against_symbols(sh, libs)
         if errs:
             raise spec.SpecError(f"{e.name}:\n  " + "\n  ".join(errs))
@@ -217,6 +233,7 @@ def generate(hier: Hierarchy, libs, log=print) -> dict[str, spec.Sheet]:
 
     # 2. root: its own spec content, then the sheet symbols
     rs = hier.root_spec
+    _stamp(rs, hier)
     errs = spec.check_against_symbols(rs, libs)
     if errs:
         raise spec.SpecError("root:\n  " + "\n  ".join(errs))
@@ -269,7 +286,7 @@ def write_lib_tables(hier: Hierarchy) -> None:
     for p in syms:
         nick = os.path.splitext(os.path.basename(p))[0]
         lines.append(f'\t(lib (name "{nick}") (type "KiCad") (uri "${{KIPRJMOD}}/{rel}/{os.path.basename(p)}") '
-                     f'(options "") (descr "Wildlife station project library"))')
+                     f'(options "") (descr "Open AED project library"))')
     lines.append(")")
     with open(os.path.join(hier.dir, "sym-lib-table"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
@@ -277,7 +294,7 @@ def write_lib_tables(hier: Hierarchy) -> None:
     for p in fps:
         nick = os.path.splitext(os.path.basename(p))[0]
         lines.append(f'\t(lib (name "{nick}") (type "KiCad") (uri "${{KIPRJMOD}}/{rel}/{os.path.basename(p)}") '
-                     f'(options "") (descr "Wildlife station project footprints"))')
+                     f'(options "") (descr "Open AED project footprints"))')
     lines.append(")")
     with open(os.path.join(hier.dir, "fp-lib-table"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")

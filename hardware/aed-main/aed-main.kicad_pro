@@ -1,0 +1,367 @@
+{
+  "board": {
+    "design_settings": {
+      "defaults": {
+        "board_outline_line_width": 0.1,
+        "copper_line_width": 0.2,
+        "copper_text_size_h": 1.5,
+        "copper_text_size_v": 1.5,
+        "copper_text_thickness": 0.3,
+        "silk_line_width": 0.15,
+        "silk_text_size_h": 1.0,
+        "silk_text_size_v": 1.0,
+        "silk_text_thickness": 0.15,
+        "pads": {
+          "drill": 0.0,
+          "height": 0.6,
+          "width": 0.6
+        }
+      },
+      "meta": {
+        "version": 2
+      },
+      "rules": {
+        "allow_blind_buried_vias": false,
+        "allow_microvias": false,
+        "max_error": 0.005,
+        "min_clearance": 0.1,
+        "min_connection": 0.0,
+        "min_copper_edge_clearance": 0.5,
+        "min_hole_clearance": 0.2,
+        "min_hole_to_hole": 0.25,
+        "min_microvia_diameter": 0.2,
+        "min_microvia_drill": 0.1,
+        "min_resolved_spokes": 2,
+        "min_silk_clearance": 0.0,
+        "min_text_height": 0.8,
+        "min_text_thickness": 0.15,
+        "min_through_hole_diameter": 0.2,
+        "min_track_width": 0.1,
+        "min_via_annular_width": 0.125,
+        "min_via_diameter": 0.45,
+        "solder_mask_to_copper_clearance": 0.0,
+        "use_height_for_length_calcs": true
+      },
+      "track_widths": [
+        0.0
+      ],
+      "via_dimensions": [
+        {
+          "diameter": 0.0,
+          "drill": 0.0
+        }
+      ],
+      "diff_pair_dimensions": [
+        {
+          "gap": 0.0,
+          "via_gap": 0.0,
+          "width": 0.0
+        }
+      ]
+    },
+    "ipc2581": {},
+    "layer_pairs": [],
+    "layer_presets": [],
+    "viewports": []
+  },
+  "boards": [],
+  "cvpcb": {
+    "equivalence_files": []
+  },
+  "erc": {
+    "erc_exclusions": [],
+    "meta": {
+      "version": 0
+    },
+    "pin_map": [],
+    "rule_severities": {}
+  },
+  "libraries": {
+    "pinned_footprint_libs": [],
+    "pinned_symbol_libs": []
+  },
+  "meta": {
+    "filename": "aed-main.kicad_pro",
+    "version": 3
+  },
+  "net_settings": {
+    "classes": [
+      {
+        "bus_width": 12,
+        "clearance": 0.15,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 2147483647,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.15,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6,
+        "name": "Default"
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.2,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 1,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.5,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6,
+        "name": "PWR"
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.3,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 2,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 3.0,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6,
+        "name": "PWR_HI"
+      },
+      {
+        "bus_width": 12,
+        "clearance": 12.5,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 3,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.5,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6,
+        "name": "HV"
+      },
+      {
+        "bus_width": 12,
+        "clearance": 12.5,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 4,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 3.0,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6,
+        "name": "HV_PULSE"
+      },
+      {
+        "bus_width": 12,
+        "clearance": 12.5,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 5,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.3,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6,
+        "name": "HV_FLOAT"
+      },
+      {
+        "bus_width": 12,
+        "clearance": 4.0,
+        "diff_pair_gap": 0.15,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 6,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.3,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6,
+        "name": "PATIENT"
+      }
+    ],
+    "meta": {
+      "version": 4
+    },
+    "net_colors": null,
+    "netclass_assignments": null,
+    "netclass_patterns": [
+      {
+        "netclass": "HV_PULSE",
+        "pattern": "HV_CAP_P"
+      },
+      {
+        "netclass": "HV_PULSE",
+        "pattern": "*HV_BUS*"
+      },
+      {
+        "netclass": "HV_PULSE",
+        "pattern": "HV_OUT_*"
+      },
+      {
+        "netclass": "HV_PULSE",
+        "pattern": "HV_RTN"
+      },
+      {
+        "netclass": "HV_PULSE",
+        "pattern": "PT_PAD_*"
+      },
+      {
+        "netclass": "HV_FLOAT",
+        "pattern": "*HSA_*"
+      },
+      {
+        "netclass": "HV_FLOAT",
+        "pattern": "*HSB_*"
+      },
+      {
+        "netclass": "HV",
+        "pattern": "*HV_*"
+      },
+      {
+        "netclass": "PATIENT",
+        "pattern": "*PT_*"
+      },
+      {
+        "netclass": "PWR_HI",
+        "pattern": "VBAT_*"
+      },
+      {
+        "netclass": "PWR_HI",
+        "pattern": "*VTRANS*"
+      },
+      {
+        "netclass": "PWR",
+        "pattern": "VDOCK"
+      },
+      {
+        "netclass": "PWR",
+        "pattern": "5V0_SYS"
+      },
+      {
+        "netclass": "PWR",
+        "pattern": "BRIDGE_5V"
+      },
+      {
+        "netclass": "PWR",
+        "pattern": "3V3_*"
+      }
+    ]
+  },
+  "pcbnew": {
+    "last_paths": {},
+    "page_layout_descr_file": ""
+  },
+  "schematic": {
+    "annotate_start_num": 0,
+    "connection_grid_size": 50.0,
+    "meta": {
+      "version": 1
+    },
+    "net_format_name": "",
+    "page_layout_descr_file": "",
+    "plot_directory": "",
+    "subpart_first_id": 65,
+    "subpart_id_separator": 0
+  },
+  "sheets": [
+    [
+      "8dda8c20-a545-50dd-888b-355e4b9f10d8",
+      "Root"
+    ],
+    [
+      "125e457c-62d8-5adf-8d63-0d7e88dc6ae7",
+      "01_power_battery"
+    ],
+    [
+      "ba3b483a-3804-5178-abfe-c1541f23f1a5",
+      "02_power_dock"
+    ],
+    [
+      "594aaa20-f352-538c-a867-4ad0ed945363",
+      "03_power_rails"
+    ],
+    [
+      "dfae26e4-ce99-5dbe-9bdc-6182b221f4d6",
+      "04_main_mcu"
+    ],
+    [
+      "d57a37b7-2c5c-5804-9202-6a5f1bedd468",
+      "05_supervisor_mcu"
+    ],
+    [
+      "ee26102b-18b3-51ee-89b5-ce22cbfcce58",
+      "06_ui"
+    ],
+    [
+      "50c53d1b-fa0b-532e-aabf-fb25dc6b64ec",
+      "07_sense_main"
+    ],
+    [
+      "122fb2d9-6fc1-53cc-badf-3c27c872aec9",
+      "08_sense_sup"
+    ],
+    [
+      "3be2af14-24ab-5c62-a63f-912a91bf4c08",
+      "09_interlock"
+    ],
+    [
+      "6e817778-501b-5722-91ed-bb4a45ac57ab",
+      "10_hv_charger"
+    ],
+    [
+      "4da475fb-ce7d-5284-a42e-6a23ebe9f9a3",
+      "11_hv_storage"
+    ],
+    [
+      "e8eed8f7-9dfd-50ac-88a5-0e0e5fcf0b5b",
+      "12_hv_bridge"
+    ],
+    [
+      "5ca19b03-ef3a-57c0-813a-8cbd35bfb161",
+      "13_patient_interface"
+    ],
+    [
+      "0d848a28-0050-5f40-83d3-7837963381d6",
+      "14_frontend_main"
+    ],
+    [
+      "6ae0c47c-8636-5807-bebd-b2c9045a44b5",
+      "15_frontend_sup"
+    ]
+  ],
+  "text_variables": {}
+}

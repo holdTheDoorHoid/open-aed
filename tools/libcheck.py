@@ -4,7 +4,7 @@
 Usage:
     python3 tools/libcheck.py [--fp-root DIR] [lib.kicad_sym ...]
 
-With no file arguments it checks hardware/lib/ws_*.kicad_sym.
+With no file arguments it checks hardware/lib/aed_*.kicad_sym.
 
 Per symbol it reports:
   * duplicate pin numbers (within the whole symbol, all units)
@@ -30,8 +30,8 @@ REQUIRED = ["Reference", "Value", "Footprint", "Datasheet", "MPN",
 TYPES = {"input", "output", "bidirectional", "tri_state", "passive", "free",
          "unspecified", "power_in", "power_out", "open_collector",
          "open_emitter", "no_connect"}
-DEFAULT_FP_ROOT = ("/home/hoid/.local/share/flatpak/runtime/org.kicad.KiCad.Library."
-                   "Footprints/x86_64/stable/active/files/footprints")
+DEFAULT_FP_ROOT = os.environ.get("AED_KICAD_FOOTPRINT_DIR", os.path.expanduser(
+    "~/.local/share/flatpak/runtime/org.kicad.KiCad.Library.Footprints/x86_64/stable/active/files/footprints"))
 
 TOKEN = re.compile(r'"((?:[^"\\]|\\.)*)"|([()])|([^\s()"]+)')
 
@@ -182,7 +182,7 @@ def main(argv):
     repo = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     local_root = os.path.join(repo, "hardware", "lib")
     if not files:
-        files = sorted(glob.glob(os.path.join(local_root, "ws_*.kicad_sym")))
+        files = sorted(glob.glob(os.path.join(local_root, "aed_*.kicad_sym")))
     te = tw = 0
     for f in files:
         e, w = check_file(f, fp_root, local_root)

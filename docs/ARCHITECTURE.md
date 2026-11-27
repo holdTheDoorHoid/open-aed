@@ -161,6 +161,6 @@ There is no radio in the first prototype (D-09). The event record, heat history,
 
 ## What is deliberately not designed yet
 
-- Which processor, which heart-signal chip, which capacitor. These wait for the open technical questions in [PLAN.md](PLAN.md).
-- Circuit schematics for the high-voltage side. These wait for the patent review and the lab safety policy.
+- Final part choices. Candidate parts are named in [HARDWARE_DESIGN.md](HARDWARE_DESIGN.md) and [PARTS_STUDY.md](PARTS_STUDY.md); none has been tested.
+- A reviewed circuit design. The first circuit design is being drawn in `hardware/` and specified in [HARDWARE_DESIGN.md](HARDWARE_DESIGN.md); it is unreviewed and marked not for construction (D-13).
 - Pads, enclosure, battery pack.

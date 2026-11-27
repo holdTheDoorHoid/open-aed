@@ -6,3 +6,4 @@ fp-info-cache
 .DS_Store
 data/
 .claude/
+build/
