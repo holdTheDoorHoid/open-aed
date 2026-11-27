@@ -52,7 +52,7 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-40 | **Device recordings and evaluation data are never committed**; evaluation tools skip cleanly without them. The Cardially dataset is never used for tuning. | Provisional | Licences, privacy, and keeping a clean external test. |
 | D-41 | **The storage capacitor is made to order, rated for 85 °C storage and at least 2,200 V.** The design stays at the Philips-style point of about 100 µF. | **Confirmed by owner, 27 Nov 2026** | Police cars and ambulances sit in the sun; compact catalogue capacitors are rated exactly 2,000 V against a 2,008 V worst case. Keeping 100 µF keeps the bench-equivalence approval route. |
 | D-42 | **Catalogue parts wherever they exist; made-to-order parts where they do not**, each with a published specification so anyone can order the same part. | **Confirmed by owner, 27 Nov 2026** (relaxes "off-the-shelf only") | The capacitor, charging transformer, switch drive, pad connector and pads cannot be bought from a catalogue. |
-| D-43 | **The 700 g target includes the pads.** | **Confirmed by owner, 27 Nov 2026** | What the responder carries is what counts. The parts study puts the smallest plausible set at about 644 g with pads, before the heavier capacitor and second cell chosen in D-41 and D-44. |
+| D-43 | **The 700 g target includes the pads.** | **Confirmed by owner, 27 Nov 2026** | What the responder carries is what counts. After the capacitor and battery decisions (D-41, D-44) the parts study puts the lower-risk set at about 902 g with pads and the smallest plausible set at about 697 g. The target is at risk; see Q-36. |
 | D-44 | **Two battery cells.** | **Confirmed by owner, 27 Nov 2026** | Full-speed charging at −20 °C; about 20 g heavier. |
 | D-45 | **Bluetooth is a separate pre-certified module** with its own processor. | **Confirmed by owner, 27 Nov 2026** | Keeps radio code off the processor that decides to shock (D-24). |
 | D-46 | **Charging is through sealed contacts and a dock**, not a USB socket. | **Confirmed by owner, 27 Nov 2026** | Sealing to IP65. |
@@ -125,6 +125,18 @@ Answered on 27 November 2026, except where marked.
 - **Q-19** (owner): adult/child switch moved during an analysis. D-34 stands meanwhile.
 - **Q-20, Q-21, Q-33** (clinician): the last-seconds blind spot, how strict the countdown is, and movement during the countdown.
 - **Q-35** (owner, later): how to obtain the reference test equipment.
+
+## Questions from the revised parts study (27 November 2026)
+
+**Q-36. The 700 g target is at risk.** After your decisions the lower-risk part set is about 902 g with pads; the smallest plausible is about 697 g, and only if a capacitor maker can deliver the most optimistic estimate. A first prototype will more likely weigh 780–900 g. Options: (a) keep 700 g as the goal for the finished design and accept a heavier first prototype; (b) raise the target to about 850 g; (c) revisit a decision to save weight. The decisions that could be revisited, and what each would save: capacitor working temperature of 55–60 °C with a cooling pause when too hot (40–60 g); 70 °C storage with a "not on the dashboard" rule instead of 85 °C (about 60 g); one battery cell (25 g, but the arithmetic shows it fails at −20 °C when nearly flat); a capacitor smaller than 100 µF (about 60 g, and it leaves the Philips design point).
+
+**Q-37. An 85 °C capacitor does not make the whole device safe in a hot car.** Battery cells and pad gel are typically limited to about 50–60 °C in storage (from general knowledge; not yet checked against datasheets). Options: a heat-exposure indicator and "not ready" state after overheating; heat-tolerant cells at a cost in capacity; or accept a dashboard rule after all, which would also allow the lighter capacitor in Q-36.
+
+**Q-38. How heavily is one device used?** The capacitor specification asks for at least 5,000 full charges, sized for a heavy user at 25 rescues a year for 10 years. A typical user needs about 1,200. A lower figure allows a smaller capacitor.
+
+**Q-39. If cold-weather tests show too little margin,** move from two smaller cells to two larger ones (about 50 g more)?
+
+**Q-40. The Bluetooth modules that came with ready-made firmware have been discontinued,** so the project would write the module's own small firmware. That code stays off the safety processor, but it is still code to write and maintain. Accept, or leave Bluetooth out of the first prototype?
 
 ## Things that need a professional, not a guess
 

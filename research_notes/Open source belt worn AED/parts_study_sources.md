@@ -145,3 +145,78 @@ Fetched 27 Nov 2026.
 - ECG recovery-time limits in IEC 60601-2-4 (standard not bought)
 - Creepage at 2 kV (standard not bought; see `hv_safety_isolation.md`)
 - Pad mass for a commercial pad pair
+
+---
+
+# Revision pass: version 0.2 of the parts study (27 November 2026)
+
+After the owner's decisions D-15, D-39 and D-41 to D-46. About 17 searches and fetches, all on 27 November 2026. Same tags and the same repository rule as above: ratings and sizing arithmetic only; no designs, no build steps.
+
+## 11. Capacitor scaling at 2.2 kV and higher temperature
+
+- **General Atomics Series DQ, full table** (re-fetched) — <https://www.ga.com/capacitors/series-dq-defibrillator-capacitors>
+  - Two biphasic parts rated **2.2 kV** that were not noted in the first pass:
+    - 322DQ4196B: 196 µF, 2.2 kV, 1.20 J/cc, 5,000 cycles, 49 × 74 × 129 mm
+    - 30920: 196 µF, 2.2 kV, 1.05 J/cc, 10,000 cycles, 49 × 74 × 146 mm
+  - 30954: 100 µF, 3.0 kV, 0.91 J/cc, 5,000 cycles, 50 × 93 × 121 mm; 30955: 100 µF, 3.0 kV, 1.00 J/cc, 5,000 cycles, 49 × 74 × 146 mm
+  - Still no weights or temperature ratings on the page.
+  - [CALC] GA's quoted J/cc is 1.15–1.18 × the outside-box figure for every part checked (e.g. 320DQ4130: 260 J rated in 179.7 cm³ = 1.45 J/cc box, against 1.66 quoted; 322DQ4196B: 474 J in 467.8 cm³ = 1.01, against 1.20).
+  - [CALC] Life against density: 1.66 → 1.35 J/cc doubles life (2,500 → 5,000); 1.35 → 1.04 doubles it again. Since density ∝ (film stress)², this gives life ∝ stress^−6.7 and ^−5.3. The study uses −6.6.
+- **Film-capacitor life model, general** — Digi-Key technical forum, "Film Capacitors" — <https://forum.digikey.com/t/film-capacitors/12832>: service life models take the ratio of rated to applied voltage to an exponent "usually between 5 and 10"; temperature acts roughly as a factor of 2 per 10 °C. Generic, not for pulse duty specifically.
+- **Pulse-capacitor voltage exponent** — SLAC-PUB-14112 — <https://www.slac.stanford.edu/pubs/slacpubs/14000/slac-pub-14112.pdf>: a fitted voltage exponent of 13.1 for the film studied (search-result summary; paper not read in full). End of life commonly taken as 5% capacitance loss (search-result summary of the same set of sources) [UNVERIFIED which paper].
+- **Polypropylene voltage derating above 85 °C** (search-result summaries of film datasheets): Panasonic ECWF(A) about 1.0–1.25%/°C above 85 °C — <https://www.farnell.com/datasheets/4824820.pdf>; RS film-foil polypropylene listing 1.25%/°C above 85 °C — <https://uk.rs-online.com/web/p/film-capacitors/0114581>; Vishay metallized PP rated 85 °C, operable to 105–125 °C with derating. These are general film parts, not defibrillator parts; they show 85 °C is the usual edge of polypropylene's un-derated range.
+- **TDK defibrillator product brief (2020)** — <https://www.tdk-electronics.tdk.com/download/2887416/9d4efc0f98fe0a32cdc4daff91cff523/film-capacitors-defi-pb.pdf>: metallized polypropylene, self-healing, PU or epoxy sealing, plastic or metal case, life "up to 10 000 cycles", **maximum working temperature +55 °C**, climatic category 40/93/56, 16–529 J, silicone leads 22 AWG / 15 kV DC / +150 °C, cylindrical or oval. No sizes, masses or temperature-life curve.
+- **CRE 200 µF / 2,200 V part**: listed on the CRE page already cited; a separate datasheet link exists but no size or mass was retrieved [UNVERIFIED].
+- **Not found:** any mass, or any life-versus-temperature curve, for a ≥ 2.2 kV defibrillator film capacitor.
+
+## 12. Battery: two cells
+
+- **Molicel P28A** (datasheet copy on NKON and retailer listings) — <https://www.nkon.nl/en/rechargeable/li-ion/18650-size/molicel-inr18650-p28a-2800mah-35a.html>; <https://www.imrbatteries.com/content/molicel_p28a.pdf>
+  - 46 g typical (listings range 45–48 g, 50 g max); 2,800 mAh; 35 A continuous.
+  - DC internal resistance 20 mΩ (10 A, 1 s) and AC 20 mΩ max at 1 kHz (temperature not stated).
+  - At −20 °C: ≥ 2.00 Ah to 2.5 V after charging at 23 °C (one listing; discharge current not given) [UNVERIFIED official].
+  - Discharge −40 to 60 °C; charge 0 to 60 °C.
+  - Storage temperature range not retrieved [UNVERIFIED].
+- Cold internal-resistance multiplier (3–5× at −20 °C) is background knowledge [BK]; no cell-specific figure found.
+- **ADI MAX17320** — <https://www.analog.com/en/products/max17320.html>: 2S–4S ModelGauge m5 EZ fuel gauge with protector, internal self-discharge detection, SHA-256 authentication; protection against over/under-voltage, over-current, short circuit, over/under-temperature using external FETs; **Recommended for New Designs**.
+- **TI BQ28Z610** — <https://www.ti.com/product/BQ28Z610>: 1–2 series gauge with protection and cell balancing; TI's page points to the **BQ28Z620 (ACTIVE)** as the newer version.
+- **TI BQ25887** — <https://www.ti.com/product/BQ25887>: 2-cell boost charger from USB/5 V input, 2 A, 1.5 MHz, integrated cell balancing, battery thermistor with JEITA profile, 93.4% efficiency at 5 V in / 7.6 V battery / 1 A; input max 6.2 V; charge voltage 6.8–9.2 V; −40 to 85 °C. Stock not confirmed.
+
+## 13. Sealed charging contacts (dock)
+
+- **Glenair CB series pogo-pin connectors**, technical information: no water penetration into an unmated panel-mounted receptacle in immersion testing — <https://ww.glenair.com/cb-series-pogopin-connectors/pdf/technical-information.pdf>
+- **ATTEND Technology waterproof pogo-pin connectors** (IP67, some magnetic) — <https://pdf.directindustry.com/pdf/attend-technology-inc/waterproof-pogp-pin-connectors/4596672-1117678.html>
+- **Magnetic pogo connector datasheet (Farnell-hosted)**: panel part rated IP67, but the mated joint is not waterproof — <https://www.farnell.com/datasheets/4796932.pdf>
+- **Yokowo S series**: IP67, IP68 and IP69K options, sealed with an O-ring between pin and housing (ConnectorSupplier e-book summary) — <https://www.connectorsupplier.com/wp-content/uploads/flipbook/19/files/basic-html/page42.html>
+- No specific device-side part number with a published IP rating was settled on [UNVERIFIED].
+
+## 14. Bluetooth modules (pre-certified, own processor)
+
+- **Ezurio BL54L15** — <https://www.ezurio.com/bl54l15>: nRF54L15 (128 MHz Cortex-M33 + RISC-V co-processor, 1.5 MB NVM, 256 KB RAM), 14 × 10 × 1.6 mm, −40 to +105 °C, PCB trace antenna or MHF4 connector; page lists **FCC/ISED/EU/UKCA/RCM/MIC/KC** compliance and Bluetooth/802.15.4 certification; "Recommended for New Design"; customer firmware ("hostless"), nRF Connect SDK / Zephyr. No FCC ID shown on the page. The **BL54L15µ** variant is listed by Digi-Key as "working towards" these approvals — <https://www.digikey.com/en/product-highlight/e/ezurio/bl54l15u-series>
+- **Raytac AN54L15Q** — Nordic news, 22 Nov 2024 — <https://www.nordicsemi.com/Nordic-news/2024/11/Raytac-AN54L15Q-multiprotocol-modules-integrate-nRF54L15-SoC>: "fully pre-certified" (approvals not named), chip / PCB / u.FL antenna variants, 9.5 × 13.7 × 2.1 mm (u.FL 9.5 × 14 × 2.1 mm), −40 to +105 °C. Reseller listings claim FCC/IC/CE/TELEC/NCC/SRRC [UNVERIFIED].
+- **Silicon Labs BGM220S** — datasheet <https://www.silabs.com/documents/public/data-sheets/bgm220s-datasheet.pdf>; FCC listing <https://fccid.io/I28-BGM220S22A> (which cites original **FCC ID QOQ-BGM220S2, granted 09/09/2020**): 6 × 6 × 1.1 mm; certifications listed FCC, ISED, CE, MIC, KC; 1.40 µA in EM2 deep sleep with full RAM retention; 26 µA/MHz active. Serial co-processor (NCP) mode not confirmed in this pass [BK].
+- **u-blox end-of-life notices** (modules with ready-made u-connectXpress serial firmware):
+  - NINA-B31x-02B EOL notice dated 16 Feb 2026; successors NINA-B41 series — <https://content.u-blox.com/sites/default/files/documents/NINA-B31x-02B_EOL_UBXDOC-465451970-4810.pdf>
+  - ANNA-B112-00B-00 replaced by ANNA-B112-02B-00 (u-connectXpress 4.0.0) — <https://shop.richardsonrfpd.com/docs/rfpd/ublox_PCN_ANNA-B112-00B-00.pdf>
+  - Octopart lists NINA-B312-00B obsolete, last-time-buy 2025-12-15 (search-result summary).
+
+## 15. Pads
+
+- **Philips HeartStart adult pads**: 1-pack listed at package weight 0.082 kg per set; 5-pack 0.532 kg (about 106 g per set); conductor surface area 85 cm²; lead 1.2 m — <https://www.philips.ca/healthcare/product/HC989803158221/heartstart-adult-defibrillator-pads-5-pack-pads>; <https://www.philips.ca/healthcare/product/HC989803158211/heartstart-adult-defibrillator-pads-1-pack-pads>. Package weights, not pad-only mass.
+- Pad storage temperature limits were not checked in this pass [UNVERIFIED].
+
+## 16. Arithmetic done in this pass (working in PARTS_STUDY.md v0.2)
+
+- Capacitor low / expected / high: 242 J rated energy ÷ 1.66 / 1.35 / 1.05 J/cc → 146 / 180 / 230 cm³ active → ×1.18 → about 170 / 210 / 270 cm³; × 1.3 / 1.4 / 1.5 g/cm³ → about 225 / 300 / 410 g.
+- Life gain from running a 2,200 V part at 1,950 V: (2,200/1,950)^6.6 = 2.22.
+- Ten-year duty: 520 weekly tests + 600 (typical) or 3,500 (heavy) rescue charges + 100 service = 1,220 or 4,120 full cycles; requirement ≥ 5,000 at 50 °C.
+- Cold charging: P = V·I − I²·R per cell, V = 3.4 V at about 10% charge, R cold = 3–5 × room value. 2 × P28A at 75 mΩ: 9.2 A, 2.71 V (just above 2.5 V cut-off); 1 × P45B at 50 mΩ, 50 W: 2.32 V (fails).
+- Roll-up: decision set 0.89 L / 902 g with pads; smallest set 0.63 L / 697 g; shell scaled as (inside volume)^⅔.
+
+## 17. Not found or not checked in this pass
+
+- Mass, temperature rating or temperature-life curve of any ≥ 2.2 kV defibrillator film capacitor.
+- Cold internal resistance of the P28A or P45B; P28A storage temperature.
+- FCC IDs for the Ezurio BL54L15 and Raytac AN54L15Q.
+- A device-side sealed contact part number.
+- Storage temperature of commercial defibrillator pads; pad-only mass.

@@ -15,7 +15,7 @@ Trained responders: police officers, paramedics, medical professionals. They car
 | Stretch goal | 500 g and 0.5 litre | The hardware estimate for a 150 J device from catalogue parts is 350–620 cm³ and 420–800 g |
 | Not a goal | 300 g, like the CellAED | That device reached its size by cutting shock energy and shock count, and its maker has had regulatory trouble. Catalogue parts do not get there at full energy. |
 
-**What the parts study found (27 November 2026):** the lower-risk set of parts comes to about 0.82 L and 834 g with pads; the smallest plausible set to about 0.57 L and 644 g. The 700 g target is reachable but tight; the 500 g stretch goal is not reachable with parts available today. See [PARTS_STUDY.md](PARTS_STUDY.md).
+**What the parts study found (27 November 2026, after the owner's decisions on the capacitor, battery and pads):** a set of parts that follows every decision with lower-risk choices comes to about 0.89 L and 902 g with pads, which misses the target by about 200 g. The smallest plausible set that still follows every decision comes to about 0.63 L and 697 g, meeting it by 3 g, and only if a capacitor maker can deliver the most optimistic estimate. A first prototype is more likely to weigh 780–900 g. The 500 g stretch goal is not reachable with parts available today. See [PARTS_STUDY.md](PARTS_STUDY.md).
 
 For comparison, the Avive Connect is 953 g and mainstream AEDs are 1.4 to 3 kg.
 
