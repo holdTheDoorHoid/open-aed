@@ -46,6 +46,10 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-34 | **Moving the adult/child switch during an analysis** recharges for the new mode without stopping the analysis. After a shock is advised, a switch change still cancels it. | Provisional (Q-19) | A switch moved as pads go on is most likely a correction; sending the patient to two minutes of CPR first would cost more. |
 | D-35 | **Rhythm-analysis tuning on public data uses a fixed patient split**, recorded in `firmware/crates/aed-eval/splits/`. The held-back half was scored once on 27 Nov 2026 and is now spent as a clean test. | Provisional | So results are not flattered by tuning and testing on the same patients. |
 | D-36 | **The device will sense compressions through the pads' resistance** and use that, not the heart signal alone, to tell compressions from a rhythm. | Provisional | Finding F-12, and the research finding that pad resistance gives compression rate with no extra sensor. |
+| D-37 | **A shock is never delivered while compressions are sensed.** Sensed movement after "shock advised" holds the shock back; the device re-analyses once, then falls back to CPR. | Provisional (Q-33) | One touch should not cost a patient two minutes, but a loop with neither CPR nor shocks must be impossible. |
+| D-38 | **If compression sensing fails, the device continues on the heart signal alone** and records it; it does not fault. | Provisional (Q-34) | A single failure must not block every shock. The cost is that finding F-12 returns while sensing is down. |
+| D-39 | **Both controllers are Cortex-M33-class processors from different makers.** | Provisional (Q-29) | The safety-qualified Rust compiler covers this family (vendor documents, 27 Nov 2026); a smaller supervisor chip would fall outside the qualification. |
+| D-40 | **Device recordings and evaluation data are never committed**; evaluation tools skip cleanly without them. The Cardially dataset is never used for tuning. | Provisional | Licences, privacy, and keeping a clean external test. |
 
 ## Owner questions
 
@@ -88,6 +92,42 @@ All seven were answered on 27 November 2026.
 **Q-20. The last-seconds blind spot (finding F-4).** A heart that recovers in the last 2 seconds before delivery is still shocked, because the analysis looks at a 4-second stretch of signal. Options: add a fast "has the rhythm just changed?" check during the countdown; shorten the analysis window (costs accuracy); or accept it, as commercial fully automatic units have a similar gap. Needs a clinician's view.
 
 **Q-21. How strict should the countdown be? (finding F-11)** Today any single doubtful answer during the 3-second countdown cancels the shock. On real fibrillation that cancels about a third of correct shocks. Allowing one doubtful second would deliver more of them, but would also shock a heart that recovered up to 2.5 seconds earlier (finding F-4). This is a trade between missed shocks and unnecessary ones and needs a clinician's view. Not changed.
+
+## Questions from the parts study, test instrument and compression sensing (27 November 2026)
+
+The reasoning behind each is in [docs/PARTS_STUDY.md](docs/PARTS_STUDY.md) section 11, [docs/TEST_INSTRUMENT.md](docs/TEST_INSTRUMENT.md) section 9, and [docs/FINDINGS.md](docs/FINDINGS.md).
+
+*Shaping the hardware*
+
+**Q-23. Parked-car heat.** No compact capacitor found is rated for it. Options: a "do not leave in a hot car" rule with an insulated pouch; a made-to-order capacitor rated for 85 °C storage (bigger, costlier); or lowering the top operating temperature from 50 to 45 °C.
+
+**Q-24. "Off-the-shelf parts only" cannot hold literally.** The capacitor, charging transformer, switch drive, pad connector and pads all have to be made to order. Accept "catalogue parts wherever they exist, made-to-order where they do not"?
+
+**Q-25. Voltage margin.** Compact capacitors are rated exactly 2,000 V and the model's worst case is 2,008 V. Options: specify 2,200 V parts (larger); or redesign around a larger capacitor at a lower voltage, about 130 µF at 1,750 V, which moves away from the Philips design point.
+
+**Q-26. Self-test frequency (changes D-15).** A full-energy test twice a day would wear out the capacitor in about three years. Proposal: a full-energy test weekly and a low-voltage check daily.
+
+**Q-27. Cold weather.** Charging in 7 seconds at −20 °C needs two battery cells (about 20 g more). Otherwise accept a short charging wait below freezing.
+
+**Q-28. Bluetooth.** Radio software is far more outside code than D-24 allows on the device. Proposal: a separate pre-certified Bluetooth module, so the safety firmware stays free of it.
+
+**Q-29. Supervisor processor.** Confirm D-39.
+
+**Q-30. Does the 700 g target include the pads?** The lower-risk part set is about 734 g without pads and 834 g with them; the smallest plausible set is 564 g and 644 g.
+
+**Q-31. Charging connection.** A USB-C socket is hard to seal to IP65. Proposal: sealed charging contacts and a dock, like a radio.
+
+*Shaping the behaviour*
+
+**Q-32. Compression sensing adds 1.8 seconds to the pause (finding F-14).** Accept it, or recover about a second by letting the analysis skip its settling time once the chest is confirmed still (a change to the rhythm analysis that would need re-testing)?
+
+**Q-33. Movement during the countdown.** Confirm D-37 (hold back, re-analyse once, then CPR), or go straight to CPR. Needs a clinician's view together with Q-20 and Q-21.
+
+**Q-34. Compression sensing failed.** Confirm D-38 (carry on without it), and decide whether the device should say anything aloud.
+
+*Shaping the test work*
+
+**Q-35. Reference measurements.** The test-instrument plan's first hardware stage is a calibrated commercial analyser and a commercial AED, about $4,500–12,000 used or borrowed. Buy, rent, or seek a loan from a hospital or university biomedical department? And may that stage be run with a biomedical technician before the high-voltage engineer (D-18) is found?
 
 ## Things that need a professional, not a guess
 

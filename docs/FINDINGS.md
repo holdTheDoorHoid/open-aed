@@ -17,7 +17,9 @@
 | F-9 | **Child mode: in-tolerance sensors can allow a shock about 21% over target.** If the charger regulates high while both sensors read low, all checks pass at up to 1,227 volts true, which into a 25–35 ohm child delivers about 60 J instead of 50 J. The placeholder tolerance is 15%. Ways out: more accurate sensors (about 1% + 7 V), or a change to the child waveform at low resistance. The adult worst case is +13.6%, close to the limit. | High | **Fixed 27 Nov 2026** by requiring sensors accurate to 1% + 7 V (D-28). Worst case is now +14.2% against a 15% placeholder limit, which is a thin margin. |
 | F-10 | **On real recordings the rhythm analysis misses too much coarse ventricular fibrillation.** Untuned it caught 61.9% against a 90% target. After tuning on half the patients it caught **71.1% on the other, held-back half** (58.3% untuned on those same patients). Still well short. It rarely advises a shock wrongly, though slightly more often than before tuning. Full report: `firmware/crates/aed-eval/REPORT.md`. | **High** | **Open.** Improved 27 Nov 2026, target not reached. Further gains need more and better data, not more tuning of this data. |
 | F-11 | **About a third of correct shock decisions on real fibrillation would be cancelled during the 3-second countdown.** The rescue sequence abandons a shock on any single "not shockable" or "not sure" answer while armed, and real fibrillation flickers between answers. On the held-back half only 46.8% of fibrillation analyses would end in a delivered shock. Relaxing the rule (ignoring one doubtful second) was tried and rejected because it made finding F-4 worse: a shock 2.5 s after the heart had recovered. | **High** | Open (owner and clinician decision, Q-21) |
-| F-12 | **Very fast chest compressions over a flatline are read as a shockable rhythm.** Made-up compressions at 150 a minute with no heart rhythm underneath were called shockable 20 times out of 20 (never at 140 a minute or slower). They look like rapid ventricular tachycardia. The heart signal alone cannot tell them apart; a separate signal that senses compressions, such as the resistance between the pads, is needed. | **High** | Open (needs pad-resistance sensing) |
+| F-12 | **Very fast chest compressions over a flatline are read as a shockable rhythm.** Made-up compressions at 150 a minute with no heart rhythm underneath were called shockable 20 times out of 20 (never at 140 a minute or slower). They look like rapid ventricular tachycardia. The heart signal alone cannot tell them apart; a separate signal that senses compressions, such as the resistance between the pads, is needed. | **Closed in simulation, not for real patients (27 Nov 2026).** With pad-resistance sensing on, fast compressions over a flatline or a normal rhythm are never shocked in simulation. See F-13 for what remains. |
+| F-13 | **Shallow compressions can go unseen.** The compression detector needs the pad resistance to swing by at least 0.3 ohm. On held-back real recordings one patient's compressions moved it only 0.15–0.25 ohm, and the detector said "hands off" for 13.7 seconds while compressions continued. Lowering the threshold risks reading a strong heartbeat as compressions. For such patients the F-12 risk remains, and the older heart-signal rule is kept as a second line of defence. | **High** | Open (needs labelled recordings with both heart signal and pad resistance) |
+| F-14 | **Compression sensing lengthens the pause and narrows the margin for a late stop.** Hands-off time before a shock rose from 9.3 to 11.1 s in simulation, because the analysis now restarts once the chest is still. A responder who stops compressing 4 s late now gets "unable to analyse" where 6 s was tolerated before. | Medium | Open (owner decision, Q-32) |
 
 A side effect of the F-1 fix: when the signal never becomes clean (very weak fibrillation, interference, a responder who never stops compressing), each analysis now lasts the full 12 seconds before the device says "Unable to analyse. No shock. Start CPR."
 
@@ -92,6 +94,41 @@ The patients were split in half by a fixed rule before any tuning. Settings were
 - **Flatline got worse on the development half** (91.1% under cross-validation against 96.4% untuned), all from one stretch of one recording whose label is doubtful. The held-back half has no flatline, so this is unresolved.
 - **Limits on how clean this test is:** the untuned results for every recording, including which patients did badly, had been seen before the split was made.
 - **The honest conclusion:** tuning these settings on this data is close to exhausted. Reaching 90% needs recordings from real cardiac arrests through defibrillator pads, from many patients, and a compression-sensing signal.
+
+## Independent test on real out-of-hospital recordings (27 November 2026)
+
+The rhythm analysis was run, untuned, on the open "Cardially" dataset: 251 distinct recordings of fibrillation from real cardiac arrests in Brescia, about 9 seconds each before the first shock.
+
+| Measure | Result |
+|---|---|
+| Called "shock" within 9 seconds | 61.4% (154 of 251) |
+| Answered "no shock" | 15.5% |
+| No answer in the time available | 23.1% |
+| Shock decisions that the countdown would have cancelled | about a third |
+
+- **It confirms F-10 and F-11 on independent data.** The figure sits in the same range as the public-database results (58–71%).
+- **The main cause is the 2.4 Hz frequency floor,** which exists to guard against compressions. Real out-of-hospital fibrillation is slower than the database kind (median 3.5 Hz against 4.0 Hz).
+- **Limits:** recovered from printed reports, not device files; 9 seconds where the device allows 12 (worth perhaps 5 points); only fibrillation a commercial defibrillator had already chosen to shock, so probably easier than average; nothing about wrong shocks; nine duplicate recordings and an unresolved licence question in the dataset itself. None of its data is in this repository.
+- **This dataset must never be used for tuning,** so it stays a clean test.
+
+## Compression sensing on real recordings (27 November 2026)
+
+A detector that senses chest compressions from the resistance between the pads was built and scored on the open Paris Fire Brigade dataset: 101 adult arrests, split into 56 for development and 45 held back and scored once.
+
+| Measure, held-back cases (25.6 hours) | Result |
+|---|---|
+| Compression time wrongly read as "hands off" | 0.51% |
+| Longest single miss | 13.7 s (one patient with very shallow swings) |
+| Cases with a miss of 2 s or more | 6 of 45 |
+| Hands-off time wrongly read as compressing or unknown | 3.1% |
+| Compressions found | 96.4% |
+| Compression rate error | median 0.9 per minute |
+| Time to notice compressions starting | median 0.33 s |
+| Time to notice they stopped | median 1.05 s |
+
+- **How it is used:** the rhythm analysis only sees the heart signal while the chest is still, and a shock is held back the instant movement is sensed. If sensing cannot tell, it is treated as "being compressed".
+- **In simulation,** shocks fired with hands on the chest fell from 34 to 7 in a 2,000-run campaign; six of the seven were within a quarter of a second of the hands going on, and the seventh was a shallow-compression case (F-13).
+- **Limits:** the dataset has no heart signal and no labels for when compressions happened, so the reference was built after the fact from the same signal. One defibrillator model, one ambulance service, unknown pad type. Charger noise and the behaviour after a shock are unmodelled.
 
 What it does not mean:
 

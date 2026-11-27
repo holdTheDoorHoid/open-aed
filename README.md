@@ -1,5 +1,7 @@
 # Open AED
 
+[![Firmware tests](https://github.com/holdTheDoorHoid/open-aed/actions/workflows/firmware.yml/badge.svg)](https://github.com/holdTheDoorHoid/open-aed/actions/workflows/firmware.yml)
+
 An open source design for a small, light automated external defibrillator (AED) that a police officer, paramedic or medical professional can carry on a belt, with one set of pads that works on both adults and children.
 
 **Status: research, plan, and first firmware running in simulation only. No hardware exists. Nothing here has been built or tested on a device.**
@@ -20,6 +22,8 @@ The aim is an open, well-documented, well-tested reference design built from par
 | [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | The draft target specification, with the reason for each number |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the device is divided up, the three checks before a shock, the rescue sequence |
 | [firmware/](firmware/) | Rust firmware and a simulator that runs it against a simulated patient |
+| [docs/PARTS_STUDY.md](docs/PARTS_STUDY.md) | Candidate parts and the size, weight and cost budget |
+| [docs/TEST_INSTRUMENT.md](docs/TEST_INSTRUMENT.md) | What the test load and measuring rig must do, and how its accuracy will be proven |
 | [docs/FINDINGS.md](docs/FINDINGS.md) | Problems the simulator has found so far |
 | [DECISIONS.md](DECISIONS.md) | The decision log, and the open questions waiting on the project owner. **Source of truth.** |
 | [SAFETY.md](SAFETY.md) | The rules that keep builders and the public safe |

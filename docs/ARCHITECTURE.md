@@ -1,6 +1,6 @@
 # System architecture
 
-Version 0.3, 27 November 2026. Decision numbers (D-xx) refer to [DECISIONS.md](../DECISIONS.md).
+Version 0.4, 27 November 2026. Decision numbers (D-xx) refer to [DECISIONS.md](../DECISIONS.md).
 
 **Everything in this document is a design on paper and in simulation. No hardware exists. Figures marked *model* come from arithmetic, not measurement.**
 
@@ -95,6 +95,8 @@ Points that matter:
 - **Cancel works in every state.**
 - **The capacitor charges while the rhythm is being analysed** (D-29), so a shock can follow the decision after only the 3-second countdown (D-30). If no shock is advised, the charge is burned off in the internal load.
 - **Emptying the capacitor happens in the background.** Whenever a charge is not going to be used, and after every shock, the device lets go of the capacitor and gives the responder the next instruction at once. It then confirms the capacitor is empty, will not start another charge until it is, and raises its most serious fault if it cannot confirm within the limit.
+- **The device senses chest compressions through the pads** (D-36). The resistance between the pads swings each time the chest is pressed. The rhythm analysis only looks at the heart signal while the chest is still, and starts afresh each time it becomes still. After a shock is advised, any sensed movement holds the shock back at once; the device empties the charge and analyses again, once, before falling back to CPR. If the sensing cannot tell, it counts as movement. If the sensing channel fails outright, the device carries on using the heart signal alone and records that it has done so.
+- **During CPR the same signal measures** compression rate, pauses and time on the chest, for the record. The only prompt it drives is "Continue CPR" after 15 seconds with no compressions.
 - **Pads that are on but making poor contact** (resistance above the range a shock is designed for, up to about 250 ohms) are still analysed, with the prompt "Press pads firmly". A shock is given only if the resistance is in range at the moment of delivery (D-32).
 - **Cancel is ignored during the switch-on self-test**, and a cancel button held for 10 seconds is treated as stuck and reported as a fault (D-31).
 
@@ -120,7 +122,9 @@ The firmware is split so that everything that decides anything can be tested on 
 | `aed-types` | The shared vocabulary: units, patient mode, rhythm decision, shock plan | Device and computer |
 | `aed-rhythm` | Heart-rhythm analysis | Device and computer |
 | `aed-waveform` | Shock planning and the electrical model of the discharge | Device and computer |
+| `aed-cpr` | Compression sensing from pad resistance | Device and computer |
 | `aed-core` | The rescue sequence, the supervisor's rules, self-test, prompts, event record. Talks to hardware only through a defined interface. | Device and computer |
+| `aed-eval`, `aed-cpr-eval` | Score the rhythm analysis and the compression sensing against real recordings (data not included) | Computer only |
 | `aed-sim` | A simulated device and patient: plays heart rhythms in, models the capacitor and the patient's resistance, injects faults | Computer only |
 | *(later)* board support | The thin layer that connects `aed-core` to a real processor's pins | Device only |
 
