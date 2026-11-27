@@ -14,6 +14,7 @@ use aed_core::{
     AbortReason, Config, Event, FaultKind, PermitRefusal, Prompt, ReleaseReason, Rescue,
     RescueState, ShockOutcome, Supervisor, SupervisorFault,
 };
+use aed_cpr::CompressionDetector;
 use aed_rhythm::synth::Synth;
 use aed_rhythm::Analyzer;
 use aed_types::{PatientMode, RhythmDecision, MAX_PATIENT_OHMS, MIN_PATIENT_OHMS};
@@ -32,6 +33,15 @@ pub const OVERVOLTAGE_MARGIN_V: f64 = 50.0;
 pub const MAIN_TICK_MS: u32 = 2;
 /// Heart-signal sample period, ms (250 samples per second).
 pub const ECG_PERIOD_MS: u32 = 4;
+/// Pad-impedance sample period, ms (125 samples per second).
+pub const IMPEDANCE_PERIOD_MS: u32 = 8;
+/// With compression sensing, the bridge may fire while hands are on the
+/// chest only if they went on less than this long before: the time the
+/// detector needs to see the first compression, plus a sample and a tick.
+/// 1,000 ms: the detector's design bound for a compression of at least
+/// 0.3 Ω at 50 per minute or faster (aed-cpr crate documentation). The
+/// exposures actually seen are reported in every run.
+pub const HANDS_ON_ALLOWANCE_MS: u32 = 1_000;
 
 /// Who or what a timeline line is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +122,9 @@ pub enum Rule {
     /// The device said nothing at all for longer than twice the grace time
     /// after switch-on.
     SilentAtPowerOn,
+    /// With compression sensing, the bridge fired while the responder's
+    /// hands had been on the chest for longer than [`HANDS_ON_ALLOWANCE_MS`].
+    FiredWhileHandsOn,
 }
 
 impl Rule {
@@ -133,6 +146,7 @@ impl Rule {
             Rule::CapacitorLeftCharged => "capacitor left charged at the end of the run",
             Rule::LeftWithoutInstruction => "responder left without an instruction",
             Rule::SilentAtPowerOn => "device silent after switch-on",
+            Rule::FiredWhileHandsOn => "bridge fired while hands were on the chest",
         }
     }
 }
@@ -245,6 +259,13 @@ pub struct RunResult {
     pub main_frozen_at: Option<u32>,
     /// The configuration both controllers used.
     pub config: Config,
+    /// For every shock fired while hands were on the chest (ground truth):
+    /// how long they had been on, ms.
+    pub hands_on_at_fire: Vec<u32>,
+    /// Compressions the firmware counted.
+    pub compressions_counted: u32,
+    /// Times the firmware held a shock back because the chest was not still.
+    pub hands_on_aborts: u16,
 }
 
 impl RunResult {
@@ -286,10 +307,12 @@ pub const fn is_instruction(p: Prompt) -> bool {
     matches!(
         p,
         Prompt::AttachPads
+            | Prompt::ContinueCpr
             | Prompt::CheckPads
             | Prompt::AnalysingDoNotTouch
             | Prompt::StopCprAnalysing
             | Prompt::DoNotTouchPatient
+            | Prompt::MovementShockDelayed
             | Prompt::ShockAdvisedCharging
             | Prompt::StandClear
             | Prompt::Countdown(_)
@@ -320,8 +343,9 @@ pub const fn silence_grace_ms(config: &Config) -> u32 {
 pub struct Simulation {
     scenario: Scenario,
     plant: SharedPlant,
-    rescue: Rescue<Analyzer, BtePlanner>,
+    rescue: Rescue<Analyzer, BtePlanner, CompressionDetector>,
     supervisor: Supervisor,
+    hands_on_at_fire: Vec<u32>,
     main_view: MainView,
     sup_view: SupervisorView,
     config: Config,
@@ -363,6 +387,8 @@ pub enum SetupError {
     Config(aed_core::ConfigError),
     /// The waveform configuration was refused.
     Waveform(aed_waveform::ConfigError),
+    /// The compression detector's settings were refused.
+    Chest(aed_cpr::SettingsError),
 }
 
 impl Simulation {
@@ -379,9 +405,15 @@ impl Simulation {
     /// # Errors
     /// If either controller or the planner refuses its configuration.
     pub fn with_config(scenario: &Scenario, config: Config) -> Result<Self, SetupError> {
+        let config = Config {
+            chest_sensing: config.chest_sensing && scenario.chest_sensing,
+            ..config
+        };
         let planner = BtePlanner::new(scenario.plant.waveform).map_err(SetupError::Waveform)?;
-        let rescue =
-            Rescue::new(config, Analyzer::new(), planner).map_err(SetupError::Config)?;
+        let detector =
+            CompressionDetector::new(aed_cpr::Settings::default()).map_err(SetupError::Chest)?;
+        let rescue = Rescue::with_chest_sensor(config, Analyzer::new(), planner, detector)
+            .map_err(SetupError::Config)?;
         let supervisor = Supervisor::new(config).map_err(SetupError::Config)?;
         let n = &scenario.noise;
         let mut synth = Synth::new(scenario.rhythm, scenario.seed);
@@ -397,8 +429,11 @@ impl Simulation {
         let mut plant = Plant::new(scenario.plant, synth, scenario.seed);
         plant.mode = scenario.mode;
         plant.after_shock.clone_from(&scenario.after_shock);
-        plant.compressing = scenario.responder.cpr_at_start;
+        plant.set_compressing(scenario.responder.cpr_at_start);
         plant.compression_uv = scenario.responder.compression_uv;
+        plant.compression_per_min = scenario.responder.compression_per_min;
+        plant.compression_ohms = scenario.responder.compression_ohms;
+        plant.cardiac_ohms = scenario.cardiac_ohms;
         let plant = Rc::new(RefCell::new(plant));
         Ok(Simulation {
             scenario: scenario.clone(),
@@ -407,6 +442,7 @@ impl Simulation {
             plant,
             rescue,
             supervisor,
+            hands_on_at_fire: Vec::new(),
             config,
             main_frozen: false,
             main_frozen_at: None,
@@ -452,7 +488,7 @@ impl Simulation {
 
     /// The main controller's rescue sequence (for inspection).
     #[must_use]
-    pub fn rescue(&self) -> &Rescue<Analyzer, BtePlanner> {
+    pub fn rescue(&self) -> &Rescue<Analyzer, BtePlanner, CompressionDetector> {
         &self.rescue
     }
 
@@ -502,7 +538,11 @@ impl Simulation {
         let r = self.plant.borrow().rhythm;
         self.log(Source::Patient, format!("Patient rhythm: {}", rhythm_name(r)));
         if self.scenario.responder.cpr_at_start {
-            self.log(Source::Responder, "Doing chest compressions.");
+            let (rate, ohms) = (self.scenario.responder.compression_per_min, self.scenario.responder.compression_ohms);
+            self.log(
+                Source::Responder,
+                format!("Doing chest compressions ({rate:.0}/min, {ohms:.2} Ω each in the pad impedance)."),
+            );
         }
         while self.now() < self.scenario.duration_ms {
             self.step();
@@ -526,6 +566,14 @@ impl Simulation {
                 self.rescue.on_ecg_sample(sample, t);
             }
         }
+        if now.is_multiple_of(IMPEDANCE_PERIOD_MS) {
+            let sample = self.plant.borrow_mut().impedance_sample();
+            if let (Some(sample), false) = (sample, self.main_frozen) {
+                let t = self.plant.borrow().main_clock();
+                self.rescue.on_impedance_sample(sample, t);
+            }
+        }
+        self.plant.borrow_mut().update_hands_on();
         if now.is_multiple_of(MAIN_TICK_MS) && !self.main_frozen {
             self.rescue.tick(&mut self.main_view);
         }
@@ -597,6 +645,18 @@ impl Simulation {
         }
         if s.cancel_pressed {
             self.violate(Rule::FiredWhileCancelPressed, String::new(), None);
+        }
+        let hands_on_since = self.plant.borrow().hands_on_since;
+        if let Some(since) = hands_on_since {
+            let exposure = s.at_ms.saturating_sub(since);
+            self.hands_on_at_fire.push(exposure);
+            if self.config.chest_sensing && exposure > HANDS_ON_ALLOWANCE_MS {
+                self.violate(
+                    Rule::FiredWhileHandsOn,
+                    format!("hands on the chest for {exposure} ms"),
+                    None,
+                );
+            }
         }
         if state_before != RescueState::Delivering {
             self.violate(
@@ -863,6 +923,29 @@ impl Simulation {
             Event::BatteryLow => "Battery low".to_string(),
             Event::SelfTestPassed => "Self-test passed".to_string(),
             Event::SelfTestFailed(f) => format!("Self-test failed: {f:?}"),
+            Event::AnalysisHeld(s) => format!(
+                "Chest {}: analysis reset, waiting for hands off",
+                match s {
+                    aed_types::ChestState::Compressing => "being compressed",
+                    _ => "not still (cannot tell)",
+                }
+            ),
+            Event::ChestSensingFailed(s) => {
+                format!("Compression sensing FAILED ({s:?}): heart signal only from now on")
+            }
+            Event::ChestSensingRestored => "Compression sensing working again".to_string(),
+            Event::CprPause(ms) => format!("CPR pause of {:.1} s", f64::from(ms) / 1000.0),
+            Event::CprPeriodSummary {
+                compressions,
+                rate_per_min,
+                on_chest_permille,
+                longest_pause_ms,
+            } => format!(
+                "CPR period: {compressions} compressions, {rate_per_min}/min, {:.0}% of the time on the chest, longest pause {:.1} s",
+                f64::from(on_chest_permille) / 10.0,
+                f64::from(longest_pause_ms) / 1000.0
+            ),
+            Event::NoCompressionsPrompt => "No compressions sensed: prompts to continue CPR".to_string(),
             // The supervisor's own record covers these, and state changes are polled.
             Event::SupervisorPermitted
             | Event::SupervisorRefused(_)
@@ -1059,6 +1142,21 @@ impl Simulation {
                 self.plant.borrow_mut().mode = m;
                 self.log(Source::Responder, format!("Moves the switch to {m:?}"));
             }
+            Action::Touch(ms) => {
+                self.plant.borrow_mut().touch(ms);
+                self.log(Source::Responder, format!("Presses on the chest ({ms} ms)"));
+            }
+            Action::Ventilate(on) => {
+                self.plant.borrow_mut().ventilating = on;
+                self.log(
+                    Source::Responder,
+                    if on {
+                        "Starts giving breaths every 6 s."
+                    } else {
+                        "Stops giving breaths."
+                    },
+                );
+            }
         }
     }
 
@@ -1066,6 +1164,7 @@ impl Simulation {
         let now = self.now();
         let want = match prompt {
             Prompt::StartCpr
+            | Prompt::ContinueCpr
             | Prompt::DeviceFaultContinueCpr
             | Prompt::SeriousFaultContinueCpr
             | Prompt::CancelStuckContinueCpr => Some(true),
@@ -1124,7 +1223,7 @@ impl Simulation {
                 let changed = {
                     let mut p = self.plant.borrow_mut();
                     let changed = p.compressing != w;
-                    p.compressing = w;
+                    p.set_compressing(w);
                     changed
                 };
                 if changed {
@@ -1222,6 +1321,9 @@ impl Simulation {
             supervisor_alarm_at: self.alarm_first_at,
             main_frozen_at: self.main_frozen_at,
             config: self.config,
+            hands_on_at_fire: self.hands_on_at_fire,
+            compressions_counted: self.rescue.counters().compressions,
+            hands_on_aborts: self.rescue.counters().hands_on_aborts,
         }
     }
 }
@@ -1254,6 +1356,7 @@ pub fn abort_text(r: AbortReason) -> String {
         AbortReason::ModeChanged => "adult/child switch moved".to_string(),
         AbortReason::PlanRefused(e) => format!("no shock plan ({e:?})"),
         AbortReason::ConfirmationStale => "rhythm confirmation too old".to_string(),
+        AbortReason::HandsOnChest => "chest compressed or moving after the advice".to_string(),
     }
 }
 

@@ -387,3 +387,114 @@ fn charger_is_never_asked_for_before_the_supervisor_holds() {
         assert!(asked > 0, "{name}: never charged");
     }
 }
+
+// ----- compression sensing (D-36, finding F-12) -------------------------------------
+
+/// The same scenario with compression sensing switched off in the firmware.
+fn without_sensing(name: &str) -> aed_sim::RunResult {
+    let mut s = aed_sim::by_name(name).unwrap();
+    s.chest_sensing = false;
+    common::run_scenario(&s)
+}
+
+#[test]
+fn f12_compressions_150_over_flatline() {
+    // With compression sensing: never charged for a shock, never shocked.
+    let r = standard("f12-compressions-150-over-flatline");
+    assert!(r.said(Prompt::AnalysisInconclusive));
+    assert!(r.compressions_counted > 100);
+    // Without it (the old behaviour): compressions at 150/min over a
+    // flatline are taken for a shockable rhythm and the flatline is shocked.
+    let old = without_sensing("f12-compressions-150-over-flatline");
+    assert!(
+        !old.shocks.is_empty(),
+        "expected the heart-signal-only device to shock (finding F-12)"
+    );
+    assert_eq!(
+        old.violations_of(aed_sim::Rule::FiredOnNonShockableRhythm).len(),
+        old.shocks.len()
+    );
+}
+
+#[test]
+fn f12_compressions_150_over_normal_rhythm() {
+    let r = standard("f12-compressions-150-over-normal-rhythm");
+    assert!(r.shocks.is_empty());
+    let old = without_sensing("f12-compressions-150-over-normal-rhythm");
+    println!("without sensing: {} shock(s) on a normal rhythm", old.shocks.len());
+}
+
+#[test]
+fn stops_very_late() {
+    // The responder stops 3.5 s after being told: the analysis waits for
+    // hands off, and the shock still comes in the first cycle. (About 4 s is
+    // the limit now; see tests/late_hands_off.rs.)
+    let r = standard("stops-very-late");
+    assert_eq!(r.shocks.len(), 1);
+    let first_cpr = r.states.iter().find(|&&(_, s)| s == RescueState::Cpr).map(|&(t, _)| t);
+    assert!(r.shocks.first().unwrap().at_ms <= first_cpr.unwrap_or(u32::MAX), "shock in the first cycle");
+    assert!(r.hands_on_at_fire.is_empty());
+}
+
+#[test]
+fn touch_during_countdown() {
+    // A firm touch during the countdown holds the shock back; the rhythm is
+    // analysed again and the shock given once hands are off.
+    let r = standard("touch-during-countdown");
+    assert!(r.said(Prompt::MovementShockDelayed));
+    assert_eq!(r.hands_on_aborts, 1);
+    assert!(r.hands_on_at_fire.is_empty(), "no shock while touching");
+    // Without sensing the touch is invisible to the device.
+    let old = without_sensing("touch-during-countdown");
+    println!("without sensing: shocks fired with hands on after {:?} ms", old.hands_on_at_fire);
+}
+
+#[test]
+fn ventilations_during_analysis() {
+    // Breaths every 6 s (no compressions) must not block the analysis.
+    let r = standard("ventilations-during-analysis");
+    let t = r.timings.first().unwrap();
+    assert!(t.analysis_ms <= 10_000, "analysis took {} ms", t.analysis_ms);
+}
+
+#[test]
+fn strong_pulse() {
+    // A strong heartbeat in the impedance is not read as compressions.
+    let r = standard("strong-pulse");
+    let held: Vec<_> = r
+        .timeline
+        .iter()
+        .filter(|e| e.text.starts_with("Chest being compressed"))
+        .collect();
+    assert!(held.is_empty(), "{held:?}");
+}
+
+#[test]
+fn fast_rhythm_with_pulse() {
+    let r = standard("fast-rhythm-with-pulse");
+    assert!(r.shocks.is_empty());
+    assert!(!r.timeline.iter().any(|e| e.text.starts_with("Chest being compressed")));
+}
+
+#[test]
+fn small_compressions() {
+    // Documented weakness (real recordings): compressions of 0.2 ohm are
+    // below the detector's 0.3 ohm threshold and are not seen. The device
+    // then behaves as without sensing during them (the heart-signal checks
+    // still apply); this test records it rather than hiding it.
+    let r = standard("small-compressions");
+    println!("compressions counted: {}", r.compressions_counted);
+    assert!(r.compressions_counted < 10);
+}
+
+#[test]
+fn fault_impedance_lost() {
+    // The compression-sensing channel dies at switch-on: the analysis is
+    // held for 5 s, then the device carries on from the heart signal alone
+    // and the shock is given.
+    let r = standard("fault-impedance-lost");
+    assert!(r
+        .timeline
+        .iter()
+        .any(|e| e.text.starts_with("Compression sensing FAILED")));
+}

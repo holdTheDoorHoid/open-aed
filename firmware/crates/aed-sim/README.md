@@ -13,7 +13,8 @@ Read this before reading any result.
 - **Switch behaviour.** The output bridge fires instantly and perfectly when the interlock allows it. Real switches can fail half-on, ring, or leak.
 - **Noise coupling.** The shock does not disturb the controllers, the sensors or the message wire. The heart-signal input is simply blanked for 1.5 s after a shock.
 - **Processor timing.** The controllers tick at exact intervals (main every 2 ms, supervisor every 1 ms). No interrupt latency, jitter, stack limits, watchdog, or the time the rhythm analysis takes to compute.
-- **People.** The responder is a script: stops compressions a fixed time after being told, restarts a fixed time after "Start CPR", may re-attach pads. Real people hesitate, talk, touch the patient.
+- **People.** The responder is a script: stops compressions a fixed time after being told, restarts a fixed time after "Start CPR", may re-attach pads, and (when scripted) presses on the chest or gives breaths. Real people hesitate, talk, touch the patient.
+- **Real pad impedance.** The compression-sensing channel (decision D-36) is a cartoon: each compression is a smooth bump of a fixed size, each breath a slow bump, each heartbeat a small dip; the sizes come from published figures and from the Paris recordings (see `plant.rs`), but real signals are far messier (see `crates/aed-cpr-eval/REPORT.md`). How the front end behaves after a shock, and the charger's noise, are guesses.
 - **Patient physiology.** Rhythms change only when the script says so (or after a shock, if the script says that shock works). Pad resistance is fixed unless scripted.
 
 ## How to run it
@@ -25,6 +26,8 @@ cargo run -p aed-sim -- --list                 # the scenarios
 cargo run -p aed-sim -- adult-vf               # one scenario: timeline + summary
 cargo run -p aed-sim -- timings                # timing table for every scenario
 cargo run -p aed-sim -- campaign 300 1         # random campaign: 300 runs from seed 1
+cargo run -p aed-sim -- campaign 300 1 --no-chest   # the same, firmware without compression sensing
+cargo run -p aed-sim -- campaign 300 1 --extended   # adds compression-sensing variations (touches, breaths, ...)
 cargo run -p aed-sim -- random 154             # replay one campaign run by its seed
 ```
 
@@ -63,6 +66,14 @@ cargo test -p aed-sim --test findings -- --ignored --nocapture  # the known prob
 | `clock-drift` | Controllers' clocks 2 % apart |
 | `slow-link` | 40 ms message delay, 5 % of messages lost |
 | `sensor-tolerance` | The two voltage sensors at opposite ends of the D-28 accuracy: +1 % + 7 V and −1 % − 7 V (more cases in `tests/voltage_sensors.rs`) |
+| `f12-compressions-150-over-flatline` | Flatline; the responder never stops compressing, at 150/min (finding F-12). With compression sensing: never shocked. Without it (`chest_sensing: false`): the flatline is shocked |
+| `f12-compressions-150-over-normal-rhythm` | The same over a normal rhythm: never shocked |
+| `stops-very-late` | The responder takes 3.5 s to stop compressions; the analysis waits for hands off and the shock still comes |
+| `touch-during-countdown` | A firm 0.8 s press on the chest 1.5 s into the countdown: "Movement detected. Shock delayed.", analysed again, then shocked |
+| `ventilations-during-analysis` | Breaths every 6 s and no compressions from the first analysis on: the analysis is not blocked |
+| `strong-pulse`, `fast-rhythm-with-pulse` | A 0.1 Ω heartbeat in the pad impedance at 75 and 160/min: never read as compressions |
+| `small-compressions` | Compressions of only 0.2 Ω (seen in some real patients): below the detector's threshold and not seen (documented weakness) |
+| `fault-impedance-lost` | The compression-sensing channel dies at switch-on: analysis held for 5 s, then heart signal only, shock given |
 | `fault-<name>` | One per injectable fault, listed below |
 
 Injectable faults (each can be switched on at any time or a set time after the device enters a given state): main controller's voltage sensor wrong; supervisor's voltage sensor wrong; charger cannot reach its target; charger runs away past its target; discharge path stuck (will not empty); main controller freezes; message wire drops; pads fall off; cancel pressed (1 s); cancel stuck down (D-31); battery depleted; output bridge fails to fire. Sensors can also be given gain and offset errors or a stuck reading, the charger a regulation error (it charges to a multiple of the voltage asked for), each controller's clock a drift, and the message wire a delay and a loss rate. The responder can be made to never stop compressions, and to press the pads down when told ("Press pads firmly"), which changes the pad resistance to a scripted value.
@@ -72,6 +83,7 @@ Injectable faults (each can be switched on at any time or a set time after the d
 - **The device.** A 100 µF capacitor (from the waveform design), a charger delivering a constant 30 W (a full adult charge takes about 6 s), a 2,000 Ω internal discharge load that empties the capacitor unless *both* controllers hold it open (the `aed-core` interlock rule), a slow leak, and the output bridge, which fires only when the interlock rule allows. The charger cannot run while the discharge path is active (the `aed-core` rule `charger_may_run`, a requirement on the future hardware); a switch (`charger_gated_by_discharge`) turns that rule off so a test can show what happens without it. The supervisor's own fault alarm (buzzer and light) appears in the timeline as the supervisor's alarm. The shock itself is the `aed-waveform` model, started from the voltage actually on the capacitor and delivered into the patient's actual resistance; whatever charge is left stays on the capacitor. The plant adds up the energy the charger puts into the capacitor and the energy burned off in the internal load, so each run's summary shows the battery and heat cost of charging during analysis (D-29): charges burned off without a shock, charger output and energy burned off inside, in joules (model figures; charger losses are not modelled).
 - **Two separate controllers.** The real `Rescue` (with the real rhythm analysis and shock planner) and the real `Supervisor`. Each sees the device only through its own sensors and clock, and they talk only through a message wire.
 - **The patient.** A scripted rhythm, pad resistance (or pads off), optional interference, compression artifact while the responder is doing CPR.
+- **Compression sensing (D-36).** A pad-impedance channel at 125 samples a second, fed to the real `aed_cpr::CompressionDetector` inside the main controller: the patient's resistance plus each compression (1.5 Ω by default, in step with the compression artifact in the heart signal), breaths, the heartbeat of a beating heart (0.05 Ω by default), touches, noise (5 mΩ), and after a shock 0.3 s saturated then a 3 Ω offset recovering over 1.5 s (a guess). The ground truth "hands on the chest" (compressing or touching) is checked at every shock. `Scenario::chest_sensing = false` runs the firmware without compression sensing, so its effect can be measured.
 
 ## Safety rules checked in every run, at every 1 ms step
 
@@ -81,6 +93,7 @@ Injectable faults (each can be switched on at any time or a set time after the d
 4. The true capacitor voltage never goes more than 50 V above the overvoltage limit.
 5. If the device ends in its Fault state, the capacitor is empty (or still emptying in the background within the main controller's own time limit), unless the discharge path itself is stuck; in that case the device must report the more serious "could not empty" fault.
 6. The capacitor is not left charged at the end unless a shock is being prepared (which, with charging during analysis, includes an analysis under way) or it is still emptying in the background.
+8. With compression sensing, the bridge never fires while the responder's hands have been on the chest (ground truth) for longer than 1 s (`HANDS_ON_ALLOWANCE_MS`, the detector's design bound for seeing a compression). Every shock fired with hands on at all is reported with how long they had been on.
 7. The responder is never left without an instruction: any purely informational message ("Shock delivered.", "No shock advised.", "Unable to analyse. No shock.", "Poor pad contact. No shock.") is followed by an instruction within 4 s, and the device speaks within 8 s of switching on. The supervisor's fault alarm counts as an instruction ("continue CPR"; the simulated responder restarts compressions when it sounds). If the main controller freezes, the supervisor's alarm must come on within 4 s; there is no exemption for a frozen main controller.
 
 Rule 1 cannot hold for a rhythm change in the last few seconds before the shock: the analysis looks at a 4-second window. The random campaign counts those cases separately (see "Known problems").
