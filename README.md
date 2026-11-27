@@ -2,7 +2,7 @@
 
 An open source design for a small, light automated external defibrillator (AED) that a police officer, paramedic or medical professional can carry on a belt, with one set of pads that works on both adults and children.
 
-**Status: planning and research. No hardware exists. Nothing here has been built or tested.**
+**Status: research, plan, and first firmware running in simulation only. No hardware exists. Nothing here has been built or tested on a device.**
 
 > **This is not a medical device.** Nothing in this repository is approved, cleared or safe for use on a person or an animal. A defibrillator stores enough energy to kill the person building it. Read [SAFETY.md](SAFETY.md) before doing anything beyond reading.
 
@@ -18,6 +18,9 @@ The aim is an open, well-documented, well-tested reference design built from par
 |---|---|
 | [docs/PLAN.md](docs/PLAN.md) | The phased roadmap, from research to a design a manufacturer could take forward |
 | [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | The draft target specification, with the reason for each number |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the device is divided up, the three checks before a shock, the rescue sequence |
+| [firmware/](firmware/) | Rust firmware and a simulator that runs it against a simulated patient |
+| [docs/FINDINGS.md](docs/FINDINGS.md) | Problems the simulator has found so far |
 | [DECISIONS.md](DECISIONS.md) | The decision log, and the open questions waiting on the project owner. **Source of truth.** |
 | [SAFETY.md](SAFETY.md) | The rules that keep builders and the public safe |
 | [reports/](reports/) | The full research report |

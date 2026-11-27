@@ -1,0 +1,12 @@
+[package]
+name = "aed-rhythm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aed-types.workspace = true
+libm.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/aed-types", "crates/aed-rhythm", "crates/aed-waveform", "crates/aed-core", "crates/aed-sim"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/holdTheDoorHoid/open-aed"
+
+[workspace.dependencies]
+aed-types = { path = "crates/aed-types" }
+aed-rhythm = { path = "crates/aed-rhythm" }
+aed-waveform = { path = "crates/aed-waveform" }
+aed-core = { path = "crates/aed-core" }
+# The only third-party dependency allowed on the device side. See DEPENDENCIES.md.
+libm = "0.2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "warn"

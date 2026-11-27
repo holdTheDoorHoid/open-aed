@@ -31,6 +31,9 @@ This file is the source of truth. If another document disagrees with it, this fi
 | D-19 | **No manual mode.** The device is fully automatic only. | **Confirmed by owner, 26 Nov 2026** | Owner decision (see D-06). Keeps the screen small and simple. |
 | D-20 | **Data partnerships are parked.** Rhythm software is developed on public data first; outreach for real cardiac-arrest recordings resumes once it works on those. | **Confirmed by owner, 26 Nov 2026** | Owner decision. Still required before Phase 5. |
 | D-21 | **Budget: small and self-funded, with grant applications** for the larger costs. | **Confirmed by owner, 26 Nov 2026** | Owner decision. |
+| D-22 | **Firmware is hardware-agnostic.** Everything that decides anything runs and is tested on an ordinary computer; the processor is chosen later and connected through a thin layer. | Provisional | Keeps the processor choice open while the Rust compiler qualification question is unresolved, and makes the safety logic testable now. |
+| D-23 | **Model design point: 100 µF charged to 1,950 V (adult) or 1,150 V (child)**, voltage fixed per mode, phase lengths chosen from the measured resistance. | Provisional, model only | Delivers within 7% of target across 25–175 ohms in the model. Depends on an assumed 5 ohm internal resistance. |
+| D-24 | **Only third-party code on the device is `libm`** (maths functions). Additions are listed in `firmware/DEPENDENCIES.md` with a reason. | Provisional | The medical software standard requires every outside component to be justified and tracked. |
 
 ## Owner questions
 
@@ -51,6 +54,18 @@ All eleven were answered on 26 November 2026.
 | Q-11 | Budget? | Small self-funded, seek grants | D-21 |
 
 Decisions D-02, D-04, D-05, D-08, D-10, D-11, D-12, D-14 and D-15 remain provisional: they were made by Claude from the research and the owner has not been asked about them directly.
+
+## New questions from the first firmware and simulation work (27 November 2026)
+
+**Q-12. The 200 joule headroom does not fit.** D-03 says "fixed 150 J, with room for 200 J later". The model shows a 100 µF capacitor at the 2,000 volt ceiling stores exactly 200 J, so it cannot deliver 200 J to a patient. A 200 J version needs a capacitor about a third larger or a higher voltage with higher-rated parts throughout. Options: (a) accept 150 J only and drop the headroom; (b) size the capacitor space and voltage ratings for 200 J now, at a size cost; (c) decide after the bench prototype.
+
+**Q-13. Charge while analysing?** In simulation the responder's hands are off the chest for about 17 seconds before each shock: 7 s analysing, 6 s charging, 5 s countdown. Starting the charge during analysis would remove most of the 6 s. The cost: the capacitor is charged more often when no shock follows, and that energy is then burned off internally.
+
+**Q-14. How long should the stand-clear countdown be?** It is 5 seconds as a placeholder. Shorter saves hands-off time; longer gives people more warning on a fully automatic device.
+
+**Q-15. Cancel pressed during the switch-on self-test** currently counts as a failed self-test and disables shocks for that session. Should a stray press at switch-on be ignored instead?
+
+**Q-16. Pads on, but resistance just above the 175 ohm limit.** Today the device only repeats "attach pads" and never analyses. Some commercial units accept up to 180–230 ohms. Widen the range, or add a distinct "check pads, continue CPR" behaviour?
 
 ## Things that need a professional, not a guess
 
