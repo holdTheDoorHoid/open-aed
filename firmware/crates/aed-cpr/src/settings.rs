@@ -57,19 +57,20 @@ pub struct Settings {
     /// Highest pad impedance accepted, milliohms. 300 Ω: a margin above the
     /// 250 Ω top of the pad-sensing range (decision D-32), for the same reason.
     pub baseline_max_mohm: u32,
-    /// Corner of the high-pass filter (fourth order), Hz. It removes the
-    /// baseline (the patient's own resistance) and slow drift. Breaths are
-    /// NOT removed by this filter but by [`Settings::max_rise_ms`]: a breath
-    /// takes about a second to go in (ventilation detectors low-pass at
-    /// 0.6 Hz to separate breaths from compressions: Gonzalez-Otero et al.,
-    /// CinC 2013;40:807), a compression a quarter to half of that.
-    /// 0.3 Hz: chosen on the development half of the Paris recordings
-    /// (0.3, 0.5 and 1.0 Hz were compared). 1.0 Hz missed slightly fewer
-    /// compressions there (0.19 % against 0.28 % of compression time) but
-    /// called breaths and other slow movement "compressing" twice as often
-    /// and added about 0.6 s to the median time to "hands off"; the higher
-    /// corner also distorts slow compressions (at 60 per minute a 0.35 Ω
-    /// compression vanished in the synthetic tests).
+    /// Corner of the high-pass filter, Hz. It removes the baseline (the
+    /// patient's own resistance) and slow drift. Breaths are NOT removed by
+    /// this filter but by [`Settings::max_rise_ms`] and
+    /// [`Settings::max_steep_ms`]: a breath takes about a second to go in
+    /// (ventilation detectors low-pass at 0.6 Hz to separate breaths from
+    /// compressions: Gonzalez-Otero et al., CinC 2013;40:807), a compression
+    /// a quarter to half of that. 0.5 Hz, second order: chosen on the
+    /// development half of the Paris recordings, where 0.3, 0.5 and 1.0 Hz,
+    /// second and fourth order, were compared. Missed compression time
+    /// ranged from about 0.19 % to 0.36 %; higher and sharper filters missed
+    /// a little less but read breaths and slow movement as movement more
+    /// often, added up to 0.6 s to the median time to "hands off", and
+    /// distorted slow compressions (at 60 per minute a 0.35 Ω compression
+    /// vanished in the synthetic tests at 1 Hz).
     pub highpass_hz: f32,
     /// Fourth-order high-pass (`true`) or second-order (`false`). A
     /// fourth-order filter removes slow changes more sharply but rings, and

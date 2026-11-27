@@ -48,6 +48,8 @@ pub struct Totals {
     pub sizes: Vec<f64>,
     /// Analysis markers by detector answer: hands off, compressing, unknown.
     pub analyses: [usize; 3],
+    /// All pauses between reference runs (under 60 s), seconds.
+    pub pauses: Vec<f64>,
     /// Longest single miss in any case, seconds, and the case.
     pub longest_miss: (f64, String),
 }
@@ -75,6 +77,7 @@ pub fn totals(scores: &[CaseScore]) -> Totals {
         t.onset_comp.extend(&c.onset_comp_s);
         t.offset.extend(&c.offset_s);
         t.sizes.extend(&c.peak_sizes);
+        t.pauses.extend(&c.pauses_s);
         for &(_, st) in &c.analyses {
             let k = match st {
                 ChestState::HandsOff => 0,
@@ -184,6 +187,15 @@ pub fn render(title: &str, scores: &[CaseScore]) -> String {
     dist("onset: run start -> not hands off (s)", &t.onset, &mut out);
     dist("onset: run start -> compressing (s)", &t.onset_comp, &mut out);
     dist("offset: run end -> hands off (s)", &t.offset, &mut out);
+    dist("reference pauses between runs (s)", &t.pauses, &mut out);
+    let over15 = t.pauses.iter().filter(|&&p| p >= 15.0).count();
+    let _ = writeln!(
+        out,
+        "  Reference pauses of 15 s or more: {} of {} ({:.1}%)",
+        over15,
+        t.pauses.len(),
+        pct(over15 as f64, t.pauses.len() as f64)
+    );
     let _ = writeln!(
         out,
         "  At the defibrillator's own analysis markers: hands off {}, compressing {}, unknown {}",

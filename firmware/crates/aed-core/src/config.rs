@@ -277,11 +277,13 @@ pub struct Config {
     /// chest still, with no compressions, for this long (and again after the
     /// same time), ms. 0 switches it off.
     ///
-    /// Default: on, 15 s. Guidelines ask for pauses under 10 s; the pauses
-    /// for two breaths in the Paris recordings mostly last 3 to 8 s, so 15 s
-    /// is well past a normal breath pause, and a responder who has stopped
-    /// for that long has most likely stopped for good (tired, confused,
-    /// distracted). The metronome keeps running regardless. Nothing is said
+    /// Default: on, 15 s. Guidelines ask for pauses under 10 s (UNVERIFIED
+    /// against the current guideline text). In the development half of the
+    /// Paris recordings the pauses between runs of compressions (breaths,
+    /// analyses, shocks) had a median of 3 s and 90 % were under 12 s
+    /// (aed-cpr-eval, after-the-fact reference), so 15 s is past nearly all
+    /// normal pauses, and a responder who has stopped for that long has most
+    /// likely stopped for good (tired, confused, distracted). The metronome keeps running regardless. Nothing is said
     /// while sensing "cannot tell", and no "faster/slower" prompts are given:
     /// the evidence for real-time feedback prompts is weak and too many
     /// prompts is a known risk (research notes on CPR feedback).

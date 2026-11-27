@@ -111,6 +111,9 @@ pub struct CaseScore {
     pub peak_sizes: Vec<f64>,
     /// Analysis markers checked, and the answer at each.
     pub analyses: Vec<(f64, ChestState)>,
+    /// Gaps between reference runs shorter than 60 s with every sample
+    /// scorable (pauses in CPR, including those for breaths and analyses), seconds.
+    pub pauses_s: Vec<f64>,
 }
 
 fn s(n: usize) -> f64 {
@@ -264,6 +267,14 @@ pub fn score(case: &Case, reference: &Reference, det: &DetectorRun) -> CaseScore
             if let Some(d) = (run.end..next_start).find(|&x| det.states[x] == ChestState::HandsOff) {
                 out.offset_s.push(s(d - run.end));
             }
+        }
+    }
+
+    // Pauses between runs.
+    for w in reference.runs.windows(2) {
+        let (a, b) = (w[0].end, w[1].start);
+        if b > a && b - a < (60.0 * RATE_HZ) as usize && (a..b).all(|x| reference.valid[x]) {
+            out.pauses_s.push(s(b - a));
         }
     }
 
