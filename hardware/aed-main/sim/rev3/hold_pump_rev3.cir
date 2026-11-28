@@ -1,0 +1,268 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* hold_pump_rev3.cir — revision 0.3 hold pump, release and TWO "held" sensors of stack A (11_hv_storage; B
+* identical). Circuit = charger-storage/hold_pump.cir as drawn (4-stage pump, 2.2 uF, 3.3 uF reservoir, pilot
+* JFET + BSS138 release, 3-stage pilot pump) with the revision 0.3 changes:
+*   - pilot Q1112/Q1113 MMBFJ177 -> MMBFJ270 (onsemi MMBFJ270/D Rev 2: VGS(off) 0.5-2.0 V, IDSS 2-15 mA);
+*     modelled with the same J177 sub-circuit, vp = pinch-off magnitude;
+*   - two sensors per stack (nsens = 2), each 3.9 k + MMSZ4687 4.3 V + TLP187 LED || 22 k, own 22 k pull-up;
+*   - firmware always stops the clock LOW; hold clock 1.5 kHz +-10 % (swept 1-2 kHz: at 1 kHz and 2 kHz an aged
+*     sensor chatters in the cold; see rev3 notes).
+* rrel (release-switch drain resistor) and npil = 4 (four-stage pilot pump) were tried as lock-out fixes and
+* did not help (cases R6, R7); they are NOT recommended. The ZENER sub-circuit's tbv1 is ignored by ngspice 42
+* (warning in the log): zener temperature drift is therefore not in these results, nor in charger-storage's.
+*   - sheet-09 pull-up of each HELD_N line 10 k -> 47 k (rpu);
+*   - NEW series resistor 470 ohm between the last pump stage H4 and the bottom gate STKA_G (rpo, the netlist's
+*     existing option): limits what the release switch can pull from the pump while the pilot is not yet pinched
+*     off, which removes the power-up lock-out at 1.65-2 kHz (cases X1-X3 show it without the resistor).
+* Questions: the -20 C aged "held" threshold against the hold level (charger-storage notes Q1 open problem),
+* cold lock-out with the pilot at its maximum pinch-off (I-17), release time with the clock stopped low.
+* "held" = both HELD_N lines below 1.2 V. Release "conducting" = gate above -1.86 V (IXTT2N170D2 cold, as
+* charger-storage). Bottom-device gate capacitance kept at 5.3 nF (IXTT10N100D2; the 2N170D2 value was not read,
+* expected smaller, so this is conservative for release time).
+.include ../charger-storage/models/datasheet_models.lib
+.param nstg=4 cpump=2.2u chold=2.2u cres=3.3u kcap=1.0 vclk=3.3 fclk=2k rclk=35 tstop=60m trestart=90m
+.param rrel=1m rpu=22k stophigh=0 vp=1.5 ciss=5.3n nsens=1 ctrp=5 isl=4.7e-14 bz=4.7 idarkovp=0.2u cjb=2.2n rjb=1.8meg npil=3 tgap=40m gap=1m cin=4.7n rpb=1e12 rpo=1m
+.param tper={1/fclk}
+
+* ---- clock, stopped at tstop (low, or high if stophigh=1), restarted at trestart
+VCK ck0 0 PULSE(0 {vclk} 0 2u 2u {tper/2-2u} {tper})
+BCK ck1 0 V={ ((time<tstop && (time<tgap || time>tgap+gap)) || time>trestart) ? v(ck0) : stophigh*vclk }
+RCK ck1 drv {rclk}
+R1131 drv 0 100k
+R1133 drv clk 10
+* ---- negative pump, stage k: Cp clk->P_k ; D H_k->P_k ; D P_k->H_k-1 ; Ch H_k->0
+CP1 clk p1 {kcap*cpump*(1<=nstg ? 1 : 1e-6)}
+CP2 clk p2 {kcap*cpump*(2<=nstg ? 1 : 1e-6)}
+CP3 clk p3 {kcap*cpump*(3<=nstg ? 1 : 1e-6)}
+CP4 clk p4 {kcap*cpump*(4<=nstg ? 1 : 1e-6)}
+CP5 clk p5 {kcap*cpump*(5<=nstg ? 1 : 1e-6)}
+DA1 h1 p1 BAT54
+DB1 p1 0 BAT54
+DA2 h2 p2 BAT54
+DB2 p2 h1 BAT54
+DA3 h3 p3 BAT54
+DB3 p3 h2 BAT54
+DA4 h4 p4 BAT54
+DB4 p4 h3 BAT54
+DA5 h5 p5 BAT54
+DB5 p5 h4 BAT54
+CH1 h1 0 {kcap*chold*(1<nstg ? 1 : 1e-6)}
+CH2 h2 0 {kcap*chold*(2<nstg ? 1 : 1e-6)}
+CH3 h3 0 {kcap*chold*(3<nstg ? 1 : 1e-6)}
+CH4 h4 0 {kcap*chold*(4<nstg ? 1 : 1e-6)}
+CH5 h5 0 1p
+* the last stage output is the bottom gate g (rpo: optional series resistor, 4-stage only; proposal)
+RJ3 h3 g {nstg==3 ? 1m : 1e12}
+RJ4 h4 g {nstg==4 ? rpo : 1e12}
+RJ5 h5 g {nstg==5 ? 1m : 1e12}
+* ---- bottom gate node STKA_G
+C1109 g 0 {kcap*cres}
+CISS g 0 {ciss}
+R1127 g gtp 680k
+R1128 gtp 0 330k
+XD1101 g 0 SMF15CA
+* OVP opto U1103 (collector HV_RTN, emitter STKA_G): dark current only (LED off)
+GOVP 0 g cur={idarkovp}*(1-exp(-max(-v(g),0)/0.1))
+* ---- release: pilot JFET + BSS138
+XQ1112 rng jb 0 J177 params: vp={vp}
+* rev 0.3: R_REL in the release switch's drain (new part, rrel) limits the clamp current while the pilot is
+* not yet pinched off at power-up, so the clock is not loaded into a lock-out (rrel = 1m reproduces as drawn)
+RREL 0 rd {rrel}
+M1109 rd rng g g BSS138
+R1188 rng g 1meg
+C1125 clk rp1 10n
+C1126 clk rp2 10n
+C1127 clk rp3 10n
+* optional bleed resistors on the pilot-pump nodes RLSA_P1..P3 (proposal; rpb = 1e12 means absent)
+RPB1 rp1 0 {rpb}
+RPB2 rp2 0 {rpb}
+RPB3 rp3 0 {rpb}
+DR1a 0 rp1 BAV199
+DR1b rp1 rh1 BAV199
+DR2a rh1 rp2 BAV199
+DR2b rp2 rh2 BAV199
+DR3a rh2 rp3 BAV199
+DR3b rp3 rh3 BAV199
+* optional 4th pilot stage (npil = 4, proposal); with npil = 3 rh3 is joined to jb
+C1127x rh3 0 {npil==4 ? cin : 1p}
+R1191x rh3 0 {npil==4 ? 2.2meg : 1e12}
+RJP3 rh3 jb {npil==3 ? 1m : 1e12}
+C1127b clk rp4 {npil==4 ? 10n : 1p}
+DR4a rh3 rp4 BAV199
+DR4b rp4 jb BAV199
+C1128 rh1 0 {cin}
+R1190 rh1 0 2.2meg
+C1129 rh2 0 {cin}
+R1191 rh2 0 2.2meg
+C1130 jb 0 {cjb}
+R1135 jb 0 {rjb}
+* ---- held sensor string(s): HV_RTN - 3.9 k - zener (cathode HV_RTN side) - LED || 22 k - STKA_G
+VIS1 s1 0 0
+R1137 s1 zk 3.9k
+XD1125 la zk ZENER params: bvz={bz}
+R1138 la g 22k
+XU1101 la g heldn 5vgnd TLP187 params: ctr={ctrp} isled={isl}
+* sheet 09 pull-up 10 k to 5V0_SYS; the opto emitter is on GND (galvanically separate; modelled as node 0 via 0 V)
+V5 v5 0 5
+VGE 5vgnd 0 0
+RPU v5 heldn {rpu}
+* second string (proposal), present only when nsens = 2 (else its series resistor is huge)
+R1137b 0 zkb {nsens==2 ? 3.9k : 1e12}
+XD1125b lab zkb ZENER params: bvz={bz}
+R1138b lab g 22k
+XU1101b lab g heldnb 5vgnd TLP187 params: ctr={ctrp} isled={isl}
+RPUb v5 heldnb {rpu}
+* the reading the interlock acts on: with two sensors, "held" only if BOTH lines are low
+BHA heldall 0 V={nsens==2 ? max(v(heldn),v(heldnb)) : v(heldn)}
+
+.control
+set noaskquit
+* defaults = cold corner (-20 C, 3.1 V clock, 40 ohm source, capacitors at 70 %), aged sensors (CTR 250 %,
+* max zener, high LED VF), pilot at the MMBFJ270 maximum pinch-off 2.0 V, clock 1.5 kHz, stopped LOW.
+foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14
+  alterparam nstg = 4
+  alterparam cpump = 2.2u
+  alterparam chold = 2.2u
+  alterparam kcap = 0.7
+  alterparam vclk = 3.1
+  alterparam fclk = 1.5k
+  alterparam rclk = 40
+  alterparam vp = 2.0
+  alterparam nsens = 2
+  alterparam npil = 3
+  alterparam stophigh = 0
+  alterparam cin = 4.7n
+  alterparam rjb = 1.8meg
+  alterparam rpb = 1e12
+  alterparam rpo = 470
+  alterparam bz = 4.52
+  alterparam ctrp = 2.5
+  alterparam isl = 1.57e-14
+  alterparam rpu = 47k
+  alterparam rrel = 1m
+  option temp = -20
+  if $cs = 1
+    set nm = "R1_cold_1kHz_pilot2V0_aged"
+    alterparam fclk = 1k
+  end
+  if $cs = 2
+    set nm = "R2_cold_1k35Hz_pilot2V0_aged"
+    alterparam fclk = 1.35k
+  end
+  if $cs = 3
+    set nm = "R3_cold_1k5Hz_pilot2V0_aged"
+  end
+  if $cs = 4
+    set nm = "R4_cold_1k65Hz_pilot2V0_aged"
+    alterparam fclk = 1.65k
+  end
+  if $cs = 5
+    set nm = "R5_cold_2kHz_pilot2V0_aged"
+    alterparam fclk = 2k
+  end
+  if $cs = 6
+    set nm = "X1_cold_1k65Hz_pilot2V0_aged_WITHOUT_rpo_pu22k"
+    alterparam fclk = 1.65k
+    alterparam rpo = 1m
+    alterparam rpu = 22k
+  end
+  if $cs = 7
+    set nm = "X2_cold_2kHz_pilot2V0_aged_WITHOUT_rpo_RREL470"
+    alterparam fclk = 2k
+    alterparam rpo = 1m
+    alterparam rpu = 22k
+    alterparam rrel = 470
+  end
+  if $cs = 8
+    set nm = "X3_cold_2kHz_pilot2V0_aged_WITHOUT_rpo_4stagePILOT"
+    alterparam fclk = 2k
+    alterparam rpo = 1m
+    alterparam rpu = 22k
+    alterparam npil = 4
+  end
+  if $cs = 9
+    set nm = "R6_cold_1k5Hz_pilot0V5_stopLOW"
+    alterparam vp = 0.5
+  end
+  if $cs = 10
+    set nm = "R7_fresh_3V5_1k65Hz_pilot0V5_stopLOW_newsensors"
+    alterparam kcap = 1.0
+    alterparam vclk = 3.5
+    alterparam rclk = 30
+    alterparam vp = 0.5
+    alterparam bz = 4.09
+    alterparam ctrp = 100
+    alterparam isl = 1.41e-13
+    option temp = 25
+    alterparam fclk = 1.65k
+  end
+  if $cs = 11
+    set nm = "R8_hot70_3V2_1k35Hz_pilot0V5_stopLOW_newsensors"
+    alterparam vclk = 3.2
+    alterparam vp = 0.5
+    alterparam bz = 4.09
+    alterparam ctrp = 100
+    alterparam isl = 1.41e-13
+    option temp = 70
+    alterparam fclk = 1.35k
+  end
+  if $cs = 12
+    set nm = "R9_nom25_3V3_1k5Hz_pilot1V2_nomsensors"
+    alterparam kcap = 1.0
+    alterparam vclk = 3.3
+    alterparam rclk = 35
+    alterparam vp = 1.2
+    alterparam bz = 4.3
+    alterparam ctrp = 5
+    alterparam isl = 4.7e-14
+    option temp = 25
+  end
+  if $cs = 13
+    set nm = "R10_hot70_3V2_1k5Hz_pilot0V5_stopHIGH_rule_broken"
+    alterparam vclk = 3.2
+    alterparam vp = 0.5
+    alterparam bz = 4.09
+    alterparam ctrp = 100
+    alterparam isl = 1.41e-13
+    option temp = 70
+    alterparam stophigh = 1
+  end
+  if $cs = 14
+    set nm = "R11_cold_1k5Hz_pilot2V0_aged_ONE_sensor_only"
+    alterparam nsens = 1
+  end
+  reset
+  tran 5u 130m 0 10u uic
+  let thm = -1
+  let tr19 = -1
+  let tnhm = -1
+  let trhm = -1
+  meas tran theld  when v(heldall)=1.2 fall=1
+  meas tran vhmax  max v(g) from=30m to=40m
+  meas tran vhmin  min v(g) from=30m to=40m
+  meas tran hnmax  max v(heldall) from=30m to=40m
+  meas tran jbmin  min v(jb) from=30m to=40m
+  meas tran gaph   max v(heldall) from=40.5m to=45m
+  meas tran trel19 when v(g)=-1.86 rise=1 td=60m
+  meas tran tnh    when v(heldall)=1.2 rise=1 td=60m
+  meas tran trh    when v(heldall)=1.2 fall=1 td=90m
+  if length(theld) > 0
+    let thm = theld*1e3
+  end
+  if length(trel19) > 0
+    let tr19 = (trel19 - 60m)*1e3
+  end
+  if length(tnh) > 0
+    let tnhm = (tnh - 60m)*1e3
+  end
+  if length(trh) > 0
+    let trhm = (trh - 90m)*1e3
+  end
+  let rip = vhmax - vhmin
+  echo "PUMP $nm | held_after_powerup_ms=$&thm hold_worst_V=$&vhmax ripple_V=$&rip heldN_max_30-40ms=$&hnmax pilot_bias_min=$&jbmin | 1ms_gap heldN_max=$&gaph | stop: gate>-1.86V_ms=$&tr19 not_held_ms=$&tnhm | restart: held_ms=$&trhm"
+end
+quit
+.endc
+.end

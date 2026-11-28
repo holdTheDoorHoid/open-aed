@@ -1,0 +1,140 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* carrier_loss.cir — revision 0.3 carrier-loss detector on the high-side gate island HSA (13_hv_bridge; HSB is
+* identical). Recommended change 3 of bridge/notes.md: empty HSA_RECT within about 0.1-0.5 us of the carrier
+* stopping, while ignoring the 0.19 us dead time at every half-cycle of the 400 kHz carrier.
+* Island circuit as drawn (specs/13_hv_bridge.toml, 27 Nov 2026): T1301 secondary S1/S2 -> 1N4148W bridge
+* D1313-D1316 -> HSA_RECT (C1315 1 nF C0G, R1328 2.2 k, D1317 BZX84C20) -> D1318 + R1329 100 ohm -> HSA_G
+* (C1316 + C1341 2 x 47 nF, R1332 10 k, QHA input capacitance 'ciss'); PNP Q1306 BC807-40, base R1330 470 ohm to
+* HSA_RECT, emitter R1331 22 ohm to HSA_G, collector HSA_KS. Island reference HSA_KS = node 0.
+* Secondary: behavioural square wave +-18.5 V with 0.19 us dead time, 20 ohm output resistance (WP-G 6.2/6.3 [EST];
+* bridge/bridge_common.inc uses the same figures).
+* Detector (new parts, names as proposed for capture; values to be reviewed):
+*   D_CL (BAV70, common cathode: anodes S1, S2) -> HSA_CLR ; R_CL1 4.7 k HSA_CLR -> HSA_CLF ; C_CL 47 pF C0G and
+*   R_CL2 4.7 k HSA_CLF -> KS ; Q_CLI MMBT3904 NPN: base via R_CLB 10 k from HSA_CLF, emitter KS, collector
+*   HSA_CLG, Baker clamp BAT54 (anode base, cathode collector) ; R_CLG 10 k HSA_G -> HSA_CLG (powered from the gate node, which stays charged; an earlier trial powered from HSA_RECT
+*   stalled once HSA_RECT fell to the 2N7002 threshold) ; D_CLZ BZX84C15
+*   HSA_CLG -> KS ; Q_CL 2N7002: drain via R_CLD 100 ohm to HSA_RECT, gate HSA_CLG, source KS.
+*   Carrier present: HSA_CLF high -> Q_CLI on -> Q_CL off. Carrier stops: HSA_CLF decays (tau ~0.15 us) -> Q_CLI
+*   off -> HSA_CLG pulled up from HSA_G -> Q_CL empties C1315 through 100 ohm -> PNP starts at once.
+* Models: generic hand-written fits [EST] - NPN/PNP small-signal (no maker model used), 2N7002 level 1 with
+* Vth swept 1.0-2.5 V (onsemi 2N7002 datasheet range as recalled [UNVERIFIED]), diodes as charger-storage lib.
+* Cases: 'full' = carrier runs 60 us (gate fully charged) then stops; 'part' = carrier runs 5 us then stops
+* (gate part-way up: the shorted-low-side fault case of bridge/notes.md Q1). det = 0 removes the detector (as drawn).
+.include ../charger-storage/models/datasheet_models.lib
+.param det=1 ton=60u vth=1.8 ccl=47p rcl2=4.7k rclb=10k ciss=6n vamp=18.5
+.model D4148 d(is=2.5n n=1.75 rs=0.6 cjo=2p tt=4n bv=100)
+.model PNPG pnp(is=2e-14 bf=300 vaf=60 br=8 rb=10 re=0.2 rc=0.5 cje=25p cjc=12p tf=0.6n tr=60n)
+.model NPNG npn(is=1e-14 bf=200 vaf=100 br=4 rb=10 cje=4.5p cjc=3.5p tf=0.35n tr=200n)
+.model N7002 nmos(level=1 vto={vth} kp=0.08 rd=1 rs=1 cgso=20p cgdo=4p lambda=0.02)
+* ---- secondary: +vamp / 0 / -vamp / 0, 1.06 us each polarity, 0.19 us dead, 20 ns edges, stops at ton
+Vsq sq 0 PULSE(0 1 0.19u 20n 20n 1.02u 2.5u)
+Vsq2 sq2 0 PULSE(0 1 1.44u 20n 20n 1.02u 2.5u)
+Benv e 0 V={ time < ton ? 1 : 0 }
+Bemf ea eb V={ vamp*v(e)*(v(sq)-v(sq2)) }
+R1s ea s1 10
+R2s eb s2 10
+* winding to island: eb is referenced through the bridge; give the floating source a weak DC path
+Rflt eb 0 100meg
+* ---- bridge D1313-D1316
+D1313 0 s1 D4148
+D1314 s1 rect D4148
+D1315 0 s2 D4148
+D1316 s2 rect D4148
+C1315 rect 0 1n
+R1328 rect 0 2.2k
+XD1317 0 rect ZENER params: bvz=20
+* ---- gate path
+D1318 rect gr D4148
+R1329 gr g 100
+C1316 g 0 47n
+C1341 g 0 47n
+Cqha g 0 {ciss}
+R1332 g 0 10k
+XD1319 0 g ZENER params: bvz=22
+R1330 b rect 470
+Q1306 0 b ee PNPG
+R1331 g ee 22
+* ---- detector (det = 1)
+Dcla s1 clr D4148
+Dclb s2 clr D4148
+Rcl1 clr clf 4.7k
+Ccl clf 0 {ccl}
+Rcl2 clf 0 {rcl2}
+Rclb clf clb {rclb}
+Qcli clg clb 0 NPNG
+Dbk clb clg BAT54
+Rclg g clg 10k
+XDclz 0 clg ZENER params: bvz=15
+Rcld rect cld {det ? 100 : 1e12}
+Mcl cld clg 0 0 N7002
+* probe: emitter-base drive of the PNP (PNP conducts when > ~0.65 V)
+Bgb gb 0 V=v(g)-v(b)
+.options method=gear reltol=1e-4
+.control
+set noaskquit
+foreach cs 1 2 3 4 5 6 7 8
+  alterparam det = 1
+  alterparam ton = 60u
+  alterparam vth = 1.8
+  alterparam vamp = 18.5
+  let ts = 60e-6
+  if $cs = 1
+    set nm = "full_as_drawn"
+    alterparam det = 0
+  end
+  if $cs = 2
+    set nm = "full_detector_vth1.8"
+  end
+  if $cs = 3
+    set nm = "part_as_drawn"
+    alterparam det = 0
+    alterparam ton = 5u
+    let ts = 5e-6
+  end
+  if $cs = 4
+    set nm = "part_detector_vth1.8"
+    alterparam ton = 5u
+    let ts = 5e-6
+  end
+  if $cs = 5
+    set nm = "full_detector_vth1.0_(lowest)"
+    alterparam vth = 1.0
+  end
+  if $cs = 6
+    set nm = "full_detector_vth2.5_(highest)"
+    alterparam vth = 2.5
+  end
+  if $cs = 7
+    set nm = "full_detector_vth1.0_low_carrier_16.5V_(BRIDGE_5V_4.46V)"
+    alterparam vth = 1.0
+    alterparam vamp = 16.5
+  end
+  if $cs = 8
+    set nm = "part_detector_vth2.5"
+    alterparam vth = 2.5
+    alterparam ton = 5u
+    let ts = 5e-6
+  end
+  reset
+  tran 2n 80u 0 10n
+  let ts2 = ts - 0.3e-6
+  meas tran gon find v(g) at=$&ts
+  meas tran vclgmax max v(clg) from=2e-6 to=$&ts2
+  meas tran vrectmin min v(rect) from=2e-6 to=$&ts2
+  meas tran tpnp when v(gb)=0.65 rise=1 td=$&ts
+  let ts3 = ts + 5e-6
+  meas tran gpk max v(g) from=$&ts to=$&ts3
+  meas tran trect when v(rect)=1 fall=1 td=$&ts
+  meas tran tg2 when v(g)=2 fall=1 td=$&ts
+  meas tran tg1 when v(g)=1 fall=1 td=$&ts
+  let dpnp = (tpnp - ts)*1e6
+  let dg2 = (tg2 - ts)*1e6
+  let dg1 = (tg1 - ts)*1e6
+  let drect = (trect - ts)*1e6
+  echo "RESULT $nm | gate at stop=$&gon V | detector gate HSA_CLG max while carrier on=$&vclgmax V (Q_CL must stay < its Vth) | RECT min while on=$&vrectmin V | after stop: RECT<1V=$&drect us, PNP starts=$&dpnp us, gate peak after stop=$&gpk V, gate<2V=$&dg2 us, gate<1V=$&dg1 us"
+end
+quit
+.endc
+.end
