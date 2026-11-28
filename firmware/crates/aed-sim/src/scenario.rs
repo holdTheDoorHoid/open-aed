@@ -563,8 +563,8 @@ pub fn catalogue() -> Vec<Scenario> {
 /// Heat scenarios (D-41, D-48, D-51). Temperatures from the one-node
 /// thermal model in [`crate::thermal`] (parts study figures; simulated).
 fn heat_scenarios() -> Vec<Scenario> {
-    use aed_core::TempPoint;
     use crate::thermal::TempSensorFault;
+    use aed_core::TempPoint;
     vec![
         Scenario::base(
             "hot-device-rescue",
@@ -592,8 +592,10 @@ fn heat_scenarios() -> Vec<Scenario> {
              switch-on: the hottest other reading plus 5 °C stands in, and it shocks",
         )
         .with(|s| {
-            s.script
-                .push((Trigger::At(0), Action::TempSensor(TempPoint::Capacitor, TempSensorFault::Missing)));
+            s.script.push((
+                Trigger::At(0),
+                Action::TempSensor(TempPoint::Capacitor, TempSensorFault::Missing),
+            ));
         }),
         Scenario::base(
             "temp-sensor-stuck-supervisor",

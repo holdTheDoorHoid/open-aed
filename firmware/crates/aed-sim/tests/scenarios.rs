@@ -6,8 +6,8 @@
 mod common;
 
 use aed_core::{FaultKind, Prompt, RescueState, SupervisorFault};
-use aed_sim::runner::Source;
 use aed_sim::catalogue;
+use aed_sim::runner::Source;
 use common::{assert_expected, assert_invariants, fail, run_named};
 
 fn standard(name: &str) -> aed_sim::RunResult {
@@ -44,14 +44,21 @@ fn adult_vf() {
 #[test]
 fn adult_vf_two_shocks() {
     let r = standard("adult-vf-two-shocks");
-    assert!(r.shocks.iter().all(|s| (s.delivered_j() - 150.0).abs() < 22.5));
+    assert!(r
+        .shocks
+        .iter()
+        .all(|s| (s.delivered_j() - 150.0).abs() < 22.5));
 }
 
 #[test]
 fn child_vf() {
     let r = standard("child-vf");
     let s = r.shocks.first().unwrap();
-    assert!((s.delivered_j() - 50.0).abs() < 50.0 * 0.15, "child energy {}", s.delivered_j());
+    assert!(
+        (s.delivered_j() - 50.0).abs() < 50.0 * 0.15,
+        "child energy {}",
+        s.delivered_j()
+    );
     assert!(r.said(Prompt::ChildModeFrontBack));
 }
 
@@ -90,10 +97,16 @@ fn pads_off_during_charge() {
         .iter()
         .filter(|e| e.t_ms < shock_at && e.text.starts_with("Charging to"))
         .count();
-    assert_eq!(charges_before_shock, 2, "aborted charge, then a new one after re-attaching");
+    assert_eq!(
+        charges_before_shock, 2,
+        "aborted charge, then a new one after re-attaching"
+    );
     // The aborted charge, and the one from the analysis after the shock
     // (normal rhythm), were burned off.
-    assert_eq!(usize::from(r.charges_burned), r.charges_started as usize - 1);
+    assert_eq!(
+        usize::from(r.charges_burned),
+        r.charges_started as usize - 1
+    );
 }
 
 #[test]
@@ -122,7 +135,9 @@ fn pads_190_throughout() {
     assert!(r.shocks.is_empty());
     let pads_on = r.pads_on_at_ms.unwrap();
     assert!(
-        !r.prompts.iter().any(|&(t, p)| p == Prompt::AttachPads && t > pads_on),
+        !r.prompts
+            .iter()
+            .any(|&(t, p)| p == Prompt::AttachPads && t > pads_on),
         "the pads are on: never 'attach pads' after that"
     );
     assert!(r.said(Prompt::PressPadsFirmly));
@@ -206,11 +221,18 @@ fn never_stops_compressing() {
     let r = standard("never-stops-compressing");
     assert!(r.said(Prompt::DoNotTouchPatient));
     assert!(r.said(Prompt::AnalysisInconclusive));
-    assert!(!r.said(Prompt::NoShockAdvised), "'not sure' must not be reported as 'no shock advised'");
+    assert!(
+        !r.said(Prompt::NoShockAdvised),
+        "'not sure' must not be reported as 'no shock advised'"
+    );
     let p: Vec<Prompt> = r.prompts.iter().map(|&(_, p)| p).collect();
     for (i, x) in p.iter().enumerate() {
         if *x == Prompt::AnalysisInconclusive {
-            assert_eq!(p.get(i + 1), Some(&Prompt::StartCpr), "inconclusive must be followed by Start CPR");
+            assert_eq!(
+                p.get(i + 1),
+                Some(&Prompt::StartCpr),
+                "inconclusive must be followed by Start CPR"
+            );
         }
     }
     // Each analysis lasts the full time limit (the decision arrives on a 1 s step).
@@ -218,7 +240,11 @@ fn never_stops_compressing() {
     for w in r.states.windows(2) {
         if let [(t0, RescueState::Analysing), (t1, next)] = w {
             assert_eq!(*next, RescueState::Cpr);
-            assert!((limit..=limit + 10).contains(&(t1 - t0)), "analysis took {} ms", t1 - t0);
+            assert!(
+                (limit..=limit + 10).contains(&(t1 - t0)),
+                "analysis took {} ms",
+                t1 - t0
+            );
         }
     }
     assert!(r.entered(RescueState::Cpr));
@@ -249,7 +275,10 @@ fn fault_main_voltage_sensor() {
 #[test]
 fn fault_supervisor_voltage_sensor() {
     let r = standard("fault-supervisor-voltage-sensor");
-    assert_eq!(r.supervisor_fault, Some(SupervisorFault::VoltageDisagreement));
+    assert_eq!(
+        r.supervisor_fault,
+        Some(SupervisorFault::VoltageDisagreement)
+    );
 }
 
 #[test]
@@ -282,7 +311,10 @@ fn fault_main_freeze() {
     let r = standard("fault-main-freeze");
     assert_eq!(r.supervisor_fault, Some(SupervisorFault::HeartbeatLost));
     assert!(r.final_cap_v < f64::from(r.config.empty_voltage.0));
-    assert!(r.supervisor_alarm_at.is_some(), "supervisor alarm never came on");
+    assert!(
+        r.supervisor_alarm_at.is_some(),
+        "supervisor alarm never came on"
+    );
     // The supervisor lets go within the heartbeat timeout (+ one heartbeat period).
     let frozen_at = r.injected.first().unwrap().0;
     let released = r
@@ -320,8 +352,16 @@ fn fault_cancel() {
     assert!(r.said(Prompt::AnalysisCancelled));
     // The first analysis was charging (D-29); cancel ended it before any
     // shock was advised, and that charge was burned off.
-    let first_cpr = r.states.iter().find(|&&(_, s)| s == RescueState::Cpr).unwrap().0;
-    assert!(!r.states.iter().any(|&(t, s)| s == RescueState::Countdown && t < first_cpr));
+    let first_cpr = r
+        .states
+        .iter()
+        .find(|&&(_, s)| s == RescueState::Cpr)
+        .unwrap()
+        .0;
+    assert!(!r
+        .states
+        .iter()
+        .any(|&(t, s)| s == RescueState::Countdown && t < first_cpr));
 }
 
 #[test]
@@ -367,7 +407,14 @@ fn charger_is_never_asked_for_before_the_supervisor_holds() {
     // CPR period), the main controller asks for the charger only once the
     // supervisor holds the discharge path, including on a slow message wire
     // and with drifting clocks.
-    for name in ["adult-vf", "adult-vf-two-shocks", "child-vf", "normal-rhythm", "slow-link", "clock-drift"] {
+    for name in [
+        "adult-vf",
+        "adult-vf-two-shocks",
+        "child-vf",
+        "normal-rhythm",
+        "slow-link",
+        "clock-drift",
+    ] {
         let s = aed_sim::by_name(name).unwrap();
         let mut sim = aed_sim::Simulation::new(&s).unwrap();
         let mut asked = 0;
@@ -411,7 +458,8 @@ fn f12_compressions_150_over_flatline() {
         "expected the heart-signal-only device to shock (finding F-12)"
     );
     assert_eq!(
-        old.violations_of(aed_sim::Rule::FiredOnNonShockableRhythm).len(),
+        old.violations_of(aed_sim::Rule::FiredOnNonShockableRhythm)
+            .len(),
         old.shocks.len()
     );
 }
@@ -421,7 +469,10 @@ fn f12_compressions_150_over_normal_rhythm() {
     let r = standard("f12-compressions-150-over-normal-rhythm");
     assert!(r.shocks.is_empty());
     let old = without_sensing("f12-compressions-150-over-normal-rhythm");
-    println!("without sensing: {} shock(s) on a normal rhythm", old.shocks.len());
+    println!(
+        "without sensing: {} shock(s) on a normal rhythm",
+        old.shocks.len()
+    );
 }
 
 #[test]
@@ -431,8 +482,15 @@ fn stops_very_late() {
     // the limit now; see tests/late_hands_off.rs.)
     let r = standard("stops-very-late");
     assert_eq!(r.shocks.len(), 1);
-    let first_cpr = r.states.iter().find(|&&(_, s)| s == RescueState::Cpr).map(|&(t, _)| t);
-    assert!(r.shocks.first().unwrap().at_ms <= first_cpr.unwrap_or(u32::MAX), "shock in the first cycle");
+    let first_cpr = r
+        .states
+        .iter()
+        .find(|&&(_, s)| s == RescueState::Cpr)
+        .map(|&(t, _)| t);
+    assert!(
+        r.shocks.first().unwrap().at_ms <= first_cpr.unwrap_or(u32::MAX),
+        "shock in the first cycle"
+    );
     assert!(r.hands_on_at_fire.is_empty());
 }
 
@@ -446,7 +504,10 @@ fn touch_during_countdown() {
     assert!(r.hands_on_at_fire.is_empty(), "no shock while touching");
     // Without sensing the touch is invisible to the device.
     let old = without_sensing("touch-during-countdown");
-    println!("without sensing: shocks fired with hands on after {:?} ms", old.hands_on_at_fire);
+    println!(
+        "without sensing: shocks fired with hands on after {:?} ms",
+        old.hands_on_at_fire
+    );
 }
 
 #[test]
@@ -454,7 +515,11 @@ fn ventilations_during_analysis() {
     // Breaths every 6 s (no compressions) must not block the analysis.
     let r = standard("ventilations-during-analysis");
     let t = r.timings.first().unwrap();
-    assert!(t.analysis_ms <= 10_000, "analysis took {} ms", t.analysis_ms);
+    assert!(
+        t.analysis_ms <= 10_000,
+        "analysis took {} ms",
+        t.analysis_ms
+    );
 }
 
 #[test]
@@ -473,7 +538,10 @@ fn strong_pulse() {
 fn fast_rhythm_with_pulse() {
     let r = standard("fast-rhythm-with-pulse");
     assert!(r.shocks.is_empty());
-    assert!(!r.timeline.iter().any(|e| e.text.starts_with("Chest being compressed")));
+    assert!(!r
+        .timeline
+        .iter()
+        .any(|e| e.text.starts_with("Chest being compressed")));
 }
 
 #[test]
@@ -519,11 +587,16 @@ fn warm_device_rescue() {
 #[test]
 fn temp_sensor_failed_main() {
     let r = standard("temp-sensor-failed-main");
-    assert!(r.timeline.iter().any(|e| e.text.starts_with("Temperature sensor capacitor not trusted")));
+    assert!(r.timeline.iter().any(|e| e
+        .text
+        .starts_with("Temperature sensor capacitor not trusted")));
 }
 
 #[test]
 fn temp_sensor_stuck_supervisor() {
     let r = standard("temp-sensor-stuck-supervisor");
-    assert!(r.timeline.iter().any(|e| e.text.contains("Ignores its own temperature reading")));
+    assert!(r
+        .timeline
+        .iter()
+        .any(|e| e.text.contains("Ignores its own temperature reading")));
 }

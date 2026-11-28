@@ -1,0 +1,80 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* l3_trip_rev3.cir — WP-E re-check of the LT3751 primary-side trip ("L3") with RBG = R1019 = 876 ohm
+* (rev3-changes.md E-1), redone from the datasheet figures independently of ../charger-storage/ovp_limits.cir.
+* Control-language arithmetic only (no circuit). Sources:
+*  LT3751 rev D (12/17, "3751fd"), Electrical Characteristics: VOUT comparator trip 0.955 / 0.98 / 1.005 V at
+*   RBG over temperature; overdrive 20 mV typ / 40 mV max for a 2 us pulse; current limit 100 / 106 / 112 mV;
+*   one-shot clock period 32 / 38 / 44 us.
+*  LT3751 rev D, Applications, Transformer Design: LPRI = 3 us x VOUT / (IPK x N) "guarantees that the VOUT
+*   comparator has enough time to sense the flyback"; operating VOUT significantly above the value used "could
+*   result in a runaway condition"; upper rule LPRI < 38 us / (IPK (1/VTRANS + N/VOUT)).
+*  RVOUT = RVTRANS = 40.2 k, RBG 876 ohm, all 0.1 % (sheet 10). N = 50 +-1 % (HARDWARE_DESIGN §B4.5).
+*  RVOUT/RVTRANS mismatch term N x VTRANS x 0.2 % = +-0.84 V (datasheet second VOUT formula; WP-E §3.2).
+*  Secondary drops at the trip instant 18.7 - 48.3 V (WP-E §3.6 [EST]: 2 x UX-F5B, R1004 10 ohm, winding <= 20 ohm).
+*  Sense resistor R1001 5.0 mohm 1 %; LPRI 7.5 uH +10 % / -5 % (rev3-changes E-2).
+*  TVS D1004 SMCJ45A: standoff 45 V, VBR 50.0 V min [UNVERIFIED: from memory, WP-E §4]; cold factor -4.5 % at
+*   -20 C [EST: +0.1 %/K typical avalanche coefficient, not read from a datasheet].
+.control
+set noaskquit
+set rndseed = 20261127
+let n = 200000
+let rbg = 876
+let k = 40200/rbg
+* ---- worst-case sums (true capacitor volts = sensed - drops)
+let senlo  = 0.955*50*0.99*k*0.998 - 0.84
+let sennom = 0.98*50*k
+let senhi  = 1.005*50*1.01*k*1.002 + 0.84
+let senod  = 1.045*50*1.01*k*1.002 + 0.84
+let tlo  = senlo - 48.3
+let tnom = sennom - 33.5
+let thi  = senhi - 18.7
+let tod  = senod - 18.7
+echo "L3 RBG=876 worst-case SENSED: low $&senlo nominal $&sennom high $&senhi high-with-max-overdrive $&senod"
+echo "L3 RBG=876 worst-case TRUE: low $&tlo nominal(mid drops) $&tnom high $&thi high-with-max-overdrive $&tod"
+* ---- Monte Carlo, uniform in every tolerance (harsher than Gaussian)
+let vc = 0.98 + 0.025*sunif(vector(n))
+let od = 0.02 + 0.02*sunif(vector(n))
+let nn = 50*(1 + 0.01*sunif(vector(n)))
+let rr = k*(1 + 0.002*sunif(vector(n)))
+let dr = 33.5 + 14.8*sunif(vector(n))
+let mm = 0.84*sunif(vector(n))
+let v0 = vc*nn*rr + mm - dr
+let v1 = (vc + od)*nn*rr + mm - dr
+let a = vecmin(v0)
+let b = vecmax(v0)
+let c = vecmax(v1)
+echo "L3 RBG=876 MonteCarlo TRUE: min $&a max $&b (no overdrive); max $&c (overdrive 20-40 mV)"
+* ---- margins against the window and the capacitor (docs/requirements/storage-capacitor.md, D-65)
+let m1 = tlo - 2008.6
+let m2 = 2420 - tod
+let m3 = 2420 - thi
+let m4 = tnom - 2200
+echo "MARGIN low edge above window top 2008.6: $&m1 | below surge 2420: $&m3 (no overdrive) $&m2 (max overdrive) | nominal minus 2200 rating: $&m4"
+* ---- LPRI sensing-time rule at the top of the band (lowest IPK: 100 mV / 5.05 mohm)
+let ipkmin = 0.100/5.05e-3
+foreach vs 2165 2335 2427
+  let lneed = 3e-6*$vs/(ipkmin*50)
+  let tfl5 = 7.125e-6*ipkmin*50/$vs
+  let tfl10 = 6.75e-6*ipkmin*50/$vs
+  echo "LPRI sensed_VOUT=$vs needed_for_3us=$&lneed H | flyback_at_7.125uH=$&tfl5 s | flyback_at_6.75uH=$&tfl10 s"
+end
+* ---- LPRI upper rule (one-shot clock) at full charge, cold pack VTRANS 5.33 V
+foreach tclk 32e-6 38e-6
+  let lmax = $tclk/(22.9*(1/5.33 + 50/2000))
+  let lmaxn = $tclk/(21.2*(1/5.33 + 50/2000))
+  echo "LPRI upper rule clock=$tclk VTRANS=5.33 VOUT=2000: LPRI < $&lmax H at 22.9 A ; < $&lmaxn H at 21.2 A"
+end
+* ---- reflected primary voltage (VOUT + drops)/N at the trip top, against the clamp TVS
+let refl_hi = senhi/50
+let refl_od = senod/50
+let refl_931 = (1.045*50*1.01*40200/931*1.002 + 0.84)/50
+let vbr_cold = 50.0*(1 - 0.045)
+echo "TVS reflected at trip top: $&refl_hi V (no overdrive) $&refl_od V (max overdrive); with RBG 931 it was $&refl_931 V | SMCJ45A standoff 45 V, VBR min 50.0 V, cold estimate $&vbr_cold V"
+* ---- rectifier reverse voltage per diode at the L3 top (capacitor + N x VTRANS at the OVLO1 top 9.19 V)
+let vrr = tod + 50*9.19
+echo "RECT reverse voltage per UX-F5B at the L3 top with overdrive: $&vrr V (VRM 8000 V)"
+quit
+.endc
+.end

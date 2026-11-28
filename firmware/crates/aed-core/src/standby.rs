@@ -258,10 +258,13 @@ impl<const N: usize> Standby<N> {
     /// The low-power timer woke the device.
     pub fn on_wake(&mut self, w: &StandbyInputs) -> StandbyDecision {
         let cfg = self.config;
-        let hw = self
-            .durable
-            .heat
-            .on_wake(&cfg, w.now_s, w.clock_restarted, &w.temperatures, w.pad_set_id);
+        let hw = self.durable.heat.on_wake(
+            &cfg,
+            w.now_s,
+            w.clock_restarted,
+            &w.temperatures,
+            w.pad_set_id,
+        );
         let a = hw.assessment;
         if hw.retest_now {
             self.schedule.request_daily_now(w.now_s);
@@ -379,7 +382,11 @@ impl<const N: usize> Standby<N> {
     ///
     /// # Errors
     /// See [`HeatMonitor::service_cleared`].
-    pub fn service_cleared(&mut self, now_s: u32, check: ServiceCheck) -> Result<(), ServiceRefusal> {
+    pub fn service_cleared(
+        &mut self,
+        now_s: u32,
+        check: ServiceCheck,
+    ) -> Result<(), ServiceRefusal> {
         let cfg = self.config;
         self.durable.heat.service_cleared(&cfg, check)?;
         self.schedule.service_reset(now_s);
@@ -414,7 +421,10 @@ impl<const N: usize> Standby<N> {
             || h.hottest_now().is_some_and(|t| t > cfg.heat_too_hot_above);
         let flags = [
             (too_hot_now, Reason::TooHotNow),
-            (h.cool_causes() & crate::heat::cool_causes::WAS_TOO_HOT != 0, Reason::WasTooHot),
+            (
+                h.cool_causes() & crate::heat::cool_causes::WAS_TOO_HOT != 0,
+                Reason::WasTooHot,
+            ),
             (
                 h.cool_causes() & crate::heat::cool_causes::WARM_TOO_LONG != 0,
                 Reason::WarmSpellTooLong,

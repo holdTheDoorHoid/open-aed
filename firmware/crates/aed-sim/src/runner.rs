@@ -463,7 +463,14 @@ impl Simulation {
         if n.wander_uv > 0.0 {
             synth = synth.with_baseline_wander(n.wander_uv);
         }
-        let mut plant = Plant::new(scenario.plant, synth, scenario.seed);
+        let mut plant = Plant::new(
+            crate::plant::PlantConfig {
+                firmware: config,
+                ..scenario.plant
+            },
+            synth,
+            scenario.seed,
+        );
         plant.mode = scenario.mode;
         plant.after_shock.clone_from(&scenario.after_shock);
         plant.set_compressing(scenario.responder.cpr_at_start);
@@ -592,7 +599,12 @@ impl Simulation {
             p.permit = false;
         }
         let delivering = self.rescue.state() == RescueState::Delivering;
-        if main_rule && delivering && p.request.is_some() && impedance_tick && !p.pads_on_front_ends() {
+        if main_rule
+            && delivering
+            && p.request.is_some()
+            && impedance_tick
+            && !p.pads_on_front_ends()
+        {
             self.legacy_request_blocked = true;
         }
         if !delivering {
@@ -641,9 +653,15 @@ impl Simulation {
             ),
         );
         let r = self.plant.borrow().rhythm;
-        self.log(Source::Patient, format!("Patient rhythm: {}", rhythm_name(r)));
+        self.log(
+            Source::Patient,
+            format!("Patient rhythm: {}", rhythm_name(r)),
+        );
         if self.scenario.responder.cpr_at_start {
-            let (rate, ohms) = (self.scenario.responder.compression_per_min, self.scenario.responder.compression_ohms);
+            let (rate, ohms) = (
+                self.scenario.responder.compression_per_min,
+                self.scenario.responder.compression_ohms,
+            );
             self.log(
                 Source::Responder,
                 format!("Doing chest compressions ({rate:.0}/min, {ohms:.2} Ω each in the pad impedance)."),
@@ -851,7 +869,9 @@ impl Simulation {
             ShockEnd::TimeCap | ShockEnd::OverCurrent if !explained => {
                 Some(format!("ended by {:?} with no fault to explain it", s.end))
             }
-            ShockEnd::Completed if planned > 0.0 && (delivered - planned).abs() > 0.01 * planned => {
+            ShockEnd::Completed
+                if planned > 0.0 && (delivered - planned).abs() > 0.01 * planned =>
+            {
                 Some(format!("{delivered:.1} J against {planned:.1} J planned"))
             }
             _ => None,
@@ -868,7 +888,10 @@ impl Simulation {
         // State changes.
         let state = self.rescue.state();
         if self.states.last().map(|&(_, s)| s) != Some(state) {
-            let from = self.states.last().map_or(RescueState::SelfTest, |&(_, s)| s);
+            let from = self
+                .states
+                .last()
+                .map_or(RescueState::SelfTest, |&(_, s)| s);
             self.states.push((now, state));
             self.log(Source::Device, format!("State: {from:?} -> {state:?}"));
             match state {
@@ -904,7 +927,10 @@ impl Simulation {
         // Prompts.
         let new_prompts: Vec<(u32, Prompt)> = {
             let p = self.plant.borrow();
-            p.prompts.get(self.prompts_seen..).unwrap_or_default().to_vec()
+            p.prompts
+                .get(self.prompts_seen..)
+                .unwrap_or_default()
+                .to_vec()
         };
         self.prompts_seen = self.prompts_seen.saturating_add(new_prompts.len());
         for (_, prompt) in new_prompts {
@@ -931,10 +957,23 @@ impl Simulation {
         let (running, hot, sensors_healthy, limit) = {
             let p = self.plant.borrow();
             let t = &p.thermal;
-            let healthy = t.faults.iter().all(|f| *f == crate::thermal::TempSensorFault::Healthy)
+            let healthy = t
+                .faults
+                .iter()
+                .all(|f| *f == crate::thermal::TempSensorFault::Healthy)
                 && t.offsets.iter().all(|o| o.abs() < 0.05);
-            let limit = f64::from(self.config.capacitor_charge_max.0.min(self.config.cell_discharge_max.0)) / 10.0;
-            (p.charger_running(), t.hottest_charge_part_c(), healthy, limit)
+            let limit = f64::from(
+                self.config
+                    .capacitor_charge_max
+                    .0
+                    .min(self.config.cell_discharge_max.0),
+            ) / 10.0;
+            (
+                p.charger_running(),
+                t.hottest_charge_part_c(),
+                healthy,
+                limit,
+            )
         };
         if running && !self.charger_was_running && sensors_healthy && hot > limit + 0.2 {
             self.violate(
@@ -1006,7 +1045,10 @@ impl Simulation {
                 self.silence_reported = true;
                 self.violate(
                     Rule::SilentAtPowerOn,
-                    format!("nothing said for {} ms after switch-on", grace.saturating_mul(2)),
+                    format!(
+                        "nothing said for {} ms after switch-on",
+                        grace.saturating_mul(2)
+                    ),
                     None,
                 );
             }
@@ -1117,6 +1159,10 @@ impl Simulation {
                 ShockOutcome::NotStarted => "Rail up and relay on the bridge, but no sequence started".to_string(),
                 ShockOutcome::TimeCapTripped => "Hardware time cap ended the sequence".to_string(),
                 ShockOutcome::OverCurrentTripped => "Over-current trip ended the sequence".to_string(),
+                ShockOutcome::PhaseCapTripped => "Per-phase hardware cap ended the sequence (D-63)".to_string(),
+                ShockOutcome::HardwareFault => {
+                    "A hardware fault latch (idle current, supply) ended the sequence".to_string()
+                }
                 ShockOutcome::ResidualImplausible => {
                     "Capacitor fell to a level no plan explains".to_string()
                 }
@@ -1202,6 +1248,11 @@ impl Simulation {
                 "Adult/child switch contacts disagree (primary {primary:?}, ceiling {ceiling:?}): not ready (D-60)"
             ),
             Event::ModeContactsAgree => "Adult/child switch contacts agree again".to_string(),
+            Event::ChargerRestarted(v) => format!("Charger stopped rising at {} V: restarted (FW-18)", v.0),
+            Event::ChargerStoppedItself(v) => format!(
+                "Charger ended the charge by its own over-voltage trip at {} V: emptied, not restarted",
+                v.0
+            ),
             // The supervisor's own record covers these, and state changes are polled.
             Event::SupervisorPermitted
             | Event::SupervisorRefused(_)
@@ -1215,6 +1266,10 @@ impl Simulation {
             | Event::SupervisorTestPermitted
             | Event::SupervisorTestPermitExpired
             | Event::SupervisorTestPermitRefused(_)
+            | Event::SupervisorRealTestPermitted
+            | Event::SupervisorRealTestPermitRefused
+            | Event::SupervisorOvpTestPassed
+            | Event::SupervisorOvpReset
             | Event::StateChanged { .. }
             | Event::PowerOn => return,
         };
@@ -1271,6 +1326,10 @@ impl Simulation {
                 Event::SupervisorTestPermitted => "Test permit given (self-test, D-61)".to_string(),
                 Event::SupervisorTestPermitExpired => "Test permit ran out".to_string(),
                 Event::SupervisorTestPermitRefused(r) => format!("Test permit refused: {r:?}"),
+                Event::SupervisorRealTestPermitted => "Real permit given for a self-test step (D-62)".to_string(),
+                Event::SupervisorRealTestPermitRefused => "Real self-test permit refused or withdrawn".to_string(),
+                Event::SupervisorOvpTestPassed => "Over-voltage latch test passed (T-6)".to_string(),
+                Event::SupervisorOvpReset => "Over-voltage latch reset with both readings empty".to_string(),
                 Event::SupervisorFaultLatched(f) => format!("FAULT latched: {f:?}"),
                 Event::SupervisorTooHot(t) => format!(
                     "Too hot ({:.1} °C on its own sensor): holds charging back",
@@ -1286,12 +1345,19 @@ impl Simulation {
     fn observe_capacitor(&mut self) {
         let (v, target, limit) = {
             let p = self.plant.borrow();
-            (p.cap_v, p.charger_target, f64::from(self.config.overvoltage_limit.0))
+            (
+                p.cap_v,
+                p.charger_target,
+                f64::from(self.config.overvoltage_limit.0),
+            )
         };
         let empty = f64::from(self.config.empty_voltage.0);
         // Charge-curve milestones: 25/50/75/100 % of the charger's target.
+        // (Short top-up bursts, v0.3 FW-13, switch the charger off and on at
+        // the same target: the milestones restart only for a new target or
+        // a capacitor that has been emptied.)
         let target_v = target.map(|t| t.0);
-        if target_v != self.milestone_target {
+        if target_v.is_some() && (target_v != self.milestone_target || v < empty) {
             self.milestone_target = target_v;
             self.milestone_next = 1;
         }
@@ -1378,7 +1444,10 @@ impl Simulation {
                 self.reattach_at = None;
                 let ohms = self.scenario.pad_ohms;
                 self.plant.borrow_mut().pad_ohms = Some(ohms);
-                self.log(Source::Responder, format!("Pads re-attached ({ohms:.0} Ω)."));
+                self.log(
+                    Source::Responder,
+                    format!("Pads re-attached ({ohms:.0} Ω)."),
+                );
             }
         }
         for i in 0..self.scenario.script.len() {
@@ -1435,10 +1504,19 @@ impl Simulation {
                 self.log(Source::Hardware, format!("Surroundings now {c:.1} °C."));
             }
             Action::TempSensor(point, fault) => {
-                if let Some(slot) = self.plant.borrow_mut().thermal.faults.get_mut(point.index()) {
+                if let Some(slot) = self
+                    .plant
+                    .borrow_mut()
+                    .thermal
+                    .faults
+                    .get_mut(point.index())
+                {
                     *slot = fault;
                 }
-                self.log(Source::Hardware, format!("Temperature sensor {} now {fault:?}.", point.name()));
+                self.log(
+                    Source::Hardware,
+                    format!("Temperature sensor {} now {fault:?}.", point.name()),
+                );
             }
             Action::Ventilate(on) => {
                 self.plant.borrow_mut().ventilating = on;
@@ -1469,10 +1547,15 @@ impl Simulation {
             | Prompt::ShockAdvisedCharging
             | Prompt::StandClear => Some(false),
             Prompt::PressPadsFirmly => {
-                if self.scenario.responder.pressing_pads_brings_ohms_to.is_some()
+                if self
+                    .scenario
+                    .responder
+                    .pressing_pads_brings_ohms_to
+                    .is_some()
                     && self.press_pads_at.is_none()
                 {
-                    self.press_pads_at = Some(now.saturating_add(self.scenario.responder.reaction_ms));
+                    self.press_pads_at =
+                        Some(now.saturating_add(self.scenario.responder.reaction_ms));
                 }
                 None
             }
@@ -1500,10 +1583,9 @@ impl Simulation {
         }
         let now = self.now();
         let reaction = self.scenario.responder.reaction_ms;
-        let current = self.responder_pending.map_or_else(
-            || self.plant.borrow().compressing,
-            |(_, pending)| pending,
-        );
+        let current = self
+            .responder_pending
+            .map_or_else(|| self.plant.borrow().compressing, |(_, pending)| pending);
         if current != w {
             self.responder_pending = Some((now.saturating_add(reaction), w));
         }
@@ -1563,9 +1645,7 @@ impl Simulation {
         // Charged on purpose (or still emptying in the background, which
         // the main controller checks against its own time limit).
         let armed_now = !frozen
-            && (state == RescueState::SelfTest
-                || state.holds_charge()
-                || self.rescue.emptying());
+            && (state == RescueState::SelfTest || state.holds_charge() || self.rescue.emptying());
         if stuck
             && !armed_now
             && final_v >= empty
@@ -1655,7 +1735,9 @@ pub fn abort_text(r: AbortReason) -> String {
         AbortReason::PlanRefused(e) => format!("no shock plan ({e:?})"),
         AbortReason::ConfirmationStale => "rhythm confirmation too old".to_string(),
         AbortReason::HandsOnChest => "chest compressed or moving after the advice".to_string(),
-        AbortReason::TooHot => "the supervisor's temperature reading went over its limit".to_string(),
+        AbortReason::TooHot => {
+            "the supervisor's temperature reading went over its limit".to_string()
+        }
     }
 }
 

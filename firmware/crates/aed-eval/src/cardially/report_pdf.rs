@@ -82,7 +82,10 @@ impl PdfEcg {
     #[must_use]
     pub fn shock_delivered_s(&self, n: u32) -> Option<f64> {
         let want = format!("Shock {n} delivered");
-        self.events.iter().find(|e| e.text.trim() == want).map(|e| e.t_s)
+        self.events
+            .iter()
+            .find(|e| e.text.trim() == want)
+            .map(|e| e.t_s)
     }
 
     /// Duration, seconds.
@@ -108,25 +111,27 @@ struct BoxXY {
 const EDGE_PT: f64 = 0.05;
 
 fn strip_boxes(d: &Drawing) -> Vec<BoxXY> {
-    let mut v: Vec<BoxXY> = d
-        .strokes
-        .iter()
-        .filter(|s| !s.colour.is_blue() && s.points.len() == 5)
-        .filter_map(|s| {
-            let (mut x0, mut x1, mut y0, mut y1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-            for (x, y) in &s.points {
-                x0 = x0.min(*x);
-                x1 = x1.max(*x);
-                y0 = y0.min(*y);
-                y1 = y1.max(*y);
-            }
-            // Axis-aligned: every vertex on an edge.
-            let on_edge = s.points.iter().all(|(x, y)| {
-                ((x - x0).abs() < 0.05 || (x - x1).abs() < 0.05) && ((y - y0).abs() < 0.05 || (y - y1).abs() < 0.05)
-            });
-            (on_edge && y1 - y0 > 500.0 && (50.0..300.0).contains(&(x1 - x0))).then_some(BoxXY { x0, x1, y0, y1 })
-        })
-        .collect();
+    let mut v: Vec<BoxXY> =
+        d.strokes
+            .iter()
+            .filter(|s| !s.colour.is_blue() && s.points.len() == 5)
+            .filter_map(|s| {
+                let (mut x0, mut x1, mut y0, mut y1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+                for (x, y) in &s.points {
+                    x0 = x0.min(*x);
+                    x1 = x1.max(*x);
+                    y0 = y0.min(*y);
+                    y1 = y1.max(*y);
+                }
+                // Axis-aligned: every vertex on an edge.
+                let on_edge = s.points.iter().all(|(x, y)| {
+                    ((x - x0).abs() < 0.05 || (x - x1).abs() < 0.05)
+                        && ((y - y0).abs() < 0.05 || (y - y1).abs() < 0.05)
+                });
+                (on_edge && y1 - y0 > 500.0 && (50.0..300.0).contains(&(x1 - x0)))
+                    .then_some(BoxXY { x0, x1, y0, y1 })
+            })
+            .collect();
     v.sort_by(|a, b| a.x0.total_cmp(&b.x0));
     v.dedup_by(|a, b| (a.x0 - b.x0).abs() < 1.0);
     v
@@ -137,8 +142,13 @@ fn strip_boxes(d: &Drawing) -> Vec<BoxXY> {
 pub fn clock_seconds(s: &str) -> Option<u32> {
     let s = s.trim();
     let parts: Vec<&str> = s.split(['.', ':']).collect();
-    let [h, m, sec] = parts.as_slice() else { return None };
-    if [h, m, sec].iter().any(|p| p.len() != 2 || !p.bytes().all(|c| c.is_ascii_digit())) {
+    let [h, m, sec] = parts.as_slice() else {
+        return None;
+    };
+    if [h, m, sec]
+        .iter()
+        .any(|p| p.len() != 2 || !p.bytes().all(|c| c.is_ascii_digit()))
+    {
         return None;
     }
     let (h, m, sec): (u32, u32, u32) = (h.parse().ok()?, m.parse().ok()?, sec.parse().ok()?);
@@ -150,8 +160,18 @@ pub fn clock_seconds(s: &str) -> Option<u32> {
 pub fn parse_scale(s: &str) -> Option<(f64, f64)> {
     let s = s.trim();
     let (a, b) = s.split_once(',')?;
-    let mv = a.trim().strip_suffix("div/mV")?.trim().parse::<f64>().ok()?;
-    let sec = b.trim().strip_suffix("div/sec")?.trim().parse::<f64>().ok()?;
+    let mv = a
+        .trim()
+        .strip_suffix("div/mV")?
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    let sec = b
+        .trim()
+        .strip_suffix("div/sec")?
+        .trim()
+        .parse::<f64>()
+        .ok()?;
     (mv.is_finite() && sec.is_finite() && mv > 0.0 && sec > 0.0).then_some((mv, sec))
 }
 
@@ -210,7 +230,11 @@ pub fn read_report(file: &[u8]) -> Result<PdfEcg, PdfError> {
             // header and footer). Nothing to read on it.
             continue;
         }
-        let page_scale = d.texts.iter().find_map(|t| parse_scale(&t.text)).ok_or_else(|| bad("no 'div/mV, div/sec' scale"))?;
+        let page_scale = d
+            .texts
+            .iter()
+            .find_map(|t| parse_scale(&t.text))
+            .ok_or_else(|| bad("no 'div/mV, div/sec' scale"))?;
         if scale.is_some_and(|s| s != page_scale) {
             return Err(bad("pages state different scales"));
         }
@@ -234,8 +258,14 @@ pub fn read_report(file: &[u8]) -> Result<PdfEcg, PdfError> {
                 .filter(|t| t.x > b.x1 && t.x < b.x1 + 20.0 && t.y > b.y0 - 5.0 && t.y < b.y1 + 5.0)
                 .filter_map(|t| clock_seconds(&t.text).map(|c| (t.y, c)))
                 .collect();
-            let first = clocks.iter().min_by(|a, b| a.0.total_cmp(&b.0)).map(|c| c.1);
-            let lastc = clocks.iter().max_by(|a, b| a.0.total_cmp(&b.0)).map(|c| c.1);
+            let first = clocks
+                .iter()
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|c| c.1);
+            let lastc = clocks
+                .iter()
+                .max_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|c| c.1);
             let (Some(c0), Some(c1)) = (first, lastc) else {
                 return Err(bad("strip without clock times at both ends"));
             };
@@ -267,11 +297,16 @@ pub fn read_report(file: &[u8]) -> Result<PdfEcg, PdfError> {
             // Sampling rate from the median vertex spacing along time.
             let mut steps: Vec<f64> = trace
                 .iter()
-                .flat_map(|p| p.windows(2).filter_map(|w| w.get(1).zip(w.first()).map(|(b2, a)| b2.1 - a.1)))
+                .flat_map(|p| {
+                    p.windows(2)
+                        .filter_map(|w| w.get(1).zip(w.first()).map(|(b2, a)| b2.1 - a.1))
+                })
                 .filter(|d| *d > 0.0)
                 .collect();
             steps.sort_by(f64::total_cmp);
-            let med = *steps.get(steps.len() / 2).ok_or_else(|| bad("strip without trace"))?;
+            let med = *steps
+                .get(steps.len() / 2)
+                .ok_or_else(|| bad("strip without trace"))?;
             let this_fs = (pts_per_s / med / 10.0).round() as u32 * 10; // to the nearest 10 per second
             if fs.is_some_and(|f| f != this_fs) || !(50..=2000).contains(&this_fs) {
                 return Err(bad("inconsistent or implausible sampling rate"));
@@ -323,13 +358,22 @@ pub fn read_report(file: &[u8]) -> Result<PdfEcg, PdfError> {
         }
         parsed.push(ps);
     }
-    let (Some((div_per_mv, div_per_s)), Some(fs), Some(strip_s), Some(div_pt)) = (scale, fs, strip_s, div_pt) else {
+    let (Some((div_per_mv, div_per_s)), Some(fs), Some(strip_s), Some(div_pt)) =
+        (scale, fs, strip_s, div_pt)
+    else {
         return Err(bad("nothing recovered"));
     };
     // Order pages by their first clock time, relative to the first page in the file.
-    let base = parsed.first().and_then(|p| p.clock_start.first().copied().flatten()).unwrap_or(0);
+    let base = parsed
+        .first()
+        .and_then(|p| p.clock_start.first().copied().flatten())
+        .unwrap_or(0);
     parsed.sort_by_key(|p| {
-        p.clock_start.first().copied().flatten().map_or(u32::MAX, |c| (c + 86_400 - base) % 86_400)
+        p.clock_start
+            .first()
+            .copied()
+            .flatten()
+            .map_or(u32::MAX, |c| (c + 86_400 - base) % 86_400)
     });
     let mut samples: Vec<Option<f64>> = Vec::new();
     let mut at_edge: Vec<bool> = Vec::new();
@@ -385,7 +429,11 @@ pub fn read_report(file: &[u8]) -> Result<PdfEcg, PdfError> {
 /// Fill missing samples by straight lines between their neighbours (the
 /// nearest known value at the ends).
 fn fill_gaps(s: &[Option<f64>]) -> Vec<f64> {
-    let known: Vec<(usize, f64)> = s.iter().enumerate().filter_map(|(i, v)| v.map(|v| (i, v))).collect();
+    let known: Vec<(usize, f64)> = s
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| v.map(|v| (i, v)))
+        .collect();
     let mut out = Vec::with_capacity(s.len());
     let mut k = 0;
     for i in 0..s.len() {
@@ -394,7 +442,9 @@ fn fill_gaps(s: &[Option<f64>]) -> Vec<f64> {
         }
         let v = match (known.get(k), known.get(k + 1)) {
             (Some(&(a, va)), _) if a == i => va,
-            (Some(&(a, va)), Some(&(b, vb))) if a < i => va + (vb - va) * (i - a) as f64 / (b - a) as f64,
+            (Some(&(a, va)), Some(&(b, vb))) if a < i => {
+                va + (vb - va) * (i - a) as f64 / (b - a) as f64
+            }
             (Some(&(_, va)), _) => va,
             (None, _) => 0.0,
         };
@@ -422,15 +472,27 @@ mod tests {
 
     #[test]
     fn fragments_are_joined_only_along_one_line() {
-        let t = |x: f64, y: f64, s: &str| Text { x, y, size: 6.8, text: s.into() };
-        let j = join_fragments(vec![t(56.0, 347.6, "rmed"), t(56.0, 343.1, "A"), t(80.0, 343.1, "Other")]);
+        let t = |x: f64, y: f64, s: &str| Text {
+            x,
+            y,
+            size: 6.8,
+            text: s.into(),
+        };
+        let j = join_fragments(vec![
+            t(56.0, 347.6, "rmed"),
+            t(56.0, 343.1, "A"),
+            t(80.0, 343.1, "Other"),
+        ]);
         let texts: Vec<&str> = j.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(texts, vec!["Armed", "Other"]);
     }
 
     #[test]
     fn gaps_are_filled_by_straight_lines() {
-        assert_eq!(fill_gaps(&[None, Some(1.0), None, None, Some(4.0), None]), vec![1.0, 1.0, 2.0, 3.0, 4.0, 4.0]);
+        assert_eq!(
+            fill_gaps(&[None, Some(1.0), None, None, Some(4.0), None]),
+            vec![1.0, 1.0, 2.0, 3.0, 4.0, 4.0]
+        );
         assert!(fill_gaps(&[None, None]).iter().all(|v| *v == 0.0));
     }
 
@@ -476,8 +538,15 @@ mod tests {
             b = (b + a) % 65_521;
         }
         z.extend_from_slice(&((b << 16) | a).to_be_bytes());
-        let mut f = b"%PDF-1.5\n2 0 obj\n<</Contents 3 0 R/Rotate 90/Type/Page>>\nendobj\n".to_vec();
-        f.extend_from_slice(format!("3 0 obj\n<</Filter/FlateDecode/Length {}>>stream\n", z.len()).as_bytes());
+        let mut f =
+            b"%PDF-1.5\n2 0 obj\n<</Contents 3 0 R/Rotate 90/Type/Page>>\nendobj\n".to_vec();
+        f.extend_from_slice(
+            format!(
+                "3 0 obj\n<</Filter/FlateDecode/Length {}>>stream\n",
+                z.len()
+            )
+            .as_bytes(),
+        );
         f.extend_from_slice(&z);
         f.extend_from_slice(b"\nendstream\nendobj\n%%EOF\n");
         f

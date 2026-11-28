@@ -28,7 +28,11 @@ fn pick<T: Copy>(rng: &mut Xorshift32, items: &[T]) -> Option<T> {
 }
 
 fn range(rng: &mut Xorshift32, lo: u32, hi: u32) -> u32 {
-    lo.saturating_add(rng.next_u32().checked_rem(hi.saturating_sub(lo).max(1)).unwrap_or(0))
+    lo.saturating_add(
+        rng.next_u32()
+            .checked_rem(hi.saturating_sub(lo).max(1))
+            .unwrap_or(0),
+    )
 }
 
 fn random_rhythm(rng: &mut Xorshift32) -> Rhythm {
@@ -263,8 +267,10 @@ fn tally(sum: &mut CampaignSummary, seed: u32, r: &RunResult) {
     sum.compressions_counted += u64::from(r.compressions_counted);
     for sh in &r.shocks {
         if sh.end == crate::plant::ShockEnd::Completed {
-            sum.shock_times_us
-                .push((sh.request_to_delivered_us().unwrap_or(0), sh.consent_to_delivered_us()));
+            sum.shock_times_us.push((
+                sh.request_to_delivered_us().unwrap_or(0),
+                sh.consent_to_delivered_us(),
+            ));
         } else {
             sum.sequences_not_completed += 1;
         }
@@ -275,16 +281,14 @@ fn tally(sum: &mut CampaignSummary, seed: u32, r: &RunResult) {
     }
     if r.final_state == RescueState::Fault {
         sum.ended_in_fault += 1;
-        *sum
-            .final_faults
+        *sum.final_faults
             .entry(format!("{:?}", r.final_fault))
             .or_insert(0) += 1;
     }
     if !r.injected.is_empty() {
         sum.with_fault += 1;
     }
-    *sum
-        .final_states
+    *sum.final_states
         .entry(format!("{:?}", r.final_state))
         .or_insert(0) += 1;
     let in_range = (25.0..=175.0).contains(&r.scenario.pad_ohms);
@@ -318,15 +322,15 @@ fn tally(sum: &mut CampaignSummary, seed: u32, r: &RunResult) {
     }
     for v in &r.violations {
         let late = v.rule == Rule::FiredOnNonShockableRhythm
-            && v.rhythm_changed_ms_before.is_some_and(|ms| ms <= DETECTION_LATENCY_MS);
+            && v.rhythm_changed_ms_before
+                .is_some_and(|ms| ms <= DETECTION_LATENCY_MS);
         if v.rule == Rule::SilentAtPowerOn {
             sum.silent_at_power_on += 1;
         } else if late {
             sum.late_rhythm_change_shocks += 1;
             sum.late_seeds.push((seed, v.detail.clone()));
         } else {
-            *sum
-                .violations
+            *sum.violations
                 .entry(v.rule.describe().to_string())
                 .or_insert(0) += 1;
             sum.failing_seeds
@@ -378,7 +382,9 @@ pub fn run_campaign_with(n: u32, first_seed: u32, options: CampaignOptions) -> C
     for (seed, outcome) in outcomes {
         match outcome {
             Ok(r) => tally(&mut sum, seed, &r),
-            Err(e) => sum.failing_seeds.push((seed, format!("setup or run error {e}"))),
+            Err(e) => sum
+                .failing_seeds
+                .push((seed, format!("setup or run error {e}"))),
         }
     }
     sum
@@ -438,9 +444,9 @@ pub fn campaign_text(s: &CampaignSummary) -> String {
         out,
         "  Shocks fired while hands were on the chest (ground truth): {}{}",
         exposures.len(),
-        exposures
-            .last()
-            .map_or(String::new(), |m| format!(", hands on for at most {m} ms before the shock"))
+        exposures.last().map_or(String::new(), |m| format!(
+            ", hands on for at most {m} ms before the shock"
+        ))
     );
     for (seed, ms) in s.hands_on_fires.iter().take(20) {
         let _ = writeln!(out, "    seed {seed}: hands on for {ms} ms");

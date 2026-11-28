@@ -159,3 +159,24 @@ pins = """
 4 COIL+ passive top
 3 COIL- passive bottom
 """
+
+# Why custom: KiCad's stock Amplifier_Operational library has no OPA838 (revision 0.3, fast idle-current path U1317).
+[[symbol]]
+name = "OPA838xDBV"
+reference = "U"
+value = "OPA838IDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+datasheet = "https://www.ti.com/lit/ds/symlink/opa838.pdf"
+description = "Decompensated voltage-feedback op amp, 300 MHz GBW, stable at gain >= 6 V/V, 2.7-5.4 V single supply, negative-rail input / rail-to-rail output, offset <= +-125 uV (25 C), -230/+220 uV (-40..85 C), 0.95 mA, power-down pin (must be driven), SOT-23-6 (TI SBOS867E, August 2025)"
+mpn = "OPA838IDBVR"
+manufacturer = "Texas Instruments"
+pinout_source = "TI SBOS867E (revised August 2025), Figure 5-1 'DBV Package, 6-Pin SOT-23 (Top View)' and Table 5-1 Pin Functions (DBV column): 1 VOUT, 2 VS-, 3 VIN+, 4 VIN-, 5 PD, 6 VS+; orderable code OPA838IDBVR from the Package Option Addendum of the same document"
+keywords = "op amp decompensated 300MHz OPA838"
+pins = """
+3 VIN+ input    left
+4 VIN- input    left
+5 PD   input    left
+1 VOUT output   right
+6 VS+  power_in top
+2 VS-  power_in bottom
+"""

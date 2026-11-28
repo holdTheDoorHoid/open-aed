@@ -41,5 +41,7 @@ pub fn final_decision(reports: &[WindowReport]) -> Option<RhythmDecision> {
 
 /// True if any report in the list is `Shockable`.
 pub fn ever_shockable(reports: &[WindowReport]) -> bool {
-    reports.iter().any(|r| r.decision == RhythmDecision::Shockable)
+    reports
+        .iter()
+        .any(|r| r.decision == RhythmDecision::Shockable)
 }

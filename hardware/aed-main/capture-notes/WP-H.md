@@ -441,3 +441,159 @@ external test pulse as MEDTEQ describes it.
 - MAX30009 Rev 2 datasheet not read; IEC 60601-1 / -2-4 / -2-27 not read.
 - Custom footprints (WLP-25, relay, connector) not drawn (marked `footprint_todo`).
 - Exact catalogue availability of formula-derived passive MPNs not checked.
+
+---
+
+## Revision 0.3 (27 Nov 2026)
+
+**NOT FOR CONSTRUCTION — unreviewed design.** Applies change order WP-H (`rev3-changes.md` H-1…H-6) under
+`docs/HARDWARE_DESIGN.md` v0.3, contract issue 3 and `docs/requirements/patient-relay.md` (D-64). Simulations:
+`hardware/aed-main/sim/rev3-wph/notes.md`. All figures below marked [SIM] come from there; they are simulated with
+hand-built models, not measured. Nothing here is safe or ready for use on a person or animal. Sections §1–§10
+above describe issue 2 and remain valid except where this section says otherwise.
+
+### R3.1 In plain language
+
+- **Relay coil supply (sheet 14).** The relay's energy store is now filled before the shock is due, switched on by
+  its own new signal from the main controller (`K_SUPPLY_EN`). The sequencer's `K_EN` now only starts the coil
+  driver. The store fills more gently, through a larger slow-start capacitor and a lower current limit. In
+  simulation the battery's surge falls from about 9 A to at most 3.3 A. On a cold, nearly empty battery the
+  battery rail stays at 5.4 V instead of falling to 4.35 V. The relay changes over 18 ms after the command, and
+  33.4 ms with the firmware's settling wait, inside the 40 ms limit. If the supply fails mid-shock, the relay
+  stays held for at least 42.7 ms (30 ms required).
+- **Relay.** The relay symbol is now clearly marked as a placeholder for a part that does not exist yet. The
+  specification a maker must meet is `docs/requirements/patient-relay.md`.
+- **Heart-signal and compression inputs (sheet 15).** The heart-signal branch has its own pair of
+  defibrillator-rated input resistors and clamps, so it no longer swamps the compression (impedance) signal.
+  Simulated compression noise is 4.6–6.3 mΩ against the 10 mΩ limit (charger off). Heart-signal quality and every
+  protection figure are unchanged, and the new parts add no meaningful path for current through the patient.
+- **Supervisor's chip (sheet 16).** Its test frequency is 96 kHz. That is a setting, so no part changed.
+- **What I could not settle:** the new current-limit resistor value lies outside the range in the converter
+  maker's chart. The changeover time depends on a relay coil nobody has measured: a slow coil would miss the 40 ms
+  limit. The compression-noise margin rests on an estimated chip-noise figure.
+
+### R3.2 Changes applied
+
+| # | Sheet | Change | Designators |
+|---|---|---|---|
+| H-1 | 14 | Coil supply enable moved to new global **`K_SUPPLY_EN`** (04 → 14): R1403 now `K_SUPPLY_EN`–`K_SUPG` (local net renamed from `K_ENG`) to Q1402's gate; R1413 now `K_SUPPLY_EN`–`K_BEN` (boost EN). New **R1421 100 kΩ** `K_SUPPLY_EN`–GND (contract default). R1404 (`K_EN` default) and R1417 (DRV110 EN) stay on `K_EN` | R1403, R1413, R1421 |
+| H-2 | 14 | **C1401 68 nF → 680 nF** X7R 0603 (MPN TBD, R3.6); **R1406 127 kΩ → 515 kΩ** 1 % (RC0603FR-07515KL, formula code); L1401 `Verify` lowered to Isat ≥ 3 A; Q1401 `Verify` updated for the slower pre-charge | C1401, R1406 |
+| H-3 | 14 | K1401 value "DPDT HV relay + aux — MADE TO ORDER, PLACEHOLDER (docs/requirements/patient-relay.md)", `Verify` = "no part exists; D-64"; group title and note say placeholder; library symbol description, datasheet field and MPN say placeholder | K1401, `aed_patient:PATIENT_RELAY_DPDT_AUX` |
+| H-4 | 15 | New **R1528, R1529 51 kΩ DPCR2512-51KJT18** from `PT_FE_A`/`PT_FE_B` to new nodes **`PT_ESA_CL`/`PT_ESB_CL`** (PATIENT class by the `*PT_*` pattern); **R1509/R1510 moved** to those nodes; new clamps **D1506, D1507 CDSOD323-T03C** to GND. R1511/R1512 stay on `PT_MSA_CL`/`PT_MSB_CL` | R1528, R1529, D1506, D1507, R1509, R1510 |
+| H-5 | 16 | Carrier 96 kHz recorded as adopted (sheet comment and note); no circuit change | — |
+| H-6 | 14 | Notes: coil-supply budget ≈ 2 A for ≈ 0.1 s before the shock; the boost limit is a peak value | — |
+| — | 14 | New ERC acceptance: `K_SUPPLY_EN` / Q1402 / U1401 EN not driven until 04 is at issue 3 | — |
+
+Every sheet keeps its NOT FOR CONSTRUCTION notice (build check). Parts: **52** on 14 (+1), **55** on 15 (+4), 32 on
+16. Departures from the change order: none in values or topology; C1401's MPN is left TBD (none given, none
+confirmed).
+
+### R3.3 Results with margins [SIM unless marked]
+
+| Check | Result | Limit | Margin |
+|---|---|---|---|
+| Reservoir at 11 V after `K_SUPPLY_EN` | 60–168 ms | < 200 ms lead (FW-12) | 32 ms |
+| Battery peak, pre-charge (whole battery, incl. ≈ 0.6 A other loads) | 1.71–3.33 A | change order 2.5–2.6 A | +0.7 A at the +0.8 A limit corner |
+| `VBAT_SYS` min, cold nearly empty battery (6.0 V, 80 mΩ/cell) | 5.40 V (issue 2: 4.35 V) | `5V0_SYS` dropout begins ≈ 5.2 V | 0.2 V |
+| `5V0_SYS` / `BRIDGE_5V` min, all battery cases | 5.08 / 5.00 V | 4.9 / 4.60 V | 0.18 / 0.40 V |
+| Transfer after `K_EN` (hot coil, 60 mH EST) | 18.1–18.4 ms | — | — |
+| Transfer + 14 ms wait + 1 ms tick | 33.1–33.4 ms | 40 ms | **6.6 ms** |
+| Same with a 120 mH hot coil | 43.4 ms | 40 ms | **−3.4 ms (fails)**; coil not known |
+| Hold-up after a supply loss at `K_EN` + 20 ms | 42.7–63.1 ms (−20 % reservoir included) | ≥ 30 ms | 12.7 ms |
+| Charger at full power during the pre-charge, cold nearly empty battery | `VBAT_SYS` 3.72 V (charger alone ≈ 4.3 V [CALC]) | — | see R3.7 item 4 |
+| Impedance noise, charger off | 4.6–6.3 mΩ RMS (issue 2: 25–34) | < 10 mΩ | 1.6× with the estimated chip noise; 8.5–11.6 mΩ if chip noise is 2× |
+| ECG gain 10 Hz / resistor noise 0.5–40 Hz / 64 kHz at IN2 | 0.993 / 0.28 µV / 0.043 | unchanged (0.989 / 0.28 / 0.043) | — |
+| IN2P pin, external 5 kV / own 2,409 V | 0.45 / 0.79 mA (unchanged) | ±10 mA continuous (SBAS502C) | ≥ 12× |
+| R1528 energy, external / own | 0.83 J (482 W peak) / 2.26 J (113 W) | DPCR ≈ 1.5 kW at 1 ms / ≈ 250 W at 20 ms (graph, §3.1) | 3.1× / 2.2× |
+
+### R3.4 Defibrillation protection and patient leakage for each new part
+
+**R1528, R1529 (51 kΩ DPCR).** They see exactly what R1507/R1508 see.
+- External defibrillator with the pads on (5 kV, τ 3.4 ms), one-sided: **97 mA, ≤ 5 kV, 0.83 J per pulse**
+  (balanced: 49 mA, 0.21 J) [SIM; matches CALC V²τ/2R = 0.83 J].
+- This device's own shock through a failed relay (normally refused by the aux contact, fault 29), bounded at
+  2,409 V (charger last-resort trip, E-1) for 11.85 + 8.06 ms (per-phase caps at the top of their bands, D-63):
+  **47 mA, 113 W, 2.26 J** [SIM, rectangular bound; the issue-2 figure was 1.9 J at 2,182 V].
+- A second external pulse adds the same again; DPCR is pulse-tested for 100 pulses at 5 kV.
+
+**D1506, D1507 (CDSOD323-T03C).** Clamp ≈ 5.0–5.4 V [SIM]; ≤ 97 mA for milliseconds, ≈ 2 mJ (external) / ≈ 5 mJ
+(own shock). This is the same stress as D1503, and outside the 8/20 µs rating basis [UNVERIFIED, as before].
+The ECG pin current behind them is unchanged: 0.45 / 0.79 mA. Energy diverted from an external defibrillator:
+resistive taps per pad 2 → 3 × 51 kΩ, pad to pad 51 → 34 kΩ, ≈ 0.3 % (was ≈ 0.2 %) of the energy into a 100 Ω
+patient [CALC].
+
+**Patient leakage arithmetic [CALC].**
+- *Normal condition, DC.* The TVSs only sink to GND. The only DC sources that can push current through the
+  patient are RLDOUT through R1513/R1514 (≤ 3.3 V / 10 MΩ = 0.33 µA per side) and the MAX30009 sense inputs
+  (≈ 15 nA). So the patient DC current stays **≤ ≈ 0.35 µA** whatever the TVS leakage (≤ 5 µA each at 3.3 V,
+  Bourns). Unchanged from issue 2.
+- *Normal condition, 64 kHz.* The ECG branch is a load across the pads (2 × 61 kΩ + 470 pF ≈ 127 kΩ). It takes
+  ≈ 20 mV / 127 kΩ = 0.16 µA of the 80 µA excitation and adds no source: the patient carrier current is
+  unchanged (≈ 80 µA peak square).
+- *Single fault (an ADS1292R input latched to a rail, worst case of §3.2).* The source is still limited by its own
+  61 kΩ (10 kΩ + 51 kΩ, now through R1528/R1529). The return through the other pad's ADS pin gives 3.3 V /
+  122 kΩ = 27 µA, as before. The new clamp adds at most its leakage to that return, ≤ 5 µA (less in practice,
+  since it sits at ≤ 1.7 V, below its 3.3 V working voltage). Bound: **≤ 27 + 2 × 5 = 37 µA** (issue 2: 32 µA),
+  against 50 µA single-fault CF [BK, UNVERIFIED limit].
+- *Single fault D1506 short.* The ECG node of pad A is held at GND through 51 kΩ. No source drives it except RLD
+  (0.33 µA): the ECG saturates or goes flat, which is detected; no new patient current.
+- *`K_SUPPLY_EN`, R1421, C1401, R1406* are not connected to the patient. The coil now sits at ≈ 12 V for up to
+  ≈ 10 s before each shock (charge + countdown) instead of only during it. Leakage through the relay's required
+  ≥ 10 GΩ insulation is ≤ 12 V / 10 GΩ = **1.2 nA** (requirement figure; no relay exists).
+
+### R3.5 Failure-table entries for the new and changed parts (add to §5)
+
+| Part | Open | Short |
+|---|---|---|
+| R1528/R1529 (ECG sense 51 k) | that pad's ECG input drifts to RLDOUT via 10 M → ECG lead-off/saturated → firmware lead check; impedance unaffected (now independent), so it can read "pads good" while the ECG is lost: **firmware must treat ECG lead-off as "check pads"** [proposed F-requirement] | **service item**: tap becomes R1509's 10 k → R1509 and D1506 take the defibrillation current (exceeds R1509's rating under an external pulse); normal readings unchanged → **not detectable** [residual, as R1507] |
+| D1506/D1507 | no clamp: IN2 pin protected only by 61 k and the chip's own diodes (≈ 82 mA at 5 kV one-sided → chip damage likely); not detectable in use [residual, as D1503] | ECG node to GND through 51 k → ECG saturated/flat → detected; no new patient current (R3.4) |
+| R1509/R1510 (moved) | ECG input lost → lead check | as before (§5 inner resistors) |
+| R1421 (`K_SUPPLY_EN` default) | `K_SUPPLY_EN` floats while the main is in reset: boost EN held low by its 800 k; Q1402 gate may drift → Q1401 partly on → standby drain (reservoir and DRV110 at VBAT_SYS), not detected except by the gauge; no coil without `K_EN` | `K_SUPPLY_EN` held low → reservoir never fills → relay too slow → refused; self-test T-3 detects |
+| `K_SUPPLY_EN` stuck high / low (design fault 30a) | — | high: boost always on, ≈ 1 mA drain [EST], no coil without `K_EN`; low: refused, T-3 |
+| C1401 (680 nF) | Q1401 turns on fast → issue-2 surge (8.7–9.9 A, LR §3.1) at `K_SUPPLY_EN`, i.e. **before** the sequence, not during it; not detected [residual: battery dip at charge start] | Q1401 gate tied to drain → runs diode-connected (K_VIN ≈ VBAT − 2 V); slower fill; transfer time logged by T-3 |
+| R1406 (515 k) | ILIM pin open: limit not stated [UNVERIFIED] → possibly the full limit → surge as C1401 open | ILIM to GND: behaviour not stated [UNVERIFIED]; surge or no start; T-3 |
+
+### R3.6 Datasheets consulted
+
+| Part | Document | Status |
+|---|---|---|
+| TPS61089 | TI SLVSD38C, Nov 2015, revised Aug 2021 | **opened this session** (Eq. 2/4, §9.2.2.3, EC table, Figure 7-3 range, REN 800 k, tSS) |
+| DRV110 | TI SLVSBA8G | **opened this session** (UVLO 4.6 V, tD ≤ 50 µs, standby 200–250 µA) |
+| DPCR2512 (R1528, R1529) | TT Electronics DPCR datasheet (09.26) | read for issue 2 (§2); **not reopened** this session; same part and value as R1507 |
+| CDSOD323-T03C (D1506, D1507) | Bourns REV 04/23 | read for issue 2; **not reopened**; same part as D1503 |
+| Yageo RC0603 (R1406, R1421) | PYu-RC_Group_51 | formula code; not reopened |
+| C1401 680 nF X7R 0603 | — | **no orderable code identified**: MPN left "TBD" with `Verify` rather than invented |
+| ADS1292R | TI SBAS502C | not reopened (values from §2/§3) |
+| Patient relay | `docs/requirements/patient-relay.md` v0.1 | read |
+
+### R3.7 Problems with the change order (for the design authority)
+
+1. **H-2's current limit is a peak switch current, and 515 kΩ lies outside the datasheet's graph.** SLVSD38C
+   Figure 7-3 covers 100–400 kΩ only, and the limit can be 0.8 A below or above the equation (1.2–2.8 A at
+   515 kΩ). LR §3.2 modelled it as an average input current. Drawn as ordered, because it passes every check
+   here. If TI does not support 515 kΩ, the fallback is 340 kΩ (inside the range): it also passes, but the
+   battery peak rises to 4.3 A. Ask TI.
+2. **"Transfer 15.9 ms in every battery case" was not simulated with the drawn value.** LR's mode 1 used a 2.5 A
+   (412 kΩ) average limit. With 515 kΩ: 18.1–18.4 ms, 33.4 ms total. It still passes, with 6.6 ms margin.
+3. **Relay coil inductance can break the 40 ms limit.** A hot coil of ≈ 100 mH or more gives > 40 ms. The relay
+   requirement asks the maker only to state the inductance. Proposed for `patient-relay.md` §4: "coil current
+   reaches pick-up within ≤ 12 ms from a 12 V supply at 65 °C" (≈ L/R ≤ 6 ms).
+4. **FW-12 timing.** "Raise `K_SUPPLY_EN` when charging starts" overlaps the pre-charge with the HV charger. With a
+   cold nearly empty battery `VBAT_SYS` falls to 3.7 V: mostly the charger's own 9.2 A (≈ 4.3 V without the coil
+   supply), which is a WP-A/WP-E question. Proposed: raise `K_SUPPLY_EN` when the capacitor reaches plan (during
+   the 3 s countdown, charger paused), still ≥ 200 ms before `RELAY_CMD`. Raised late (50–100 ms), the relay is
+   too slow and the shock is refused (the safe direction, but a refusal).
+5. **Contract issue 3 still carries stale WP-H text:** §10 "WP-H with WP-B: … MAX30009 at **128 kHz**" (design
+   v0.3 and H-5 say 96 kHz), and §8 sheet 15 "**1 kΩ** pulse-rated drive resistor" (drawn since issue 2 as
+   2 × 24 k DPCR + 2.0 k; issue-2 contract issue 2 above). Not edited here.
+6. **No MPN for C1401 680 nF** in the change order. Left TBD with `Verify`.
+7. **`K_SUPPLY_EN` is single-ended** in this worktree (xcheck: sheet 14 only): expected until sheet 04 (WP-B) is at
+   issue 3. Not renamed.
+
+### R3.8 Still needs measurement
+
+- TPS61089 current limit at 515 kΩ and its behaviour charging 6.6 mF through D1401.
+- The real relay's coil inductance, pick-up and operate times (no relay exists).
+- ADS1292R impedance-channel noise at 64 kHz in this circuit (decides the 10 mΩ margin).
+- Battery DC resistance cold and nearly empty; the charger's real load during the pre-charge.
+- TVS behaviour for millisecond pulses; DPCR under the real IEC test waveform.

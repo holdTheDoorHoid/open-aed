@@ -28,7 +28,9 @@ use aed_rhythm::{classify_with, Analyzer, Features, Reason, Settings, WindowVerd
 use aed_types::{RhythmAnalyzer, RhythmDecision};
 
 use crate::eval::{prepare, FS};
-use crate::truth::{amplitude_uv, beat_rate_bpm, classify_truth, clean_runs, Db, Label, TruthClass};
+use crate::truth::{
+    amplitude_uv, beat_rate_bpm, classify_truth, clean_runs, Db, Label, TruthClass,
+};
 
 /// Analysis limit, seconds (decision D-27).
 pub const LIMIT_S: u8 = 12;
@@ -89,7 +91,11 @@ pub fn patient_key(db: Db, record: &str) -> String {
 ///
 /// # Errors
 /// A message for the first record that cannot be loaded.
-pub fn collect(data_dir: &Path, records: &[(Db, String)], threads: usize) -> Result<(Vec<Seg>, Vec<String>), String> {
+pub fn collect(
+    data_dir: &Path,
+    records: &[(Db, String)],
+    threads: usize,
+) -> Result<(Vec<Seg>, Vec<String>), String> {
     let patients: Vec<String> = {
         let mut v: Vec<String> = records.iter().map(|(d, r)| patient_key(*d, r)).collect();
         v.sort();
@@ -103,8 +109,13 @@ pub fn collect(data_dir: &Path, records: &[(Db, String)], threads: usize) -> Res
         for _ in 0..threads.max(1) {
             scope.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
-                let Some((db, name)) = records.get(i) else { break };
-                let pid = patients.iter().position(|p| *p == patient_key(*db, name)).unwrap_or(0);
+                let Some((db, name)) = records.get(i) else {
+                    break;
+                };
+                let pid = patients
+                    .iter()
+                    .position(|p| *p == patient_key(*db, name))
+                    .unwrap_or(0);
                 let r = collect_record(data_dir, *db, name, pid);
                 if let Ok(mut v) = out.lock() {
                     v.push((i, r));
@@ -122,7 +133,8 @@ pub fn collect(data_dir: &Path, records: &[(Db, String)], threads: usize) -> Res
 }
 
 fn collect_record(data_dir: &Path, db: Db, name: &str, patient: usize) -> Result<Vec<Seg>, String> {
-    let p = prepare(db, &data_dir.join(db.name()), name).map_err(|e| format!("{}/{name}: {e}", db.name()))?;
+    let p = prepare(db, &data_dir.join(db.name()), name)
+        .map_err(|e| format!("{}/{name}: {e}", db.name()))?;
     let mut segs = Vec::new();
     let len = f64::from(LIMIT_S);
     for (ch, chan) in p.channels.iter().enumerate() {
@@ -131,7 +143,9 @@ fn collect_record(data_dir: &Path, db: Db, name: &str, patient: usize) -> Result
             while start + len <= run.end {
                 let a = ((start * FS as f64).round().max(0.0) as usize).min(chan.samples.len());
                 let b12 = (a + LIMIT_S as usize * FS).min(chan.samples.len());
-                let Some(s12) = chan.samples.get(a..b12) else { break };
+                let Some(s12) = chan.samples.get(a..b12) else {
+                    break;
+                };
                 if s12.len() + 1 < LIMIT_S as usize * FS {
                     break;
                 }
@@ -175,7 +189,11 @@ pub fn windows_of(samples: &[i16], railed: &[bool]) -> Vec<Win> {
                 let lo = (i + 1).saturating_sub(4 * FS);
                 let w = railed.get(lo..=i).unwrap_or(&[]);
                 let n = w.iter().filter(|x| **x).count();
-                out.push(Win { f: r.features, railed: n as f32 / w.len().max(1) as f32, announced: r.announced });
+                out.push(Win {
+                    f: r.features,
+                    railed: n as f32 / w.len().max(1) as f32,
+                    announced: r.announced,
+                });
             }
         }
     }
@@ -226,12 +244,22 @@ pub struct Confirm {
 
 impl Confirm {
     /// The untuned rule: 3 in a row, every other verdict announced at once.
-    pub const UNTUNED: Confirm = Confirm { k: 3, n: 3, nonshock_m: 1, hold_on_disagreement: false };
+    pub const UNTUNED: Confirm = Confirm {
+        k: 3,
+        n: 3,
+        nonshock_m: 1,
+        hold_on_disagreement: false,
+    };
 
     /// The rule a [`Settings`] describes (as the analyser applies it).
     #[must_use]
     pub const fn of(s: &Settings) -> Confirm {
-        Confirm { k: s.confirm_windows, n: s.confirm_span, nonshock_m: 1, hold_on_disagreement: false }
+        Confirm {
+            k: s.confirm_windows,
+            n: s.confirm_span,
+            nonshock_m: 1,
+            hold_on_disagreement: false,
+        }
     }
 }
 
@@ -268,9 +296,17 @@ impl ConfirmState {
     fn step(&mut self, v: &WindowVerdict, c: &Confirm) -> Option<RhythmDecision> {
         let shockable = v.decision == RhythmDecision::Shockable;
         self.history = (self.history << 1) | u8::from(shockable);
-        let mask = if c.n >= 8 { u8::MAX } else { (1_u8 << c.n.max(1)) - 1 };
+        let mask = if c.n >= 8 {
+            u8::MAX
+        } else {
+            (1_u8 << c.n.max(1)) - 1
+        };
         let recent = (self.history & mask).count_ones() as u8;
-        self.nonshock_run = if v.decision == RhythmDecision::NonShockable { self.nonshock_run.saturating_add(1) } else { 0 };
+        self.nonshock_run = if v.decision == RhythmDecision::NonShockable {
+            self.nonshock_run.saturating_add(1)
+        } else {
+            0
+        };
         let out = match v.decision {
             RhythmDecision::Shockable if recent >= c.k.max(1) => {
                 self.confirmed = true;
@@ -329,28 +365,39 @@ pub fn replay(seg: &Seg, verdict: &dyn Fn(&Features) -> WindowVerdict, c: &Confi
                 if rest.len() >= COUNTDOWN_S as usize {
                     cancelled = Some(false);
                     for w2 in rest.iter().take(COUNTDOWN_S as usize) {
-                        if matches!(st.step(&verdict(&w2.f), c), Some(d) if d != RhythmDecision::Shockable) {
+                        if matches!(st.step(&verdict(&w2.f), c), Some(d) if d != RhythmDecision::Shockable)
+                        {
                             cancelled = Some(true);
                             break;
                         }
                     }
                 } else {
                     for w2 in rest {
-                        if matches!(st.step(&verdict(&w2.f), c), Some(d) if d != RhythmDecision::Shockable) {
+                        if matches!(st.step(&verdict(&w2.f), c), Some(d) if d != RhythmDecision::Shockable)
+                        {
                             cancelled = Some(true);
                             break;
                         }
                     }
                 }
-                return Played { decision: Some((RhythmDecision::Shockable, t)), cancelled };
+                return Played {
+                    decision: Some((RhythmDecision::Shockable, t)),
+                    cancelled,
+                };
             }
             Some(RhythmDecision::NonShockable) => {
-                return Played { decision: Some((RhythmDecision::NonShockable, t)), cancelled: None };
+                return Played {
+                    decision: Some((RhythmDecision::NonShockable, t)),
+                    cancelled: None,
+                };
             }
             _ => {}
         }
     }
-    Played { decision: None, cancelled: None }
+    Played {
+        decision: None,
+        cancelled: None,
+    }
 }
 
 /// Counts for one class (and usually one patient).
@@ -445,7 +492,9 @@ pub type Tallies = BTreeMap<(usize, TruthClass), Tally>;
 pub fn score(segs: &[Seg], verdict: &dyn Fn(&Features) -> WindowVerdict, c: &Confirm) -> Tallies {
     let mut t = Tallies::new();
     for s in segs {
-        t.entry((s.patient, s.class)).or_default().add(&replay(s, verdict, c));
+        t.entry((s.patient, s.class))
+            .or_default()
+            .add(&replay(s, verdict, c));
     }
     t
 }
@@ -478,7 +527,11 @@ pub struct Objective {
 /// asystole false shocks than the untuned analyser gives on the same
 /// training patients (the dev set holds only 4 patients with scored
 /// asystole, one of them with a doubtfully labelled stretch).
-pub const OBJECTIVE: Objective = Objective { max_fs_nsr: 0.002, max_fs_other: 0.005, asys_slack: 0 };
+pub const OBJECTIVE: Objective = Objective {
+    max_fs_nsr: 0.002,
+    max_fs_other: 0.005,
+    asys_slack: 0,
+};
 
 fn rate(x: u32, n: u32) -> f64 {
     if n == 0 {
@@ -490,18 +543,28 @@ fn rate(x: u32, n: u32) -> f64 {
 
 /// (feasible, objective value, false shocks) of a candidate's tallies, leaving one patient out.
 #[must_use]
-pub fn evaluate(t: &Tallies, reference: &Tallies, leave_out: Option<usize>, o: &Objective) -> (bool, f64, u32) {
+pub fn evaluate(
+    t: &Tallies,
+    reference: &Tallies,
+    leave_out: Option<usize>,
+    o: &Objective,
+) -> (bool, f64, u32) {
     let vf = pooled(t, TruthClass::CoarseVf, leave_out);
     let nsr = pooled(t, TruthClass::Nsr, leave_out);
     let oth = pooled(t, TruthClass::OtherNonShockable, leave_out);
     let asys = pooled(t, TruthClass::Asystole, leave_out);
     let feasible = rate(nsr.shocks12(), nsr.n) <= o.max_fs_nsr
         && rate(oth.shocks12(), oth.n) <= o.max_fs_other
-        && asys.shocks12() <= pooled(reference, TruthClass::Asystole, leave_out).shocks12().saturating_add(o.asys_slack);
+        && asys.shocks12()
+            <= pooled(reference, TruthClass::Asystole, leave_out)
+                .shocks12()
+                .saturating_add(o.asys_slack);
     // Sensitivity at 12 s, with delivered shocks (not cancelled in the
     // countdown) and the 8 s figure as small tie-breakers.
     let delivered = vf.shocks12().saturating_sub(vf.cancelled);
-    let obj = rate(vf.shocks12(), vf.n) + 0.1 * rate(delivered, vf.n) + 0.1 * rate(vf.shock.get(1).copied().unwrap_or(0), vf.n);
+    let obj = rate(vf.shocks12(), vf.n)
+        + 0.1 * rate(delivered, vf.n)
+        + 0.1 * rate(vf.shock.get(1).copied().unwrap_or(0), vf.n);
     let fs = nsr.shocks12() + oth.shocks12() + asys.shocks12();
     (feasible, obj, fs)
 }
@@ -523,7 +586,12 @@ pub struct Lopo {
 /// 1e-9) go to the candidate with fewer false shocks, then to the earlier
 /// one: candidates must be listed from strictest to most lenient.
 #[must_use]
-pub fn choose(cands: &[Tallies], reference: &Tallies, leave_out: Option<usize>, o: &Objective) -> Option<usize> {
+pub fn choose(
+    cands: &[Tallies],
+    reference: &Tallies,
+    leave_out: Option<usize>,
+    o: &Objective,
+) -> Option<usize> {
     let mut best: Option<(usize, f64, u32)> = None;
     for (i, t) in cands.iter().enumerate() {
         let (ok, obj, fs) = evaluate(t, reference, leave_out, o);
@@ -560,7 +628,12 @@ pub fn lopo(cands: &[Tallies], reference: &Tallies, n_patients: usize, o: &Objec
             }
         }
     }
-    Lopo { cv, chosen, full_choice: choose(cands, reference, None, o), per_patient }
+    Lopo {
+        cv,
+        chosen,
+        full_choice: choose(cands, reference, None, o),
+        per_patient,
+    }
 }
 
 /// Default verdict function for given settings.

@@ -1,6 +1,7 @@
 # WP-A power — capture notes (sheets 01, 02, 03)
 
-Contract issue 2, captured 27 November 2026. Pin tables: `hardware/aed-main/specs/01_power_battery.toml`,
+Contract issue 2, captured 27 November 2026; revised for design 0.3 / contract issue 3 the same day (section
+"Revision 0.3" at the end). Pin tables: `hardware/aed-main/specs/01_power_battery.toml`,
 `02_power_dock.toml`, `03_power_rails.toml`; custom symbols: `hardware/lib/src/aed_power.toml`.
 
 > **NOT FOR CONSTRUCTION — unreviewed design.** Drawn with AI assistance from datasheets; not reviewed by a qualified
@@ -230,7 +231,7 @@ allowed". The battery load reads "off" when open or unpowered.
 
 ## 7. Cross-sheet requirements other packages must respect
 
-- `VBAT_SYS`: no resistive load below 100 kΩ (C-3).
+- `VBAT_SYS`: no resistive load below 100 kΩ (C-3). **Issue 3: tightened to 1 MΩ (D-66, contract §4).**
 - Firmware (WP-B / firmware team): MAX17320 non-volatile settings (thresholds in §3, COMMSH = 0, AOLDO disabled, 2S,
   two 10 kΩ thermistors, current-sense 2 mΩ); BQ25887 charge current, 4.2 V per cell, JEITA registers; RV-3028 CLKOUT
   1 Hz stored in EEPROM; battery-load pulse ≤ 100 ms and not repeated rapidly (doubt 3).
@@ -279,3 +280,135 @@ connections**; PDF written; symbol-library lint 0 errors, 1 warning (TPS25947 fo
 
 Tooling note (not changed): the integration test writes to a fixed directory `~/.cache/ws-schgen-itest`, so two work
 packages running `tools/build.sh` at the same time can make it fail ("Schematic file does not exist"); a rerun passes.
+
+---
+
+## Revision 0.3 (contract issue 3), 27 November 2026
+
+> **NOT FOR CONSTRUCTION — unreviewed design.** Paper design only. Simulated figures are marked [SIM] and come from
+> behavioural models; nothing has been built or measured.
+
+### In plain language
+
+Four things changed on the power sheets. **(1)** The charger on sheet 02 is now wired to the middle of the battery
+pack through a new shared wire, `VBAT_MID`, so it can look after each of the two cells separately. Until now it
+could not. **(2)** The "battery under load" test on sheet 01 has a new diode and two resistors. Faulty firmware that
+switches the test on and off quickly can no longer keep the 86 W load running and overheat it. **The change order had
+one value wrong here.** It asked for a 100 kΩ resistor at the comparator input, but the comparator chip has a
+built-in protection diode that undoes the fix through 100 kΩ (14.5 W was still delivered in my check run). I used
+4.7 MΩ instead, and the same check run shows it working (0.77 W at most). The design authority needs to confirm that.
+**(3)** Sheet 01 now states the battery-rail rule: no steady load below 1 MΩ (D-66). **(4)** The battery protector's
+stored settings are now written down: communication shutdown off; over-current limits set so the charger's own fuse
+acts first; and the protector's own cell balancing switched off, so that only the charger balances. Sheet 03 has no
+circuit change; only its notes were updated.
+
+### Changes applied
+
+| # | Sheet | What was done | Designators |
+|---|---|---|---|
+| A-1 | 01, 02 | Renamed the local `BAT_MID` (01) and `BAT_MID_02` (02) to the contract net **`VBAT_MID`** and added it to both `global` lists. On 01 it reaches J101 pin 3 and R106 (to U101 CELL1-3); on 02 it reaches R207 300 Ω (to U201 MID) and R208 100 Ω (to U201 CBSET). Replaced the sheet notes and the old contract-issue C-1 text | J101, R106, R207, R208 |
+| A-2 | 01 | New **D101 BAS116LT1G**: anode `LT_NODE`, cathode a new local node `LT_R`. **R111 118 kΩ → 78.7 kΩ** 1 %, now `LT_R`–GND. New **R117 4.7 MΩ** 1 % `LT_NODE`–GND. **R112 10 kΩ → 4.7 MΩ** (the change order says 100 kΩ; departure, see below). Box title and note rewritten | D101, R111, R112, R117 |
+| A-3 | 01 | Sheet comment: "`VBAT_SYS`: no steady resistive load below 1 MΩ from any sheet (contract §4, D-66). Lowest drawn load: R316 + R317 = 8.0 MΩ on 03 (complies)". The same rule replaces the old 100 kΩ wording on 03 and in the gauge note | — |
+| A-4 | 01 | Configuration record in the gauge box (see Arithmetic) | U101 (configuration) |
+| A-5 | 03 | No circuit change. Comment added: `3V3_MAIN` is used on 01 and 02 as well as 04, 07, 09 and 15 (contract §4) | — |
+
+Sheet 01 now has 38 parts (36 plus D101 and R117); 02 and 03 stay at 42 and 64. D101 uses WP-D's
+`aed_logic:BAS116LT1G` symbol unchanged (pin 1 A, pin 3 K, pin 2 NC, from onsemi BAS116LT1/D Rev 14), so
+`aed_power.toml` needed no new symbol.
+
+### Arithmetic
+
+- **R111 (A-2).** The change order's figure: with the diode fitted, 118 kΩ gave 255.5 ms [SIM logic-relay §4.3].
+  On-time scales with R111, so 255.5 × 78.7 / 118 = 170 ms [CALC]. My check run (below) gave **133.6 / 174.7 /
+  220.9 ms** with C108 at ×0.765 / ×1.000 / ×1.265 (10 % tolerance plus 15 % X7R change over temperature) [SIM].
+  Adding the comparator offset (±8 mV on a decay margin of about 1.73 − 0.8 = 0.9 V, so about ±1 %) and 1 % resistors
+  gives about **131–224 ms** [CALC]. That is under the contract's 250 ms and above the 100 ms firmware pulse (FW-19).
+  The top is 4 ms above the old 220 ms band. Pulse energy at 224 ms is 43 W × 0.224 s = 9.6 J per load resistor,
+  still beyond the Bourns graph (an existing doubt, unchanged).
+- **R117.** 4.7 MΩ × 2.2 µF = 10.3 s, the slow return of `LT_NODE` to 0 V after a falling edge.
+- **R112 (departure).** The TLV7031 inputs are diode-clamped to V− (SLVSE13J §6.4.1). After each falling edge
+  `LT_NODE` sits at about −3 V, and the clamp feeds current back into C108 through R112. With the change order's
+  100 kΩ that is 2.8 V / 100 kΩ = 28 µA. During each high half-cycle D101 + R111 (78.7 kΩ, a similar resistance) take
+  about the same charge back out. The two balance, so the timer re-arms on every cycle. With 4.7 MΩ the return
+  current is 2.8 V / 4.7 MΩ = 0.6 µA, 60 times weaker than the R111 path. Input bias is 2 pA typical and doubles every
+  10 °C, so about 0.13 nA at 85 °C; across 4.7 MΩ that is 0.6 mV, negligible against the 160 mV hysteresis step
+  [CALC]. The input-clamp current is at most 0.6 µA, far below the 10 mA absolute maximum.
+- **Check run.** Behavioural ngspice on a scratch netlist built from `sim/logic-relay/battery.cir` and its models,
+  plus an ideal input-clamp diode (IS = 1e-14) at the comparator's + input. Not committed, because `sim/` is not
+  WP-A's. Figures are average resistor power over 20–30 s, after a 4 s settle [SIM]:
+
+  | R112 | Clamp modelled | 0.2 Hz | 0.5 Hz | 1 Hz | 2 Hz | 4 Hz | 10 Hz | 100 Hz |
+  |---|---|---|---|---|---|---|---|---|
+  | 100 kΩ | no (as logic-relay) | — | 0 | 0 | 0 | 0 | 0 | 0 |
+  | 100 kΩ | yes | — | 3.4–4.2 W | 3.8–7.9 W | ≤ 13.9 W | 10.9–14.5 W | 10.1–14.5 W | 14.5 W (25 %) |
+  | 1 MΩ | yes | 1.0–1.5 W | ≤ 2.5 W | ≤ 3.2 W | ≤ 4.0 W | ≤ 5.5 W | ≤ 5.8 W | — |
+  | **4.7 MΩ** | yes | **≤ 0.77 W** | **≤ 0.01 W** | **0** | **0** | **0** | **0** | — |
+
+  Duties run: 25/50/75 % for 100 kΩ, 10/25/50 % for 1 MΩ and 4.7 MΩ. Ranges are over the duties run. The stuck-high
+  on-time is the same with 100 kΩ and 4.7 MΩ (174.65 ms). Issue 2 as drawn gave 14.5–22.7 W [SIM logic-relay §4.3].
+- **A-4 protector settings** (MAX17320 datasheet 19-100749 Rev 12, 7/25: nODSCTh, nODSCCfg and nBalTh tables; 2 mΩ
+  sense resistor):
+  - `nODSCTh.ODTH` = 3: −77.5 + 3 × 2.5 = −70 mV = **35 A** nominal. With the OC/OD/SC comparator's ±1.2 mV offset
+    and ±5 % gain error (EC table) the threshold is 65.3–74.7 mV = **32.6–37.4 A**. `nODSCCfg.OCDLY` = 5: 70 µs +
+    5 × 977 µs = **4.96 ms**. The rule "≥ 35 A **or** ≥ 1 ms" is met by the delay (4.96 ms is far longer than the
+    charger eFuse's 30 A / 0.48 ms), not by the threshold alone (whose minimum is 32.6 A).
+  - `nODSCTh.SCTH` = 5: −155 + 5 × 5 = −130 mV = 65 A; with the same errors 122.3–137.7 mV = **61.2–68.9 A**
+    (≥ 60 A). `SCDLY` = 2: 70 + 2 × 61 = 192 µs (plus up to 31 µs), ≥ 100 µs.
+  - `nConfig.COMMSH` = 0. Per the datasheet, with COMMSH = 1 the part shuts down when SDA and SCL are both held low.
+  - `nBalTh.BALCFG` = 0. Table 21: "When set to 0, cell balancing is disabled". The BQ25887 balancer (CBSET, R208) is
+    the one kept, as the change order recommends. `nBalTh.Imbalance` (a charge fault on cell imbalance, 10 mV LSB) is
+    a protection, not a balancer, and may stay enabled; its value is a firmware/configuration choice.
+- **`VBAT_MID` reference offset.** The mid-point is measured from the pack negative (BAT_NEG), but U201's ground is
+  system GND, on the other side of R101. The offset is the R101 drop: 9.2 A × 2 mΩ = 18 mV average, 42 mV at the 21 A
+  peaks, and about 4 mV while only charging [CALC]. Small against a 4.2 V cell, but real.
+
+### Datasheets consulted this round
+
+| Part | Document | Status |
+|---|---|---|
+| BAS116LT1G (D101) | onsemi BAS116LT1/D **Rev 14, October 2026** (onsemi.com PDF): VR 75 V; IR ≤ 5 nA at 75 V / 25 °C, 80 nA at 150 °C; VF ≤ 0.9 V at 1 mA; SOT-23 style 8 (1 A, 3 K) | read |
+| TLV7031 (U102) | TI **SLVSE13J** (September 2017, revised November 2024): inputs diode-clamped to V−; input current ±10 mA absolute maximum; "no phase inversion" beyond the rails (§6.4.1); IB 2 pA typical; VOS ±8 mV; hysteresis | read |
+| MAX17320 (U101 configuration) | ADI **19-100749 Rev 12, 7/25**, from a copy of the maker's PDF already on this machine (analog.com timed out again): nBalTh Table 21, nODSCTh Tables 22–23, nODSCCfg Table 24, comparator EC rows, nConfig.COMMSH; PCKP removal test 30 µA (typical only); release at 1 V (removal detection) and 1.5 V (SCTest SCDet) | read. **Note:** the change order and the design document cite Rev 5. Rev 12 says the same about PCKP (no minimum) |
+| BQ25887 (U201 MID/CBSET) | TI SLUSD89B | **not re-opened this round**; MID and CBSET used as read for issue 2 |
+
+### Problems with the change order (for the design authority)
+
+1. **A-2: R112 = 100 kΩ does not work with the real comparator.** The logic-relay model of the TLV7031 has no input
+   clamp, so its results ("LT_NODE sits at up to −3.3 V for seconds", 1.8–2.2 W) are optimistic. With the clamp that
+   the datasheet describes, 100 kΩ gives 10–14.5 W at 4–100 Hz [SIM, WP-A check run], as bad as issue 2.
+   **Drawn: 4.7 MΩ.** Second-round item S-6 should add the input clamp and settle the value.
+2. **A-2 band.** 131–224 ms, a little above the issue-2 band (124–220 ms) but within the contract's 250 ms.
+3. **A-4.** Once the comparator error is included, the over-discharge threshold alone is not ≥ 35 A (32.6 A minimum).
+   The requirement is met by the 4.96 ms delay instead. Source revision: Rev 12 (7/25), not Rev 5.
+4. **A-1.** `VBAT_MID` carries the R101 drop as an offset (up to 42 mV, see above).
+
+### Failure modes of the new and changed parts
+
+| Part | Fault | Effect | Detected? |
+|---|---|---|---|
+| D101 | open | `LT_NODE` decays only through R117, so a stuck-high `BAT_LOAD_EN` holds the load on for about 4.7 MΩ × 2.2 µF × ln(3.3/1.73) ≈ **6.7 s** [CALC] (86 W, about 290 J per resistor): the resistors overheat. Better than issue 2's open-R111 case (no limit at all), but still bad | No; only a stuck command exposes it. Firmware's ≤ 100 ms pulse (FW-19) avoids it |
+| D101 | short | Back to the issue-2 circuit with 78.7 kΩ: stuck-high limit about 0.647 × 173 ms ≈ 112 ms nominal; toggling protection lost | Latent |
+| R111 | open | Same as D101 open | Same as D101 open |
+| R117 | open | The node returns from negative only through R112 and the clamp (similar time constant): no functional change | Latent, harmless |
+| R117 | short | `LT_NODE` held at 0 V: the load never switches on | Yes: the load test shows no sag |
+| R112 | open | Comparator + input floats (as in issue 2): output undefined, the load could stay on | No. Existing risk; a high-value pull-down on `LT_IN` would close it (not drawn, not in the change order) |
+| R112 | short | The clamp takes the full −3.3 V step, limited only by the `BAT_LOAD_EN` driver (may briefly exceed 10 mA); toggling protection lost | Latent |
+| `VBAT_MID` | open between 01 and 02 | The charger loses per-cell regulation (back to issue 2's state); the MAX17320 still sees both cells and still protects | Gauge cell voltages in firmware |
+| `VBAT_MID` | short to GND / `VBAT_PACK` | Bottom or top cell shorted through R207 300 Ω / R208 100 Ω (≤ 42 mA) and R106 100 Ω | Gauge cell-imbalance and cell voltages |
+
+### Still to be simulated or measured
+
+- S-6 with a TLV7031 input-clamp model: the on-time band, and toggling power with R112 at 100 kΩ versus 4.7 MΩ.
+  Also the BAS116 forward voltage at 10–30 µA over −20 to 85 °C (not in the datasheet table; only the Figure 2 curve).
+- C108 X7R loss at 3.3 V DC bias (old [EST] about 10 %), which moves the bottom of the band toward about 120 ms.
+- The MAX17320 minimum PCKP test current (from ADI; design O-5) and the comparator threshold over temperature.
+- BQ25887 behaviour with the `VBAT_MID` offset during high-current discharge (it is not charging then, but MID is
+  still sensed).
+
+### Build result (revision 0.3)
+
+`bash tools/build.sh` in this worktree, 27 November 2026, first run: 73 unit tests OK; ERC 0 errors, 21 accepted
+warnings, 0 unaccepted; **netlist round trip exact: 719 nets, 3,673 pin connections**; PDF written; symbol-library
+lint 0 errors. `python3 tools/xcheck.py`: `VBAT_MID` is on 01 and 02; the `3V3_MAIN` users are 01, 02, 03, 04, 07, 09
+and 15, matching contract §4. No WP-A net is single-ended. The whole-design PDFs were regenerated but are left out of
+this commit because they also contain every other package's sheets.

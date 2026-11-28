@@ -1,0 +1,87 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+* S-4 (rev3-changes.md S-3, WP-G task 4): the low-side supply monitor LSD_OK as drawn on sheet 13 rev 0.3 —
+* R1360 100 k / R1361 12.1 k / C1343 100 pF (tau 1.08 us) from LSD_P20V, threshold R1362 80.6 k / R1363 100 k
+* from BRIDGE_3V3 (1.827 V -> 16.93 V nominal; band 'vtrip' 16.45-17.35 V, see notes.md), TLV7031 (SLVSE13J:
+* offset +-8 mV, hysteresis 2-17 mV, 3 us at 100 mV overdrive -> 'tlsd' swept 3-10 us for slow ramps).
+* LSD_OK low -> sheet 12 (WP-D D-9) RAIL_OK low -> SEQ_UV -> fault latch -> low sides off at once, high sides
+* after RUN_D20 (20.2 us; a rail fault is not a kill-latch cause).
+* Event during phase 1 (QHA + QLB conducting) at tev, as ../bridge/q4 mode 2 (MGJ2 output alone collapses,
+* BRIDGE_5V stays), plus mode 4: the MGJ2 output sags to kend x its value in tlsf and STAYS there (a partly
+* failed converter: the case where the low side would run partly on for the rest of the phase).
+* mon = 0 removes the monitor (as drawn in rev 0.2) for comparison.
+.include wpg_common.inc
+.param v0=1950 rp=25 t1=3m mode=2 tev=1.3m tlsf=1m kend=0 thoff=20.2u tc=55 mon=1 vtrip=16.45 tlsd=3u
+.param ths=200u
+Vgnd0 rtn 0 0
+Cmain capi rtn 100u
+Vchg vchg 0 {v0*1.0005}
+Rchg vchg capi 10k
+XB capi rtn oa ob gha ghb gla glb lss kn tjha tjla tjhb tjlb bus isn capp fm hbridge3 params: tc={tc}
+XP oa ob patient params: rp={rp} lpat=1.5u
+Vb5 b5v 0 5
+* MGJ2 rail factor k(t): falls from 1 to kend in tlsf after tev (mode 2: kend = 0)
+Vk kf 0 PWL(0 1 {tev} 1 {tev+tlsf} {mode==2 ? 0 : kend})
+Bpos vp lss V = 20.7*V(kf)
+Bneg vn lss V = -5*V(kf)
+Vcha cha0 0 PWL(0 0 {ths+2u} 0 {ths+2u+20n} 1)
+Vclb clb0 0 PWL(0 0 {ths+100u} 0 {ths+100u+20n} 1 {ths+100u+t1} 1 {ths+100u+t1+20n} 0)
+* LSD_OK monitor: divider + 100 pF referred to GND (rtn); comparator modelled as a threshold on the
+* divided node with a transport delay tlsd
+Rm1 vp lsns 100k
+Rm2 lsns 0 12.1k
+Cm lsns 0 100p
+Bm lm0 0 V = 0.5*(1+tanh(500*({vtrip}*12.1/112.1 - V(lsns))))*{mon}
+Tm lm0 0 lmd 0 Z0=50 TD={tlsd}
+Rmd lmd 0 50
+Bset 0 fl I = 2m*min(max(V(lmd),0),1) + 5m*0.5*(1+tanh(50*(V(fl)-0.2)))
+Cfl fl 0 10p
+.ic v(fl)=0
+Rfl fl 0 1e9
+Dfl fl one dclamp
+Vone one 0 1
+.model dclamp d (is=1e-12 n=1)
+Bfl fla 0 V = min(max(V(fl),0),1)
+Efb fldb 0 fla 0 1
+Tl2 fldb 0 flh 0 Z0=50 TD={thoff}
+Rl2 flh 0 50
+Bcha cha 0 V = min(max(V(cha0),0),1) * (1 - min(max(V(flh),0),1))
+Bclb clb 0 V = min(max(V(clb0),0),1) * (1 - min(max(V(fla),0),1))
+Vcla cla 0 0
+Vchb chb 0 0
+XDLA cla vp vn gla lss lsdrv
+XDLB clb vp vn glb lss lsdrv
+XDHA cha b5v gha oa hsdrv
+XDHB chb b5v ghb ob hsdrv
+.options method=trap reltol=1e-3 abstol=1e-6 vntol=1e-4 itl4=100
+.control
+set noaskquit
+let tstop_req = 3.3e-3
+tran 20n 3.3m 1.25m 200n
+let ilb = v.xb.vmlb#branch
+let vlb = v(xb.dlb)-v(lss)
+let plb = vlb*ilb
+meas tran elb integ plb from=1.3m
+meas tran tjlb max tjlb
+meas tran tfl when v(fl)=0.5 rise=1
+let vr = v(vp)-v(lss)
+meas tran vrail find vr at=tfl
+let vgs = v(glb)-v(lss)
+meas tran vgfl find vgs at=tfl
+meas tran tlb when vlb=500 td=1.3m rise=1
+let linl = (vlb gt 100) * (ilb gt 2)
+meas tran ll integ linl from=1.3m
+* 'partly on': VDS above 20 V while carrying > 2 A (normal conduction at 65 A, hot: <= 13 V)
+let ohm = (vlb gt 20) * (ilb gt 2)
+meas tran lp integ ohm from=1.3m
+let elm = elb*1000
+let tfus = (tfl-1.3e-3)*1e6
+let tlus = (tlb-1.3e-3)*1e6
+let dtb = tlus-tfus
+let llus = ll*1e6
+let lpus = lp*1e6
+let n = length(time)-1
+let te = time[n]
+echo "RESULT CASE_LABEL | LSD_OK trip after event=$&tfus us at rail=$&vrail V, QLB Vgs=$&vgfl V | QLB blocks at $&tlus us (trip->block $&dtb us) | QLB at >2A (partly on, VDS>20V)=$&lpus us, >100V (linear)=$&llus us | E_QLB=$&elm mJ | Tj_QLB=$&tjlb C | t_end=$&te of $&tstop_req"
+.endc
+.end

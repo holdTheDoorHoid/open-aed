@@ -192,7 +192,10 @@ fn indeterminate_never_leads_to_a_countdown_or_a_shock() {
     assert_eq!(b.board.requests.len(), 0);
     assert_eq!(b.shocks_fired(), 0);
     // "Not sure" for ever ends each analysis as inconclusive, never as a shock.
-    assert!(b.board.prompts_only().contains(&Prompt::AnalysisInconclusive));
+    assert!(b
+        .board
+        .prompts_only()
+        .contains(&Prompt::AnalysisInconclusive));
     assert!(!b.board.prompts_only().contains(&Prompt::NoShockAdvised));
 }
 
@@ -209,10 +212,17 @@ fn non_shockable_goes_to_cpr_at_once_and_the_charge_is_burned_off() {
     // "No shock advised" and "Start CPR" at the same moment: the device does
     // not wait for the capacitor to empty before telling the responder.
     let p = &b.board.prompts;
-    let no_shock = p.iter().find(|&&(_, x)| x == Prompt::NoShockAdvised).unwrap().0;
+    let no_shock = p
+        .iter()
+        .find(|&&(_, x)| x == Prompt::NoShockAdvised)
+        .unwrap()
+        .0;
     let cpr = p.iter().find(|&&(_, x)| x == Prompt::StartCpr).unwrap().0;
     assert_eq!(no_shock, cpr);
-    assert!(b.board.cap_v > 50.0, "the charge from the analysis is still there");
+    assert!(
+        b.board.cap_v > 50.0,
+        "the charge from the analysis is still there"
+    );
     assert!(!b.board.main_hold && b.board.charger.is_none());
     assert!(b.run_until(b.config.disarm_time_limit_ms, |b| !b.rescue.emptying()));
     assert!(b.board.cap_v < 50.0);
@@ -228,7 +238,11 @@ fn only_shockable_can_lead_to_a_countdown() {
         b.run_ms(30_000);
         let counted = b.state_sequence().contains(&S::Countdown);
         assert_eq!(counted, rhythm == SHOCKABLE, "rhythm {rhythm:?}");
-        assert_eq!(!b.board.requests.is_empty(), rhythm == SHOCKABLE, "rhythm {rhythm:?}");
+        assert_eq!(
+            !b.board.requests.is_empty(),
+            rhythm == SHOCKABLE,
+            "rhythm {rhythm:?}"
+        );
     }
 }
 
@@ -289,7 +303,11 @@ fn not_sure_during_analysis_is_not_final_and_a_later_shockable_charges() {
     b.run_to_analysing();
     run_decisions(&mut b, 2);
     b.run_ms(10);
-    assert_eq!(b.state(), S::AnalysingCharging, "two 'not sure' answers must not end the analysis");
+    assert_eq!(
+        b.state(),
+        S::AnalysingCharging,
+        "two 'not sure' answers must not end the analysis"
+    );
     assert!(!b.board.prompts_only().contains(&Prompt::NoShockAdvised));
     b.board.rhythm = SHOCKABLE;
     reach(&mut b, S::Charging, 3_000);
@@ -315,7 +333,10 @@ fn not_sure_during_analysis_repeats_hands_off_prompt_at_most_every_reminder_inte
         .filter(|&&(t, p)| p == Prompt::DoNotTouchPatient && t >= entered)
         .map(|&(t, _)| t)
         .collect();
-    assert!(times.len() >= 2, "reminder should repeat during a long analysis: {times:?}");
+    assert!(
+        times.len() >= 2,
+        "reminder should repeat during a long analysis: {times:?}"
+    );
     for w in times.windows(2) {
         assert!(
             w[1] - w[0] >= b.config.hands_off_reminder_ms,
@@ -333,12 +354,18 @@ fn not_sure_for_the_whole_analysis_goes_to_cpr_at_the_limit_as_inconclusive() {
     reach(&mut b, S::Cpr, 60_000);
     let took = b.board.now - start;
     let limit = b.config.analysis_time_limit_ms;
-    assert!((limit..=limit + 10).contains(&took), "analysis lasted {took} ms");
+    assert!(
+        (limit..=limit + 10).contains(&took),
+        "analysis lasted {took} ms"
+    );
     assert!(b.has_event(|e| *e == Event::AnalysisInconclusive));
     assert!(!b.has_event(|e| *e == Event::AnalysisTimedOut));
     // The responder is told, then told to start CPR, at the same moment.
     let p = b.board.prompts_only();
-    let i = p.iter().position(|&x| x == Prompt::AnalysisInconclusive).unwrap();
+    let i = p
+        .iter()
+        .position(|&x| x == Prompt::AnalysisInconclusive)
+        .unwrap();
     assert_eq!(p.get(i + 1), Some(&Prompt::StartCpr));
     assert!(!b.state_sequence().contains(&S::Charging));
     assert!(!b.state_sequence().contains(&S::Countdown));
@@ -379,7 +406,7 @@ fn not_sure_during_countdown_still_aborts_the_shock() {
 #[test]
 fn analysis_timeout_counts_as_not_sure_and_goes_to_cpr() {
     // Analyser that never decides within the time limit.
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 1_000_000);
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 1_000_000);
     b.board.rhythm = SHOCKABLE;
     b.run_to_analysing();
     let start = b.board.now;
@@ -463,7 +490,7 @@ fn stale_confirmation_at_delivery_gives_no_shock() {
         analysis_time_limit_ms: 20_000,
         max_charged_ms: 30_000,
         confirmation_max_age_ms: 2_000,
-        ..Config::default()
+        ..super::cfg()
     };
     let mut b = Bench::with_all(config, FakePlanner::default(), 250 * 15);
     b.board.rhythm = SHOCKABLE;
@@ -538,7 +565,7 @@ fn plan_voltage_that_does_not_match_the_charge_is_a_fault() {
         plan_voltage_override: Some(1500),
         ..FakePlanner::default()
     };
-    let mut b = Bench::with(Config::default(), planner);
+    let mut b = Bench::with(super::cfg(), planner);
     reach(&mut b, S::Fault, 60_000);
     assert_eq!(b.rescue.fault(), Some(FaultKind::PlanMismatch));
     assert_eq!(b.shocks_fired(), 0);
@@ -551,7 +578,7 @@ fn planner_charge_voltage_above_overvoltage_limit_is_a_fault() {
         adult_v: 2_500,
         ..FakePlanner::default()
     };
-    let mut b = Bench::with(Config::default(), planner);
+    let mut b = Bench::with(super::cfg(), planner);
     reach(&mut b, S::Fault, 60_000);
     assert_eq!(b.rescue.fault(), Some(FaultKind::PlanMismatch));
     assert!(!b.state_sequence().contains(&S::Charging));
@@ -587,7 +614,7 @@ fn pads_removed_during_charging_aborts() {
 
 #[test]
 fn pads_off_during_analysis_goes_to_attach_pads() {
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 2_500);
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 2_500);
     b.run_to_analysing();
     b.board.pad_ohms = 2_000;
     reach(&mut b, S::AttachPads, 1_000);
@@ -611,7 +638,7 @@ fn pads_off_during_cpr_goes_to_attach_pads_and_reattaching_reanalyses() {
 
 #[test]
 fn pad_glitch_shorter_than_debounce_is_ignored_during_analysis() {
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 2_500);
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 2_500);
     b.run_to_analysing();
     b.board.pad_ohms = 2_000;
     b.run_ms(100);
@@ -669,7 +696,7 @@ fn cancel_during_charging_empties_capacitor() {
 
 #[test]
 fn cancel_during_analysis_goes_to_cpr_and_empties_the_capacitor() {
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 2_500);
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 2_500);
     b.run_to_analysing();
     b.run_ms(3_000); // part-charged by now
     assert!(b.board.cap_v > 300.0);
@@ -815,7 +842,7 @@ fn cpr_metronome_runs_at_configured_rate_and_cpr_lasts_its_period() {
         .copied()
         .filter(|&t| t >= start)
         .collect();
-    let interval = Config::default().metronome_interval_ms(); // 545 ms at 110/min
+    let interval = super::cfg().metronome_interval_ms(); // 545 ms at 110/min
     for w in beats.windows(2) {
         let gap = w[1] - w[0];
         assert!(gap.abs_diff(interval) <= 2, "beat gap {gap} ms");
@@ -910,7 +937,9 @@ fn fault_cases() -> Vec<FaultCase> {
             name: "the two voltage readings disagree while charged",
             setup: |b| {
                 b.run_to_countdown();
-                b.board.sup_v_offset = 300;
+                // 100 V: beyond the two-sensor allowance (63 V at 1,950 V) but
+                // below the 2,070 V over-voltage limit (FW-10).
+                b.board.sup_v_offset = 100;
             },
             expect: FaultKind::Supervisor(SupervisorFault::VoltageDisagreement),
         },
@@ -1011,10 +1040,7 @@ fn emptying_is_confirmed_or_faulted_within_its_limit() {
     let start = b.board.now;
     reach(&mut b, S::Fault, 10_000);
     let took = b.board.now - start;
-    assert!(
-        took <= Config::default().disarm_time_limit_ms + 4,
-        "{took} ms"
-    );
+    assert!(took <= super::cfg().disarm_time_limit_ms + 4, "{took} ms");
 }
 
 #[test]
@@ -1059,7 +1085,7 @@ fn charging_never_lasts_longer_than_its_limit() {
     reach(&mut b, S::Fault, 20_000);
     let took = b.board.now - start;
     assert!(
-        took <= Config::default().charge_time_limit_ms + 4,
+        took <= super::cfg().charge_time_limit_ms + 4,
         "charging lasted {took} ms"
     );
     assert_eq!(b.rescue.fault(), Some(FaultKind::ChargeTimeout));

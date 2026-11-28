@@ -13,6 +13,130 @@ errors; every accepted ERC finding is listed with its reason in the two specs (�
 Tags as in the design document: **[CALC]** arithmetic shown, **[EST]** estimate with its basis, **[UNVERIFIED]**
 looked for and not confirmed.
 
+Revised 27 November 2026 to design revision 0.3 / contract issue 3: see the next section. Sections 1–13 below
+describe the issue-2 capture; where they disagree with "Revision 0.3", the revision section wins.
+
+---
+
+## Revision 0.3 (contract issue 3, change order `rev3-changes.md` section WP-B)
+
+### In plain language
+
+Revision 0.3 gives the two controllers five new wires and nothing else changes on these two sheets.
+
+- The **main controller** gets one new output, `K_SUPPLY_EN`, which switches on the patient relay's coil supply a
+  fraction of a second before the relay is needed (so the battery is not hit with a 9 A surge). It also gets two new
+  inputs, `HOLD_RB_A2_N` and `HOLD_RB_B2_N`, so that its self-test can read the new second "held" sensor on each of
+  the two capacitor-emptying paths separately. Each new input has a resistor that makes a broken or unconnected wire
+  read "not held".
+- The **supervisor** gets two new outputs to the over-voltage alarm, which now stays tripped until it is reset:
+  `OVP_RST` (a short pulse resets it) and `OVP_TEST` (holding it high forces a trip, so the self-test can prove the
+  alarm works at low voltage).
+- One thing the change order did not ask for: the reset wire feeds a capacitor on the other sheet, and switching a
+  bare controller pin straight into a capacitor can briefly draw more current than the pin is rated for. I put a
+  small 220 Ω resistor in series on the supervisor sheet. The wire's name, direction and meaning are unchanged, but
+  the reset pulse now has to be at least 0.1 ms long instead of 10 µs. The design authority should confirm (P-1).
+- The shock-current reading keeps its filter; only its scale (24.0 mV per amp) is written on the sheet.
+
+Every new pin was checked in the controller datasheets: what it can do, which supply it belongs to, and what it does
+while the chip is held in reset (it floats, so the resistor on the far sheet holds the line in its safe state).
+
+### Changes applied
+
+| # | Sheet | What | Designators and pins |
+|---|---|---|---|
+| B-1 | 04 | New output `K_SUPPLY_EN` (push-pull GPIO on 3V3_MAIN; default 100 kΩ to GND is on 14) | **U401 pin 123, PD7** |
+| B-2 | 04 | New inputs `HOLD_RB_A2_N`, `HOLD_RB_B2_N` with 100 kΩ pull-ups to 3V3_MAIN | **U401 pin 56, PG0** and **pin 57, PG1**; **R431** (`HOLD_RB_A2_N`–3V3_MAIN), **R432** (`HOLD_RB_B2_N`–3V3_MAIN), Yageo RC0603FR-07100KL |
+| B-3 | 05 | New outputs `OVP_RST`, `OVP_TEST` (push-pull GPIO on 3V3_SUP; defaults on 08) | `OVP_TEST`: **U501 pin 37, P3_13**. `OVP_RST`: **U501 pin 38, P3_12** → local `OVP_RST_S` → **R518 220 Ω** (Yageo RC0603FR-07220RL, as R513) → `OVP_RST` (departure, P-1) |
+| B-4 | 04, 05 | Pin totals updated (below) | — |
+| B-5 | 04 | `I_SHOCK` RC (R423 1 kΩ, C432 4.7 nF) unchanged; group note now states 24.0 mV/A, ≤ 3.20 V saturated, full scale 3.20 / 0.024 = 133 A [CALC] | R423, C432 |
+| B-6 | 05 | Piezo LS501 unchanged (Q-55 open) | LS501 |
+| — | 04, 05 | Header and `source` lines now cite design v0.3 and contract issue 3; one accepted ERC warning per sheet for the new labels whose far end is not yet drawn (below) | — |
+
+The three new main-sheet nets and the two supervisor nets are added to each sheet's `global` list under exactly the
+contract names. No net was renamed. `hardware/lib/src/aed_mcu.toml` needed no change (no new custom symbol).
+
+### Pin checks against the datasheets
+
+| Net (contract need) | Pin | Datasheet facts | Fits? |
+|---|---|---|---|
+| `K_SUPPLY_EN`: 3.3 V push-pull out; low = safe; must not drive during reset | PD7 (123) | DS13086 Table 27: I/O, **FT_h**, alternate functions incl. USART2_CK, OCTOSPIM_P1_IO7, SDMMC2_CMD, FMC_NE1, LPTIM4_OUT; **no "(boot)" marking**, so the bootloader never drives it. Reset: analog mode, high-Z, no pull (§3.13) → R1421 100 kΩ on 14 holds it low = coil supply off. Load on 14: R1403 1 kΩ into a FET gate plus 2 × 100 kΩ, ≤ 3.3 mA peak [CALC] | yes |
+| `HOLD_RB_A2_N`, `HOLD_RB_B2_N`: inputs from open-drain outputs on 09, pulled up here; open = not held | PG0 (56), PG1 (57) | Table 27: I/O, **FT_ha** (ADC4_IN7/IN8 as extra functions), no boot role. power-supply section: "VDDIO2 is the external power supply for 14 I/Os (port G[15:2])", so **PG0/PG1 are on VDD**, not VDDIO2 (irrelevant here because VDDIO2 is tied to 3V3_MAIN, but it means these pins work even if VDDIO2 were separated). Reset: analog, high-Z → R431/R432 read "not held". Line never exceeds 3V3_MAIN (pull-up there), so FT tolerance is not relied on. EXTI0/EXTI1 are shared with PA0/PB1, so these two are polled inputs, not interrupts (the self-test reads them) | yes |
+| `OVP_TEST`: 3.3 V push-pull level; low = no injection | P3_13 (37) | NXP Table 41: ALT0 GPIO (also LPUART2_CTS_B, CT1_MAT3, PWM0_X1), IO supply VDD, pad SLOW, **Default DIS** (input buffer disabled), no ISP function. Not 5 V tolerant (datasheet note: only P3_27, P3_28 are 5 V tolerant); the line is 3V3_SUP-only. 100 kΩ on 08 holds it low during reset. Load 22 kΩ + diode ≤ 0.12 mA [CALC] | yes |
+| `OVP_RST`: rising edge = reset; low at rest; edge ≥ 10 µs per contract §10 | P3_12 (38) | Table 41: ALT0 GPIO (also LPUART2_RTS_B, CT1_MAT2, PWM0_X0), IO supply VDD, pad SLOW, **Default DIS**, no ISP function. Table 8: single digital output pin limit **±25 mA**. Table 11: VOL ≤ 0.5 V at 4 mA (normal drive). Driving 100 nF directly → see P-1; fitted R518 | yes, with R518 |
+
+"Default DIS" says the input buffer is off; that the output driver is also off from reset (port direction = input)
+is the usual GPIO reset value but comes from the reference manual, which I did not open **[UNVERIFIED]**. The
+safe state does not depend on it being driven: every one of the four new outputs has its 100 kΩ pull-down on the far
+sheet. The STM32's "all GPIOs in analog mode after reset" is DS13086 §3.13 (read for the issue-2 capture).
+
+Not used, and why: P1_8/P1_9 on the supervisor are listed in Table 41 with ISP I²C functions; a table note says the
+SPI and I²C ISP interfaces are "not available in MCXA14x and MCXA15x", so they would have been usable, but P3_12/P3_13
+sit next to the other sheet-08 pins (P3_9–P3_11). (The same note means the existing `SBZ_*` pins P1_0–P1_3, listed
+with ISP SPI functions, have no boot role on the A153 either.) On the main, PE8/PE10/PE12 were avoided because they
+are TIM1 complementary outputs next to the phase commands; the bootloader pins (PA9/PA10, PC10/PC11, PB12–PB15 …)
+stay unused.
+
+### Datasheets consulted for this revision
+
+| Document | Revision | Status |
+|---|---|---|
+| ST DS13086, STM32U585xx datasheet | **Rev 10, July 2024** | opened (local copy of the PDF fetched for the issue-2 capture; Table 27 rows for PD7, PG0, PG1 and the VDDIO2 supply paragraph re-read for this revision). A fresh fetch from st.com timed out twice |
+| NXP MCXAP064M096F30, MCX A13x/14x/15x data sheet | **Rev. 5.2, 26 May 2026** | opened (fetched again; Table 41 rows P3_12, P3_13, P1_8, P1_9 and notes; Table 8; Table 11) |
+| NXP MCX A reference manual (GPIO/PORT reset values) | — | **not opened [UNVERIFIED]** |
+| TI SN74LVC2G07 (U935 on 09, drives `HOLD_RB_*2_N`) | — | not opened by me; WP-D's part. Open-drain output, so a pull-up to 3V3_MAIN only is the contract's arrangement |
+
+### Pin use after revision 0.3
+
+| | Main U401 STM32U585ZIT6 | Supervisor U501 MCXA153VLH |
+|---|---:|---:|
+| Contract signal pins | 70 + 3 = **73** | 22 + 2 = **24** |
+| Other port pins (SWD 3, crystals, boot strap; supervisor also RESET_B) | 8 | 7 |
+| Port pins used / available | **81 of 114** | **31 of 52** |
+| Spare | 33 | 21 |
+| Parts on the sheet | 76 (+R431, R432) | 40 (+R518) |
+
+The change order (B-4) gives "73 + 6 = 79 of 114" and "24 + 4 = 28 of 52"; those use the design document's own
+count of non-signal pins (§B2.2). Counting every port pin that is not left unconnected gives the figures above; both
+agree on the signal-pin counts.
+
+Spare main pins: PC13, PC2, PC3, PA1–PA8, PE8, PE10, PE12, PB10, PB12–PB15, PA9–PA12, PA15, PC10, PC11, PD2, PB4–PB9
+(several are bootloader or debug pins: see §4). Spare supervisor pins: P1_7–P1_9, P2_1, P2_2, P2_7, P2_12, P2_13,
+P2_16, P3_27, P3_28, P3_30, P3_31, P3_8, P3_1, P0_3, P0_6, P0_16, P0_17, P1_5, P1_6.
+
+### Problems found with the change order
+
+- **P-1 (`OVP_RST` drive current; departure, needs the design authority).** On 08 (rev3 C-3) `OVP_RST` drives
+  C812 100 nF directly, AC-coupled into the BSS138 gate. With nothing in series, the first instant of each edge is
+  limited only by the pin's output resistance: Table 11 guarantees VOL ≤ 0.5 V at 4 mA (≈ 125 Ω at that point, and
+  typically lower), which allows a peak above the **25 mA single-pin limit** of Table 8 [CALC: 3.3 V / 125 Ω = 26 mA,
+  more for a stronger pin]. I added **R518 220 Ω** on 05 between the pin and the `OVP_RST` label: peak ≤ 15 mA
+  [CALC]. Cost: the edge into C812 now has τ = 22 µs, so a reset pulse must be **≥ 100 µs** (4.5 τ, gate ≥ 3.2 V;
+  BSS138 V_GS(th) 0.8–1.5 V [BK, onsemi datasheet not re-read by me]) instead of the contract §10 "pulse ≥ 10 µs". FW-17 should state a
+  pulse of ≥ 1 ms [EST: ample margin, still ≪ the 10 ms R809·C812 decay]. Net name, direction, level and default are
+  unchanged. Alternative the design authority may prefer: put the series resistor on 08 with WP-C.
+- **P-2 (minor).** The change order specifies R431/R432 as 0402; I used 0603, the same part as the sensor-1 pull-ups
+  R408/R409, so no new part number is introduced.
+- **P-3 (to note).** "VDDA min 3.26 V" in B-5 is the simulation notes' figure for the 3.3 V regulator's low limit
+  (LR §5.1), not a datasheet limit of the STM32; the ADC simply reads full scale above VREF+ = VDDA. The 3.20 V
+  saturated level stays below it [SIM, LR §5.1].
+- **Single-ended nets until the other sheets are revised (expected):** `K_SUPPLY_EN` (other end on 14),
+  `OVP_RST`, `OVP_TEST` (08) appear on one sheet only and carry one accepted ERC `isolated_pin_label` warning each;
+  `HOLD_RB_A2_N`, `HOLD_RB_B2_N` (09) are single-sheet in `tools/xcheck.py` but meet two pins here (U401 + pull-up),
+  so ERC is silent. Remove the two `erc_accepted` entries once 08 and 14 are at revision 0.3.
+
+### Still needs simulation or measurement
+
+1. The `OVP_RST` edge through R518 into C812/R809 and the BSS138 (WP-C's S-10 netlist): minimum pulse length that
+   clears the latch at −20 °C with the BSS138's highest threshold.
+2. The pin's real short-circuit/edge current (not in the NXP datasheet; Table 11 gives only guaranteed points).
+3. `K_SUPPLY_EN` timing ≥ 0.2 s before `RELAY_CMD` is a firmware rule (FW-12); nothing on 04 enforces it.
+
+### Build
+
+`bash tools/build.sh`: **BUILD OK** (ERC 0 errors, 24 warnings all accepted with reasons; netlist round trip 725
+nets, 3,680 pin connections match). `python3 tools/xcheck.py` lists the five new nets as single-sheet, as expected.
+
 ---
 
 ## 1. What is on each sheet

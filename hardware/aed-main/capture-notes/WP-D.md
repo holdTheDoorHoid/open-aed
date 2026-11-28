@@ -13,6 +13,10 @@ issue 2; DECISIONS.md D-25, D-59, D-60, D-61; `firmware/crates/aed-core/src/inte
 `hardware/aed-main/specs/09_interlock.toml`, `hardware/aed-main/specs/12_bridge_logic.toml`; custom symbols:
 `hardware/lib/src/aed_logic.toml`.
 
+**Revision 0.3 (27 November 2026).** Sections 1–10 describe the first (issue-2) capture and stay as its record.
+The changes of design revision 0.3 / contract issue 3 are in **§11 Revision 0.3** at the end; where §11 and an
+earlier section disagree, §11 is current.
+
 ---
 
 ## 1. What is on each sheet (plain language)
@@ -600,3 +604,276 @@ Throwaway Python scripts (standard library only, not committed, not part of the 
   the relay as "aux contact moves 8 ms after `K_EN`" (§4.2).
 These are behavioural models of the captured pin tables, not circuit simulations; the §16 [SIM] items of the design
 remain open.
+
+---
+
+## 11. Revision 0.3
+
+Applied 27 November 2026 from the change order `capture-notes/rev3-changes.md` (WP-D D-1…D-17), against
+`docs/HARDWARE_DESIGN.md` v0.3 (§B8, §B13, §B14.5, §V3) and `contract.md` issue 3. Simulations: `sim/logic-relay`
+(**LR**), `sim/bridge` (**BR**), `sim/rev3` (**R3**) and this package's own `sim/rev3-wpd` (**WPD**, new). [CALC] is
+hand arithmetic from datasheet limits, [SIM] a simulated result with hand-built models; nothing has been built or
+measured, and nothing here is safe or ready for use on a person or animal.
+
+### 11.1 In plain language
+
+- **Proof that the discharge paths are really held off now needs four "yes" signals instead of two.** Each path
+  has two independent light sensors on sheet 11; sheet 09 reads all four on separate wires, accepts "held" only
+  when all four agree, and reports each one to the main controller so the daily self-test can check every sensor
+  on its own. A single sensor that fails into "held" can no longer fake a held path.
+- **A fault current now switches the high-side switches off at once.** Before, an over-current or "current with no
+  low side on" fault ended the sequence in the normal order, leaving the high side on for 20–36 µs, long enough to
+  destroy it if a low-side switch had failed short. A new latch now cuts both high sides within about 50–60 ns of
+  the fault signal. Normal endings keep the gentle order.
+- **Each phase of the shock now has its own hardware time limit** (about 11 ms for phase 1, 8 ms for phase 2),
+  besides the old 25 ms limit for the whole sequence. A controller that freezes with a switch command stuck on can
+  now deliver at most about 171 J instead of 180 J at the normal charge (R3).
+- **Smaller fixes**, each from the first simulations: the permit detectors forget a stopped clock fast enough; a
+  bouncing relay contact cannot shorten the "relay has moved for 10 ms" check; a relay contact that was never
+  seen at rest cannot count as "moved"; the test-relay timer no longer expires before the test relay can close;
+  the 150 ms window can no longer fail to start when the two consents arrive within microseconds; a failed
+  low-side gate-drive supply ends the sequence like a collapsing bridge rail.
+- **What I found that the change order did not say:** (1) the small transistor that resets the relay timer has
+  no guaranteed leakage at the low voltage it sees; if it leaks a few microamps when hot, every shock would be
+  refused (safe direction, but a room-temperature self-test would not notice); (2) the margin by which a "not
+  held" sensor line reads high is thin at the worst corner; (3) the phase-limit bands come out a few hundredths
+  of a millisecond wider than the change order states; (4) seven new internal points had no default resistor and
+  got one. None of these lets a shock start that should not, or keeps one going.
+
+### 11.2 Changes applied
+
+Sheet 09 (now 187 parts):
+
+| # | Applied as | Designators |
+|---|---|---|
+| D-1 | Permit and test-permit hold bleeds 71.5 k → **64.9 k** 0.1 % thin film | R928, R929, R939, R940 |
+| D-2 | `HOLD_A_HELD_N`, `HOLD_B_HELD_N` pull-ups 10 k → **47 k** (1 M backups R947, R948 kept) | R945, R946 |
+| D-3 | New inputs `HOLD_A_HELD2_N`, `HOLD_B_HELD2_N`: 47 k pull-ups, 1 M backups | R973, R974, R975, R976 |
+| D-4 | U914 → `HOLDA_OK` = NOR(`HOLD_A_HELD_N`, `HOLD_A_HELD2_N`); U933 SN74LVC1G02 `HOLDB_OK`; U934 SN74LVC1G08 `HOLD_OK` = AND; 100 k pull-downs on `HOLDA_OK`, `HOLDB_OK` (R904 stays on `HOLD_OK`) | U914, U933, U934, R977, R978, C961, C962 |
+| D-5 | SN74LVC2G07 open-drain readbacks `HOLD_RB_A2_N`, `HOLD_RB_B2_N` | U935, C963 |
+| D-6 | `CHAIN` → 10 k → `CHAIN_RC` (10 nF C0G) → SN74LVC1G17 on 5V0_SYS → `CHAIN_D` → U928 CLK; 100 k pull-down on `CHAIN_D` | R979, C960, U936, R980, C964 |
+
+Sheet 12 (now 328 parts):
+
+| # | Applied as | Designators |
+|---|---|---|
+| D-7 | High-side kill latch: `OCI` = `OC_F` OR `IDLE_F`; `HSK_PRE_N` = NAND(`OCI`, `RDY`); SN74LVC1G74 (PRE̅ `HSK_PRE_N`, CLR̅ `RST_N`, D and CLK to GND, Q̄ = `HSK_N`); U1222/U1223 outputs renamed `G_HA_P`/`G_HB_P`; `G_HA_I` = `G_HA_P` AND `HSK_N`, `G_HB_I` likewise (R1252/R1253 and the lockout and lead timers stay on `G_H*_I`); R6209 `HSK_N`–GND | U1263–U1267, R6209, C1285–C1289; **added** R6229 (`OCI` up), R6230 (`HSK_PRE_N` down), R6231/R6232 (`G_HA_P`/`G_HB_P` down) |
+| D-8 | `IDLE_FAST_N` → SN74LVC1G14 → `IDLE_FST`; `IDLE_ANY` = `IDLE_RAW` OR `IDLE_FST` at U1246 pin 1 and U1236 pin 3; R6210 (contract default), R6211 (`IDLE_ANY` up) | U1268, U1269, R6210, R6211, C1290, C1291; **added** R6233 (`IDLE_FST` up) |
+| D-9 | `RAIL_OK` = `BR5_OK` AND `LSD_OK` at U1237 pin 6 and U1247 pin 1; R6212 (contract default on `LSD_OK`), R6213 | U1270, R6212, R6213, C1292 |
+| D-10 | Phase-1 cap: `ACT` → 113 k → `P1_RC` (100 nF C0G ±2 %), BAS116 back to `ACT`; TLV7031 IN+ `P1_TH` (57.6 k / 100 k), IN− `P1_RC`, OUT `P1C_N`; 100 k down on `P1C_N` | U1271, R6214, C1282, D1216, R6215–R6217, C1293 |
+| D-11 | Phase-2 cap: SN74LVC1G74 `P2S` (CLK `G_LA_I`, D and PRE̅ to `BRIDGE_3V3`, CLR̅ `RST_N`); R6218 `P2S` up; 76.8 k / 100 nF C0G ±2 %; BAS116; TLV7031 with 57.6 k / 100 k; 100 k down on `P2C_N` | U1272, U1273, R6218–R6222, C1283, D1217, C1294, C1295 |
+| D-12 | `P1F` = NOR(`P1C_N`, `P1D`), `P2F` = NOR(`P2C_N`, `DONE`), `PCF` = OR; U1252 SN74LVC1G32 → **SN74LVC1G332**: `TRIG` = `TRIG_A` OR `CAP_F` OR `PCF`; R6223 `PCF` up | U1274–U1276, U1252, R6223, C1296–C1298; **added** R6234, R6235 (`P1F`, `P2F` up) |
+| D-13 | 25 ms cap unchanged (R1288 249 k, R1289 31.6 k, R1290 26.1 k) | — |
+| D-14 | `K_REST_N` → 10 k → `K_REST_F` (1 nF C0G) → U1210 pin 1; 2N7002LT1G (G `K_AT_REST`, S GND, D `XF_DIS`) + 10 Ω `XF_DIS`–`XF_RC` | R6224, C1284, Q1201, R6225 |
+| D-15 | SN74LVC1G74 `K_WAS_REST` (CLK `K_EN_I`, D `K_AT_REST`, PRE̅ `BRIDGE_3V3`, CLR̅ `RST_N`); U1238 SN74LVC1G08 → **SN74LVC1G11**: `XF_SRC` = `K_LEFT` AND `K_EN_I` AND `K_WAS_REST`; R6226 down | U1277, U1238, R6226, C1299 |
+| D-16 | R1280 36 k thick → **49.9 k** 0.1 % thin film; U1241 SN74LVC1G17 → **TLV7031** (IN+ `BT_RC`, IN− `BT_TH`, OUT `BTOK`); `BT_TH` from 56.2 k / 100 k thin film | R1280, U1241, R6227, R6228 |
+| D-17 | Sheet notes: `K_EN` drives only the coil driver on 14; `BR_FAULT_N` also reports per-phase caps and `LSD_OK` | group notes `relay`, `status`, `faults` |
+
+New custom symbol: `aed_logic:SN74LVC1G74DCT` (KiCad's 74xGxx library has no 74LVC1G74; pins from TI SCES794G
+Figure 5-1, same numbering as the SN74LVC2G74 already used). New local nets on 09: `HOLDA_OK`, `HOLDB_OK`,
+`CHAIN_RC`, `CHAIN_D`; on 12: `OCI`, `HSK_PRE_N`, `HSK_N`, `G_HA_P`, `G_HB_P`, `IDLE_FST`, `IDLE_ANY`, `RAIL_OK`,
+`P1_RC`, `P1_TH`, `P1C_N`, `P2S`, `P2_RC`, `P2_TH`, `P2C_N`, `P1F`, `P2F`, `PCF`, `K_REST_F`, `XF_DIS`,
+`K_WAS_REST`, `BT_TH`. Contract nets added: `HOLD_A_HELD2_N`, `HOLD_B_HELD2_N`, `HOLD_RB_A2_N`, `HOLD_RB_B2_N` (09),
+`IDLE_FAST_N`, `LSD_OK` (12). No contract net was renamed.
+
+### 11.3 Timing across tolerance and −20…+70 °C
+
+Bands as §3 (C0G ±2.2 % for ±2 % parts, else ±5.5 %; thin film ±0.35 %; thick film ±2 %; TLV7031 ±8 mV,
+hysteresis 3–25 mV; BAS116 leakage up to its 80 nA 150 °C limit; LVC thresholds and ±5 µA input leakage from the
+datasheets' 3.0/4.5 V rows). LVC propagation maxima are the datasheets' −40…85 °C figures.
+
+| Circuit | Result | Requirement | Source |
+|---|---|---|---|
+| Permit / test-permit detector, 64.9 k bleeds | hold ≥ 4.07 ms, drop-out ≤ 7.50 ms | ≥ 3 ms, ≤ 8 ms | [SIM LR §1.2] |
+| Phase-1 cap, from the `CMD_LB` start edge | **10.93–11.92 ms** (nominal 11.43); with the change order's spread 10.75–11.92 ms | > firmware's 10.0 ms longest phase 1 (≥ 0.75 ms margin) | [SIM WPD] |
+| Phase-2 cap, from the first `G_LA_I` edge | **7.44–8.10 ms** (nominal 7.77); union 7.31–8.10 ms | > 6.7 ms (≥ 0.61 ms margin) | [SIM WPD] |
+| 25 ms cap (unchanged) | 23.77–26.22 ms | backstop; T-9 | [SIM LR §2] |
+| BTOK | 4.74–5.52 ms | ≥ 3.5 ms (test relay operates in 3 ms); firmware waits 7 ms | [SIM LR §1.3] |
+| Window-start delay `CHAIN` → `CHAIN_D` | **59.6–104.1 µs** | > `REARM_N` release (WPD 9.7–10.4 µs; LR 15.7 µs): ≥ 3.8× | [SIM WPD] |
+| Permit window with the delay | 131.9–161.6 ms (LR band + 0.06–0.10 ms) | F-8 (f) rail gone by 200 ms: 161.6 + 16 = 178 ms | [CALC] |
+| `XFER` after the last contact release, bounce ≥ 15 µs | 11.17–11.31 ms (nominal parts) | ≥ 10 ms | [SIM WPD] |
+| same, bounce 10 µs, VGS(th) 1.0 / 2.5 V | 10.37 / **8.98 ms** | ≥ 10 ms — **residual**, P-3 | [SIM WPD] |
+| same, bounce ≤ 8 µs | ignored by the filter (no restart) | — | [SIM WPD] |
+| `XFER` vs Q1201 off-state leakage 0 / 1 / 2 / 4 µA | 11.31 / 12.01 / 12.81 / 14.86 ms (nominal parts; late corner adds ≈ 0.9 ms) | ≤ 14 ms (firmware wait) → leakage must stay ≤ ≈ 2.5 µA | [SIM WPD], P-1 |
+| Over-current → high sides: U1209 → U1263 → U1264 → U1265 (PRE̅→Q̄ ≤ 5.9 ns, SCES794G) → U1266 → 1 kΩ | 5 gates ≤ 33 ns + 1 kΩ × ≤ 20 pF [EST] to sheet 13's threshold ≈ 14 ns: **≤ 47 ns** | "at once" (change order ≈ 45 ns) | [CALC] |
+| Fast idle → high sides: U1268 → U1269 → U1246 → U1263 → U1264 → U1265 → U1266 → 1 kΩ | 7 gates ≤ 46 ns + 14 ns: **≤ 60 ns** (≤ ≈ 90 ns to 90 %), on top of sheet 13's ≤ 0.1 µs | BR's 11–13 mJ assumed 0.1 µs in total — P-4 | [CALC] |
+| Over-current → low sides (unchanged path) | ≤ 65 ns | ≤ 0.5 µs | [CALC, §3.6] |
+| `LSD_OK` low → low sides | sheet 13 ≤ 5 µs + U1270 + `SEQ_UV` path (≤ 50 ns) | ≈ 5 µs (BR change 9) | [CALC] |
+| `BR5_OK` collapse path | + one gate (U1270, ≤ 6.5 ns) | ≈ 10 µs | [CALC] |
+| `HOLD_OK` → charger enables | + one gate (U934) | ≤ 1 ms | [CALC] |
+| `HOLD_*_HELD*_N` "held" level | Darlington ≤ 1.0 V at 0.10 mA (contract) vs VIL 0.3 × 4.5 V = 1.35 V (SCES213Y) | — | [CALC] |
+| `HOLD_*_HELD*_N` "not held" level | 4.90 V − (20 µA dark [change order, 85 °C] + 2 × 5 µA LVC II) × 44.9 kΩ = **3.55 V** vs VIH 0.7 × 4.90 = 3.43 V: **0.12 V** at the worst stack; ≈ 0.5 V at +70 °C with ≈ 10 µA dark [EST] | reads "not held" | [CALC], P-2 |
+| `K_REST_N` filter | 10 kΩ × 1 nF = 10 µs; LVC leakage 5 µA × 10 kΩ = 50 mV | — | [CALC] |
+| Q1201 discharge | peak ≤ 3.3 V / 10 Ω = 0.33 A (≤ 0.8 A pulsed, NDS7002A/D), 0.5 µJ | — | [CALC] |
+| `BRIDGE_3V3` load added | 15 ICs ≤ 10 µA each + ≈ 8 × 33 µA in pulls ≈ 0.4 mA | 60 mA budget | [CALC] |
+
+### 11.4 Revised failure table (new and changed parts)
+
+Columns as §4.3. **Every row ends in "no shock possible", "degraded but bounded by another hardware limit", or
+needs a second independent fault; none gives an unwanted or unending shock on its own.** T-n are the real-permit
+self-test steps of design §B14.5; F-8 (x) the test-permit steps of §F-8.
+
+Sheet 09:
+
+| Ref(s) | Function | Open | Short / stuck | No supply | Result / detected by |
+|---|---|---|---|---|---|
+| R928/R929/R939/R940 | detector bleeds | one open: hold ≈ 2×, collapse ≤ ≈ 15 ms (bounded, §3.2) | node held low → no permit | — | no permit: T-2 (permit), F-8 (e) (test permit); one open: degraded timing, hidden (bounded by the 20 ms rail-ready delay) |
+| R945/R946/R973/R974 | 47 k pull-ups | 1 M backup keeps "not held" at room temperature; **hot, a dark opto's leakage (≥ 5 µA) can pull that line to "held"** | line high → not held → no charge | — | open: hidden at room temperature; the **other sensor of the same path** still needs the real bias (second fault needed); short: no charge, switch-on and T-7 |
+| R947/R948/R975/R976 | 1 M backups | no effect | line high → not held | — | safe; short: T-7 |
+| U914 / U933 | `HOLDA_OK` / `HOLDB_OK` | open → R977/R978 → not held → no rail, no charge | stuck high → that path's two sensors bypassed; the other path still required | not held | stuck high: F-8 (c)/(d); open: switch-on |
+| U934 | `HOLD_OK` | R904 → not held | stuck high → held always (SW3 and both charger chains) | not held | stuck high: F-8 (c)/(d); open: switch-on |
+| R977 / R978 | defaults | no effect unless the gate is also dead | not held | — | safe; switch-on |
+| U935 | second-sensor readbacks | "not held" always | "held" always | released | T-7 (pattern fails either way) |
+| (sheet 11) one sensor reading "held" while dark | — | — | — | — | that path still needs its other sensor; T-7 detects (the line stays low when the hold is released) |
+| R979, C960 | 100 µs delay | R open: `CHAIN_RC` floats → window may never start | C short: never starts; C open or R short: delay lost → race B returns (one attempt's window may not start) | — | never starts: F-8 (f); delay lost: hidden, bounded (the attempt still needs every consent; one sequence per rail cycle under the 25 ms and per-phase caps) |
+| U936, R980 | `CHAIN_D` | R980 → never starts | stuck low or high: no edge → never starts | Ioff, R980 | F-8 (f) |
+| C961–C964 | decoupling | glitches [residual] | 5V0_SYS shorted (fault 41) | — | safe |
+
+Sheet 12:
+
+| Ref(s) | Function | Open | Short / stuck | No supply | Result / detected by |
+|---|---|---|---|---|---|
+| U1263, R6229 | `OCI` | R6229 → `OCI` high → kill at `RDY` → no high side | stuck low: kill latch never set (v0.2 behaviour: high sides off 20–36 µs after a fault); stuck high: no high side | (common rail) | stuck low: **hidden** (design §B14.5 list), needs a shorted low side as second fault; others: F-8.3 / T-8 |
+| U1264, R6230 | `HSK_PRE_N` | R6230 → kill | stuck high: never set (hidden, as above); stuck low: no high side | — | as U1263 |
+| U1265, R6209 | kill latch | output open → R6209 → killed | Q̄ stuck high: never kills (hidden); stuck low: no high side; D/CLK pins open: a stray edge could clear it after a preset → `FLT`/`RUN_D20` still end the high sides 20–36 µs later (v0.2 behaviour) | — | "killed": F-8.3 / T-8; "never": hidden, second fault needed |
+| U1266 / U1267, R6231 / R6232 | kill gates | `G_H*` held low by 13's 100 k through 1 k → no high side | **stuck high: that high side on whenever the rail is up** (as v0.2 U1222 stuck high): no current without a low side; the 150 µs lockout blocks the opposite phase | — | F-8.3 / T-8 (phase 2 missing) |
+| U1268 / U1269, R6233 / R6211 | fast idle input | pull-ups → fault → start refused | stuck "no fault": fast path lost (5 A INA240 path remains, v0.2 behaviour) | — | "no fault": **hidden** (test current 0.3 A < 3 A); fault: refused, detected |
+| R6210 | `IDLE_FAST_N` default | no effect | fault → refused | — | detected |
+| U1270, R6212, R6213 | `RAIL_OK` | R6213 → no start | stuck high: rail-collapse **and** `LSD_OK` protection lost | — | stuck high: **hidden** (as `BR5_OK` stuck high, fault-25 class, second fault needed); low: refused |
+| U1271, R6214–R6217, C1282, D1216 | phase-1 cap | R6214 open, C1282 short, R6216 open, comparator stuck high: **never expires** → 25 ms cap remains (≤ 180 J at 1,950 V, v0.2 bound) | C1282 open, R6214 short, D1216 short, R6215 open, comparator stuck low: expires at once → every start ends as a fault | POR low → expired | never: **T-8**; at once: F-8.3 / T-8 (`BR_FAULT_N`); D1216 open: slow RC reset — a rail re-cycle within ≈ 30 ms may shorten the next cap (fails early) |
+| U1272, R6218 | `P2S` latch | open → R6218 → timer from rail-up → expired before `RDY` → every start refused | stuck low / CLK open: phase-2 cap lost → 25 ms cap remains; stuck high: as open | — | lost: **T-8**; refused: detected |
+| U1273, R6219–R6222, C1283, D1217 | phase-2 cap | as phase 1 | as phase 1 | POR low | as phase 1 (T-8 second part) |
+| U1274 / U1275 / U1276, R6234 / R6235 / R6223 | `P1F`, `P2F`, `PCF` | pull-ups → fault → refused | stuck low: that cap (or both) lost → 25 ms cap remains | — | lost: T-8; refused: detected |
+| U1252 (now 1G332) | `TRIG` | R1296 → fault | stuck low: every fault trigger lost; the 25 ms cap still ends both low sides directly (`CAPC_N` in `LB_LOCK`/`LA_LOCK`, §4.3 Note 1) | — | T-8, T-9 |
+| R6224 | `K_REST_N` filter | `K_REST_F` floats → contact state undefined on 12 | filter lost → bounce race returns (≥ 4.1 ms, LR) | — | open: shock-mode start usually refused (T-5); a wandering input could fake "moved" — needs the main to start without its own `K_REST_N` check (second fault), and a relay at rest isolates the bridge from the pads; short: hidden, degraded margin |
+| C1284 | 1 nF | filter lost (hidden, degraded) | `K_REST_F` = 0 → "at rest" always → shock mode refused | — | short: T-5; open: hidden |
+| Q1201 | `XF_RC` reset | drain/source open: bounce protection lost (hidden, degraded) | D–S short: `XFER` never → refused; G–S short: `K_AT_REST` low → `K_WAS_REST` = 0 → refused; **G–D short**: `K_AT_REST` drives `XF_RC` through 10 Ω against `XF_SRC` low through D1212 → `XFER` undefined at rest, never after a real transfer | — | D–S, G–S, G–D: real attempts refused, T-5; a start with the relay at rest would need a firmware fault as well and reaches no pads; **leakage**: P-1 |
+| R6225 | 10 Ω | bounce protection lost (hidden) | peak current set by RDS(on) | — | hidden, degraded |
+| U1277, R6226 | `K_WAS_REST` | R6226 → never → shock refused | stuck high: WP-H C-6 protection lost (an open aux contact can look like a transfer — second fault needed, and the main checks `K_REST_N` itself) | — | low: T-5; high: **hidden** |
+| U1238 (now 1G11) | `XF_SRC` | R1274 → refused | stuck high: transfer check lost (as v0.2) | — | high: **hidden** |
+| U1241 (now TLV7031), R1280, R6227, R6228, C1256 | BTOK | never → test refused | stuck high or R6227 open: test-relay check lost (test mode only, ≤ 0.18 J, patient relay at rest) | POR low | refused: F-8.3; lost: hidden, harmless |
+| C1285–C1299 | decoupling | glitches [residual] | `BRIDGE_3V3` shorted → no sequence | — | safe |
+
+**Single-path note (new).** The per-phase caps reach the low sides only through `TRIG` → `FLT` → `RUN_L`; they
+have no direct path into the lock gates as `CAPC_N` has. If `RUN_L` is stuck high **and** the main is frozen with a
+command high (two faults), the sequence runs to the 25 ms cap, which keeps its two paths: the v0.2 bound (≤ 180 J
+at 1,950 V, BR Q3b). A direct path would need `P1C_N`/`P2C_N` masked by `P1D`/`DONE` inside the lock gates; not
+done (not in the change order), listed as P-6.
+
+### 11.5 Default state of every new node
+
+| Node | All supplies off | Rail up, `RST_N` low (sheet-12 reset) | Main or supervisor held in reset |
+|---|---|---|---|
+| `HOLD_*_HELD2_N` (09) | 0 V (pull-ups to a dead rail), but every reader is unpowered: `HOLDx_OK`/`HOLD_OK` held low by R977/R978/R904; readbacks released (Ioff) = "not held" on 04 | (09 has no reset) high = not held until sheet 11's optos are lit | that controller's hold clock stops → its path conducts within ≤ 25 ms → its two lines high → `HOLD_OK` low |
+| `HOLDA_OK`, `HOLDB_OK`, `HOLD_OK` | low (pull-downs) | low unless all four lit | low |
+| `HOLD_RB_A2_N`, `HOLD_RB_B2_N` | released → high on 04 = not held | follow the sensors | follow the sensors |
+| `CHAIN_RC`, `CHAIN_D` | low (R980) | low until `CHAIN` | `CHAIN` low (no request or no permit) → low |
+| `OCI` | 0 V | `OC_F`/`IDLE_F` pulled up (with sheet 13 unpowered they read fault) → `OCI` high, but `RDY` low keeps `HSK_PRE_N` high | 12 does not read the controllers here |
+| `HSK_PRE_N` | 0 V | high (`RDY` low) | — |
+| `HSK_N` | low (R6209) = killed | **high** (CLR̅ low → Q̄ high = not killed); harmless: `RUN_H` = `RUN_D20`·`RDY` is low | — |
+| `G_HA_P`, `G_HB_P` | low | low (`RUN_H` low) | main in reset: `CMD_H*` pulled low on 12 → low |
+| `IDLE_FST`, `IDLE_ANY` | 0 V | high = fault until sheet 13's fast comparator is up (start refused meanwhile) | — |
+| `RAIL_OK` | low | low until `BR5_OK` and `LSD_OK` | — |
+| `P1_RC`, `P2_RC` | 0 V | 0 V (`ACT`, `P2S` cleared) | — |
+| `P1C_N`, `P2C_N` | low | low (POR below 1.6 V), then high (not expired) | — |
+| `P1F`, `P2F`, `PCF` | 0 V | may read "fault" while the comparators are in POR; every fault trigger is gated by `RDY` (U1253), so no fault is latched | — |
+| `P2S`, `K_WAS_REST` | low (P2S: 0 V; R6226) | low (cleared) | low (no `G_LA_I` / `K_EN` edge) |
+| `K_REST_F` | 0 V | follows `K_REST_N`; with 3V3_MAIN off `K_REST_N` floats (CI-9) | main in reset: `RELAY_CMD` low → `K_EN` low |
+| `XF_DIS` | — | Q1201 on while at rest → `XF_RC` 0 V | — |
+| `BT_TH`, `BTOK` | 0 V | `BTOK` low (POR, `BT_RC` 0 V) | `BTEST_CMD` low → low |
+
+**A controller held in reset during a running sequence.** Main: its commands fall (100 k pull-downs on 12) → the
+phase ends at once, or if phase 2 never comes the 25 ms cap ends the sequence as a fault; a main **frozen** with a
+command high is what the per-phase caps bound (10.75–11.92 / 7.31–8.10 ms). Supervisor: the permit disappears, SW5
+holds the rail until the sequence ends (D-59); the new circuits do not depend on the supervisor.
+
+### 11.6 CI-4 (faults hidden until the first rescue): what the v0.3 self-test reveals
+
+| CI-4 item | Revealed by | Still hidden |
+|---|---|---|
+| Permit detector dead (U910/U911, D901/D902, C921–C929), SW2a (U902) open | **T-2** | detector drifted within its band (timing only) |
+| SW1 shorted under the real permit | **T-1** | — |
+| Coil enable path (U1256–U1258), `RDY` gate, `TM` buffer stuck high, coil driver, relay, aux contact, `K_WAS_REST` stuck low | **T-3** | — |
+| `KWIN_N` / `KCAP_N` stuck refusing | **T-3** | `KWIN_N` stuck **high** (start window never closes; only late starts affected) |
+| `KCAP_N` never expires, `KON` stuck low | **T-3b** (weekly) | — |
+| Lead gate (`HA_ON50`, `LB_LOCK`) stuck in shock mode | **T-4** | other lockout/lead timers (CI-6, §13 fault 19) |
+| SW5 / `SEQ_HOLD` dead, `XFER`/`SHOCK_OK`/`MODE_OK` stuck low, end-of-sequence coil-off | **T-5** (weekly, docked) | — |
+| `XFER`, `SHOCK_OK`, `MODE_OK`, `XF_SRC`, `K_LEFT` stuck **high** (transfer check lost) | — | **hidden** (the main's own `K_REST_N` check remains: second fault needed) |
+| `K_WAS_REST` stuck high | — | hidden (second fault needed) |
+| Each of the four held sensors (shorted Darlington, fault 9) | **T-7** | a sensor's 47 k pull-up open (room-temperature test cannot see it; the other sensor covers) |
+| Per-phase caps never expiring | **T-8** | — |
+| 25 ms cap never expiring | **T-9** (weekly) | — |
+| OC 80 A, idle 3 A and 5 A comparators "no trip", kill latch stuck clear, `RAIL_OK`/`BR5_OK`/`LSD_OK` stuck high | — | **hidden** (design §B14.5 list; test current ≈ 0.3 A) |
+| Q1201 open or leaky, bounce-filter parts open | — | hidden: open = degraded bounce margin; leakage = hot-only refusal (P-1) |
+
+### 11.7 Problems with the change order (for the design authority)
+
+- **P-1 Q1201 leakage (D-14).** NDS7002A/D Rev. 11 guarantees IDSS only at 60 V: ≤ 1 µA at 25 °C, ≤ 0.5 mA at
+  125 °C; nothing at ≤ 3.3 V and +70 °C. `XFER`'s charging current at threshold is only ≈ 11 µA (1.19 V / 110 kΩ),
+  so ≈ 2.5 µA (slow corner) to 4 µA (nominal) pushes `XFER` past the firmware's 14 ms wait, and ≈ 11 µA stops it
+  [SIM WPD]. Direction: refusal (no shock), only when hot, so a room-temperature T-5 does not see it. Captured as
+  ordered, with a `Verify` field on Q1201. Options: a low-voltage leakage figure from onsemi; a part that states
+  one; or a smaller `XFER` resistor with a larger capacitor (more charging current, same time constant).
+- **P-2 "Not held" margin (D-2/D-3).** 47 k ∥ 1 M with the change order's 20 µA dark current (85 °C) and two LVC
+  inputs at ±5 µA leaves 3.55 V against VIH 3.43 V at `5V0_SYS` = 4.90 V: 0.12 V. One sensor could then read
+  "held" while dark; the other sensor of the path still decides (not a single-fault hazard), but the TLP187's dark
+  current at +70 °C should be confirmed (WP-F; I did not open its datasheet).
+- **P-3 Bounce at the filter's time constant (D-14).** A ≈ 10 µs re-touch with a 2.5 V-threshold 2N7002 lets
+  `XFER` rise 8.98 ms after it (rule ≥ 10 ms); ≥ 15 µs is fine [SIM WPD]. Consequence: a start on still-settling
+  contacts (contact wear), not an unwanted shock. A MOSFET with VGS(th) ≤ 1.5 V, or a 20 µs filter, would close it.
+- **P-4 Kill-path delay versus the bridge simulation (D-7/D-8).** The fast idle path is 7 gates on sheet 12
+  (≤ 60 ns to sheet 13's input threshold [CALC]) on top of sheet 13's ≤ 0.1 µs; BR's 11–13 mJ assumed 0.1 µs in
+  total. Re-run BR Q1 with the drawn chain (second round S-1). The over-current path matches the change order.
+- **P-5 Per-phase cap bands (D-10/D-11).** Simulated directly: 10.93–11.92 and 7.44–8.10 ms, against the change
+  order's 10.75–11.85 and 7.31–8.06 ms. The contract's `BR_FAULT_N` row, design §B13.3/§B13.4 and §B14.5 T-8 should
+  carry the union 10.75–11.92 / 7.31–8.10 ms; R3 §4 (run at 11.85 / 8.05 ms) should be repeated at the new tops
+  (expected well under 1 J more).
+- **P-6 Defaults and parts the change order did not name.** No default resistor was given for `OCI`, `HSK_PRE_N`,
+  `G_HA_P`, `G_HB_P`, `IDLE_FST`, `P1F`, `P2F` (contrary to its own "every new internal node" rule): added as
+  R6229–R6235, each towards "fault / no high side". Decoupling C961–C964 and C1285–C1299 numbered by me. The
+  SN74LVC1G74 needed a new library symbol. The per-phase caps have one path to the low sides (single-path note).
+- **P-7 Single-ended nets at this revision.** `HOLD_A_HELD2_N`, `HOLD_B_HELD2_N` (driver on 11), `HOLD_RB_A2_N`,
+  `HOLD_RB_B2_N` (reader on 04), `IDLE_FAST_N`, `LSD_OK` (driver on 13) appear only on my sheets until WP-F, WP-B
+  and WP-G land issue 3; names kept exactly. The two readback labels needed an `isolated_pin_label` ERC acceptance
+  on 09 without `until_sheet` (04 is already captured); remove it once 04 carries them.
+- **P-8 Shared generated PDFs.** `pdf/aed-main.pdf` and `pdf/aed-main-captured-sheets.pdf` contain every sheet and
+  were regenerated by my build; they should be regenerated again after all packages are merged.
+
+### 11.8 Datasheets consulted for revision 0.3
+
+Opened 27 November 2026 from the maker's site:
+
+| Part | Document | Used for |
+|---|---|---|
+| SN74LVC1G74 | TI SCES794G (Oct 2009, rev. Sep 2021) | DCT pinout (Figure 5-1); function table (PRE̅ and CLR̅ both low → Q = Q̄ = H, nonstable); II ±5 µA; Ioff; PRE/CLR → Q tpd ≤ 5.9 ns at 3.3 V; no power-up state stated |
+| 2N7002 (2N7002LT1G) | onsemi NDS7002A/D Rev. 11 (Mar 2025) | VGS(th) 1.0–2.5 V at 250 µA; IDSS ≤ 1 µA (60 V, 25 °C), ≤ 0.5 mA (60 V, 125 °C); RDS(on) ≤ 7.5 Ω at 5 V; ID pulsed 800 mA |
+| SN74LVC1G02 | TI SCES213Y (rev. Aug 2026) | VIH 0.7 × VCC, VIL 0.3 × VCC at 4.5–5.5 V; II ±5 µA; Ioff |
+| SN74LVC1G08 / 1G32 / 1G00 / 1G11 / 1G332 / 1G14 / 1G17 / 2G07; TLV7031 | TI SCES217AA, SCES219W, SCES212AC, SCES487J, SCES489F, SCES218AA, SCES351Y, SCES308M; SLVSE13J | current revision confirmed; pinouts as already captured on these sheets (DBV figures, §2) |
+| BAS116LT1G | onsemi BAS116LT1/D Rev. 14 | as §2 (not re-opened) |
+
+Not opened: Toshiba TLP187 (WP-F's opto; the 20 µA dark current is the change order's figure, **unverified by
+me**); Murata C0G and Panasonic ERA thin-film part codes (series pages only, as A-12).
+
+### 11.9 Still needs simulation or measurement
+
+1. BR Q1 shorted-low-side run with the drawn kill-path delay and sheet 13's real fast comparator (P-4, S-1).
+2. R3 §4 per-phase energy at the band tops 11.92 / 8.10 ms (P-5).
+3. 2N7002 drain leakage at ≤ 3.3 V, +70 °C (P-1); bounce trains with real relay data (P-3, O-13).
+4. TLP187 dark current at +70 °C into 47 k ∥ 1 M with two LVC loads (P-2).
+5. Noise immunity of the 3 A fast idle path (sheet 13): one glitch ≥ 5 ns with no low side enabled now latches
+   `FLT` and the kill latch and ends the shock (availability, not safety; WP-G). The shunt is not in either
+   freewheel loop (design §B6.5), so no idle current is expected after a planned phase end.
+6. A behavioural re-run of the whole sheet-12 netlist (the §10 `sim12.py` method) with the new latches; done here
+   only as a connectivity check (every new net has its driver, loads and default) and by reasoning.
+7. Everything still open from §8 (detector curves, TPS22918 reverse conditions).
+
+### 11.10 Totals and checks after revision 0.3
+
+| Sheet | Parts | Change |
+|---|---:|---|
+| 09_interlock | 187 | +17 |
+| 12_bridge_logic | 328 | +63 |
+
+`bash tools/build.sh` → BUILD OK (ERC 0 errors, 0 unaccepted warnings; netlist round trip 751 nets, 3,895 pin
+connections match the specs). `python3 tools/xcheck.py`: the six issue-3 nets of P-7 are single-sheet, as
+expected; nothing renamed.

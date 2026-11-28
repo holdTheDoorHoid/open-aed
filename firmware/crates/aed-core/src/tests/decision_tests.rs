@@ -44,7 +44,7 @@ fn prompts_from(b: &Bench, t: u32) -> Vec<Prompt> {
 fn short_cpr() -> Config {
     Config {
         cpr_period_ms: 15_000,
-        ..Config::default()
+        ..super::cfg()
     }
 }
 
@@ -54,7 +54,7 @@ fn short_cpr() -> Config {
 fn shockable_when_already_charged_goes_straight_to_the_countdown() {
     // The fake analyser's first answer comes 9 s into the analysis; the mock
     // charge takes 8 s, so the capacitor is already charged.
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 250 * 9);
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 250 * 9);
     b.run_to_analysing();
     let start = b.board.now;
     reach(&mut b, S::Cpr, 30_000);
@@ -90,7 +90,10 @@ fn shockable_while_still_charging_waits_for_the_charge_then_counts_down() {
     let mut b = Bench::new();
     b.run_to_analysing();
     reach(&mut b, S::Charging, 5_000);
-    assert!(b.board.prompts_only().contains(&Prompt::ShockAdvisedCharging));
+    assert!(b
+        .board
+        .prompts_only()
+        .contains(&Prompt::ShockAdvisedCharging));
     reach(&mut b, S::Countdown, 10_000);
     // The countdown starts the moment the charge is reached.
     let charged_at = b
@@ -101,7 +104,11 @@ fn shockable_while_still_charging_waits_for_the_charge_then_counts_down() {
         .unwrap()
         .at
         .0;
-    assert!(b.board.now - charged_at <= 4, "countdown {} ms after charged", b.board.now - charged_at);
+    assert!(
+        b.board.now - charged_at <= 4,
+        "countdown {} ms after charged",
+        b.board.now - charged_at
+    );
     reach(&mut b, S::Cpr, 10_000);
     assert_eq!(b.shocks_fired(), 1);
 }
@@ -112,7 +119,12 @@ fn charger_is_only_commanded_once_the_supervisor_holds_at_every_analysis_start()
     // self-test), and pads attached later; shockable and not shockable;
     // several CPR periods. At every tick of every run: the main controller
     // never asks for the charger unless the supervisor is holding.
-    for (pads_late, rhythm) in [(false, NON), (true, NON), (false, SHOCKABLE), (true, SHOCKABLE)] {
+    for (pads_late, rhythm) in [
+        (false, NON),
+        (true, NON),
+        (false, SHOCKABLE),
+        (true, SHOCKABLE),
+    ] {
         let mut b = Bench::with(short_cpr(), FakePlanner::default());
         b.board.rhythm = rhythm;
         if pads_late {
@@ -153,7 +165,11 @@ fn precharge_never_starts_before_the_self_test_has_passed() {
             !b.has_event(|e| matches!(e, Event::ChargeStarted(_))),
             "charging for a shock started during the self-test"
         );
-        assert!(b.board.cap_v <= limit, "{} V during the self-test", b.board.cap_v);
+        assert!(
+            b.board.cap_v <= limit,
+            "{} V during the self-test",
+            b.board.cap_v
+        );
         assert!(b.board.now < 10_000);
     }
     b.run_ms(2_000);
@@ -186,7 +202,7 @@ fn precharge_never_starts_before_the_self_test_has_passed() {
 fn no_new_charge_starts_until_the_previous_charge_is_confirmed_empty() {
     // A pad comes off 4 s into a charging analysis and is back at once, so
     // the next analysis starts while the first charge is still emptying.
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 2_500);
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 2_500);
     b.run_to_analysing();
     b.run_ms(4_000);
     let charged_v = b.board.cap_v;
@@ -212,16 +228,25 @@ fn no_new_charge_starts_until_the_previous_charge_is_confirmed_empty() {
             assert!(b.board.charger.is_none(), "charger on while emptying");
             assert!(!b.board.main_hold, "holding while emptying");
             if was_emptying {
-                assert!(b.board.cap_v <= last_v + 0.01, "voltage rose while emptying");
+                assert!(
+                    b.board.cap_v <= last_v + 0.01,
+                    "voltage rose while emptying"
+                );
             }
         } else if seen_emptying && b.board.charger.is_some() && !emptied_before_recharge {
             emptied_before_recharge = b.has_event(|e| matches!(e, Event::CapacitorEmptied(_)));
-            assert!(emptied_before_recharge, "recharged before the capacitor was confirmed empty");
+            assert!(
+                emptied_before_recharge,
+                "recharged before the capacitor was confirmed empty"
+            );
         }
         last_v = b.board.cap_v;
     }
     assert!(emptied_before_recharge, "never charged again");
-    assert!(reentered_while_emptying, "the test must start an analysis while still emptying");
+    assert!(
+        reentered_while_emptying,
+        "the test must start an analysis while still emptying"
+    );
     assert_eq!(b.rescue.counters().charges_burned, 1);
     b.assert_no_violations();
 }
@@ -230,7 +255,7 @@ fn no_new_charge_starts_until_the_previous_charge_is_confirmed_empty() {
 fn a_charge_that_cannot_be_emptied_after_no_shock_advised_is_the_serious_fault() {
     // "No shock advised. Start CPR." is given at once; the capacitor then
     // fails to empty, and the device must say so within the emptying limit.
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 250 * 9);
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 250 * 9);
     b.board.rhythm = NON;
     b.run_to_analysing();
     b.run_ms(8_500);
@@ -252,12 +277,16 @@ fn a_charge_that_cannot_be_emptied_after_no_shock_advised_is_the_serious_fault()
     // It does not keep re-raising the fault.
     let n = count_events(&b, |e| *e == Event::Fault(FaultKind::CapacitorNotEmptied));
     b.run_ms(10_000);
-    assert_eq!(count_events(&b, |e| *e == Event::Fault(FaultKind::CapacitorNotEmptied)), n);
+    assert_eq!(
+        count_events(&b, |e| *e == Event::Fault(FaultKind::CapacitorNotEmptied)),
+        n
+    );
 }
 
 #[test]
-fn mode_change_during_precharge_empties_and_recharges_for_the_new_mode_without_stopping_the_analysis() {
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 250 * 6);
+fn mode_change_during_precharge_empties_and_recharges_for_the_new_mode_without_stopping_the_analysis(
+) {
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 250 * 6);
     b.run_to_analysing();
     b.run_ms(3_000);
     assert!(b.board.cap_v > 500.0);
@@ -270,12 +299,19 @@ fn mode_change_during_precharge_empties_and_recharges_for_the_new_mode_without_s
         matches!(seq.get(i + 1), Some(S::Charging | S::Countdown)),
         "{seq:?}"
     );
-    assert!(!seq[..seq.len() - 1].contains(&S::Cpr), "went to CPR: {seq:?}");
+    assert!(
+        !seq[..seq.len() - 1].contains(&S::Cpr),
+        "went to CPR: {seq:?}"
+    );
     assert!(b.has_event(|e| *e == Event::ChargeStarted(Volts(1000))));
     assert_eq!(b.board.requests.len(), 1);
     assert_eq!(b.board.requests[0].plan.charge_voltage, Volts(1000));
     assert!((950.0..=1_050.0).contains(&b.board.fires[0].voltage));
-    assert_eq!(b.rescue.counters().charges_burned, 1, "the adult charge was burned off");
+    assert_eq!(
+        b.rescue.counters().charges_burned,
+        1,
+        "the adult charge was burned off"
+    );
     b.assert_no_violations();
 }
 
@@ -299,7 +335,7 @@ fn every_analysis_without_a_shock_burns_its_charge_and_counts_it() {
 fn charging_during_analysis_can_be_switched_off() {
     let config = Config {
         charge_during_analysis: false,
-        ..Config::default()
+        ..super::cfg()
     };
     let mut b = Bench::with(config, FakePlanner::default());
     b.board.rhythm = SHOCKABLE;
@@ -384,7 +420,11 @@ fn cancel_held_from_switch_on_is_ignored_by_the_self_test_and_reported_as_stuck(
     let mut b = Bench::new();
     b.board.cancel = true;
     reach(&mut b, S::Fault, 20_000);
-    assert_eq!(b.rescue.self_test_result(), Some(Ok(())), "self-test must pass");
+    assert_eq!(
+        b.rescue.self_test_result(),
+        Some(Ok(())),
+        "self-test must pass"
+    );
     assert!(b.has_event(|e| *e == Event::CancelIgnoredDuringSelfTest));
     assert_eq!(b.rescue.fault(), Some(FaultKind::CancelStuck));
     let at = b.board.now;
@@ -419,8 +459,14 @@ fn pads_above_the_shock_range_count_as_on_and_are_analysed_with_press_pads_firml
     reach(&mut b, S::Cpr, 60_000);
     assert!(b.state_sequence().contains(&S::AnalysingCharging));
     let p = b.board.prompts_only();
-    assert!(!p.contains(&Prompt::AttachPads), "pads are on: never 'attach pads'");
-    let press = p.iter().position(|&x| x == Prompt::PressPadsFirmly).unwrap();
+    assert!(
+        !p.contains(&Prompt::AttachPads),
+        "pads are on: never 'attach pads'"
+    );
+    let press = p
+        .iter()
+        .position(|&x| x == Prompt::PressPadsFirmly)
+        .unwrap();
     assert_eq!(p.get(press + 1), Some(&Prompt::AnalysingDoNotTouch));
     assert!(b.has_event(|e| *e == Event::PadContactPoor(aed_types::Ohms(200))));
 }
@@ -438,7 +484,10 @@ fn pads_still_above_the_shock_range_at_delivery_give_no_shock_poor_contact_and_c
         |e| *e == Event::ShockAborted(AbortReason::PlanRefused(PlanError::ImpedanceTooHigh))
     ));
     let p = b.board.prompts_only();
-    let i = p.iter().position(|&x| x == Prompt::PadContactPoorNoShock).unwrap();
+    let i = p
+        .iter()
+        .position(|&x| x == Prompt::PadContactPoorNoShock)
+        .unwrap();
     assert_eq!(p.get(i + 1), Some(&Prompt::StartCpr));
     // Emptied, and during CPR the responder is asked again to press the pads.
     assert!(b.run_until(b.config.disarm_time_limit_ms, |b| !b.rescue.emptying()));
@@ -486,7 +535,8 @@ fn press_pads_firmly_is_never_said_while_hands_must_be_off() {
                 // Said either during CPR or as an analysis starts (the
                 // hands-off instruction follows it at once).
                 let ok = b.state() == S::Cpr
-                    || (b.state().is_analysing() && b.rescue.time_in_state_ms(aed_types::Millis(b.board.now)) == 0);
+                    || (b.state().is_analysing()
+                        && b.rescue.time_in_state_ms(aed_types::Millis(b.board.now)) == 0);
                 assert!(ok, "t={} 'press pads' in {:?}", b.board.now, b.state());
             }
         }
@@ -528,7 +578,11 @@ fn pads_off_abort_goes_straight_to_attach_pads_without_start_cpr() {
         reach(&mut b, S::AttachPads, 2_000);
         b.run_ms(3_000);
         let p = prompts_from(&b, at);
-        assert_eq!(&p[..2], &[Prompt::CheckPads, Prompt::AttachPads], "{state:?}");
+        assert_eq!(
+            &p[..2],
+            &[Prompt::CheckPads, Prompt::AttachPads],
+            "{state:?}"
+        );
         assert!(!p.contains(&Prompt::StartCpr), "{state:?}: {p:?}");
         assert!(!b.state_sequence().contains(&S::Cpr), "{state:?}");
         assert!(b.board.cap_v < 50.0);

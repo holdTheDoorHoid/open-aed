@@ -1,0 +1,90 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* held_threshold_wpf.cir — the two "held" sensors of stack A AS DRAWN (sensor 1: R1137 3.9 k, D1125 MMSZ4687, R1138
+* 22 k, U1101 TLP187 -> HOLD_A_HELD_N; sensor 2: R1196, D1133, R1197, U1105 -> HOLD_A_HELD2_N), each line pulled up
+* on sheet 09 by 47 k + 1 M backup to 5V0_SYS (contract issue 3 §5.4). DC sweep of the bottom-gate voltage.
+* Threshold = gate magnitude at which a line falls below 1.2 V (09's V_IL); "held" for HOLD_OK = BOTH lines low.
+* Corners as sim/rev3/held_sensor_rev3.cir: LOW = 70 C, zener 4.09 V, low LED VF (IS x3), CTR 10,000 %, dark 20 uA;
+* NOM = 25 C, 4.3 V, CTR 500 %; HIGH = -20 C, 4.52 V, high LED VF (IS / 3), aged CTR 250 %.
+* Zener temperature coefficient: ~0 mV/K at 4.3 V (onsemi MMSZ4678T1/D Rev 13 Fig. 1, typical) - not modelled.
+* Cases per corner: both intact; sensor 2 zener SHORTED; sensor 2 zener OPEN (sensor 1 alike by symmetry).
+* Compared with the IXTT2N170D2's largest cut-off magnitude: 4.0 V x 1.11 (Fig. 12 at 70 C) = 4.44 V.
+.include ../charger-storage/models/datasheet_models.lib
+.param rsh=22k rser=3.9k cpm=2.2u rpo=470 bz=4.3 ctrp=5 isl=4.7e-14 idk=0.2u z2=0
+VG g 0 0
+V5 v5 0 5
+VI1 r1 0 0
+R1137 r1 zk1 {rser}
+XD1125 la1 zk1 ZENER params: bvz={bz}
+R1138 la1 g {rsh}
+XU1101 la1 g h1 0 TLP187 params: ctr={ctrp} isled={isl} idark={idk}
+RP1 v5 h1 47k
+RB1 v5 h1 1meg
+VI2 r2 0 0
+R1196 r2 zk2 {rser}
+XD1133 la2 zk2x ZENER params: bvz={bz}
+RZO zk2 zk2x {z2==2 ? 1e15 : 1m}
+RZS zk2 la2 {z2==1 ? 0.1 : 1e15}
+R1197 la2 g {rsh}
+XU1105 la2 g h2 0 TLP187 params: ctr={ctrp} isled={isl} idark={idk}
+RP2 v5 h2 47k
+RB2 v5 h2 1meg
+BOK hok 0 V=max(v(h1),v(h2))
+.control
+set noaskquit
+foreach cn 1 2 3
+  if $cn = 1
+    set cname = LOW_70C
+    alterparam bz = 4.09
+    alterparam isl = 1.41e-13
+    alterparam ctrp = 100
+    alterparam idk = 20u
+    set tc = 70
+  end
+  if $cn = 2
+    set cname = NOM_25C
+    alterparam bz = 4.3
+    alterparam isl = 4.7e-14
+    alterparam ctrp = 5
+    alterparam idk = 0.2u
+    set tc = 25
+  end
+  if $cn = 3
+    set cname = HIGH_-20C_aged
+    alterparam bz = 4.52
+    alterparam isl = 1.57e-14
+    alterparam ctrp = 2.5
+    alterparam idk = 0.2u
+    set tc = -20
+  end
+  alterparam z2 = 0
+  reset
+  option temp=$tc
+  dc VG 0 -12 -0.005
+  meas dc th1 find v(g) when v(h1)=1.2 fall=1
+  meas dc thok find v(g) when v(hok)=1.2 fall=1
+  meas dc dark find v(h1) at=0
+  meas dc hl6 find v(hok) at=-6.0
+  meas dc il6 find i(VI1) at=-6.0
+  let la = abs(il6)*1e6
+  let mg = abs(thok) - 4.44
+  echo "HELD $cname both_intact: sensor_threshold=$&th1 HOLD_OK_threshold=$&thok margin_over_worst_cutoff_4.44V=$&mg | HELD_N dark=$&dark V, both lines at -6.0 V gate: max=$&hl6 V, load per sensor=$&la uA"
+  alterparam z2 = 1
+  reset
+  option temp=$tc
+  dc VG 0 -12 -0.005
+  meas dc th2 find v(g) when v(h2)=1.2 fall=1
+  meas dc thok find v(g) when v(hok)=1.2 fall=1
+  echo "HELD $cname sensor2_zener_SHORTED: sensor2_threshold=$&th2 HOLD_OK_threshold=$&thok (sensor 1 still decides)"
+  alterparam z2 = 2
+  reset
+  option temp=$tc
+  dc VG 0 -12 -0.005
+  meas dc hmin find v(h2) at=-11.9
+  meas dc okmin find v(hok) at=-11.9
+  echo "HELD $cname sensor2_zener_OPEN: HELD2_N at -11.9 V gate=$&hmin V, HOLD_OK line max=$&okmin V (never held: fails to not-held)"
+end
+quit
+.endc
+.end

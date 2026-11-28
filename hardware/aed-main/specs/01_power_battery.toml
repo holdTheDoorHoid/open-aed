@@ -2,16 +2,17 @@
 # 2 mOhm sense resistor, cell NTCs, main fuse F101 -> VBAT_SYS, battery-under-load test with a hardware time limit.
 # NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a). Nothing here is an instruction to build or power anything.
 # Source: docs/HARDWARE_DESIGN.md §B1.1-B1.3, §11, §13 (faults 13, 40), §16 rank 17; contract.md issue 2 §2, §4, §5.1,
-# §5.2, §8 row 01, §9 WP-A. Capture notes: hardware/aed-main/capture-notes/WP-A.md. References 101-199.
+# §5.2, §8 row 01, §9 WP-A; issue 3 §0, §4 (D-66) and capture-notes/rev3-changes.md WP-A A-1..A-4. Capture notes: hardware/aed-main/capture-notes/WP-A.md. References 101-199.
 
 [sheet]
 name = "01_power_battery"
 title = "2S pack: connector, MAX17320 protector and gauge, cell NTCs, main fuse, battery load test"
-source = "docs/HARDWARE_DESIGN.md §B1.1-B1.3; contract.md issue 2 §5.2, §8, §9 (WP-A)"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B1.1-B1.3; contract.md issue 3 §0, §4, §5.2, §8, §9 (WP-A)"
 date = "2026-11-27"
 comments = [
   "Device ground of U101 (GND, CSP, cell filters, NTC return) is BAT_NEG, the cell side of R101; system GND is the load side (CSN)",
   "MAX17320 thresholds are non-volatile configuration, not parts: see the 'gauge' box and capture notes (COMMSH must be 0)",
+  "VBAT_SYS: no steady resistive load below 1 MOhm from any sheet (contract §4, D-66). Lowest drawn load: R316 + R317 = 8.0 MOhm on 03 (complies)",
 ]
 
 [nets]
@@ -26,9 +27,8 @@ global = [
   "BAT_LOAD_EN",    # 04 -> 01; 100k pull-down HERE (R110, contract §5.2)
   "I2C_M_SCL",      # 04 master; 4.7k pull-ups on 04 (contract §5.1)
   "I2C_M_SDA",
+  "VBAT_MID",       # issue 3 (I-1): pack mid-point J101 pin 3 -> R106 (U101 cells) here, U201 MID/CBSET on 02
 ]
-# BAT_MID is the pack mid-point; it also belongs at U201 MID/CBSET on 02_power_dock, but the contract has no
-# inter-sheet net for it (capture notes, contract issue C-1). Here it reaches only R106 and J101 pin 3.
 
 [[erc_accepted]]
 type = "pin_not_driven"
@@ -48,7 +48,7 @@ title = "Pack connector J101 (keyed, Molex Mini-Fit Jr 2x4): two contacts each f
 note = """
 Pack = 2 x Molicel INR-18650-P28A in series with an NTC on each cell, made by a pack assembler (design §B1.1). Keyed housing instead of a reverse-polarity MOSFET (design §B1.1: a series MOSFET would cost 0.2-0.4 W at 21 A peaks).
 Current per contact: 9.2 A average / 21 A peak (design §B4.2) shared by two contacts = 4.6 A / 10.5 A each. Mini-Fit Jr terminals are rated 9 A (standard) to 13 A (HCS) per circuit [BK, Molex drawing not read: VERIFY terminal rating and wire gauge].
-Pin 8 returns both NTCs to BAT_NEG (device ground of U101). The mid-point (pin 3) feeds the gauge's cell sense here and must also reach U201 MID/CBSET on 02_power_dock: no contract net exists for that (contract issue C-1).
+Pin 8 returns both NTCs to BAT_NEG (device ground of U101). The mid-point (pin 3) is the contract net VBAT_MID (issue 3, rev 0.3 A-1): the gauge's cell sense here and U201 MID (300 ohm) / CBSET (100 ohm) on 02_power_dock.
 """
 
 [[group]]
@@ -59,7 +59,8 @@ note = """
 IN: 10 ohm from the top of stack + 0.1 uF/25 V; CP: 0.47 uF/25 V to IN; REG3, REG2: 0.47 uF/10 V; CHG FET gate-source 0.1 uF (all per the pin table). PCKP: 1 k to VBAT_PACK. PFAIL unused: 1 k to ground. AOLDO unused: 10 k to ground. ZVC open (zero-volt charging not used). TH3, TH4 unused: to ground.
 Sense R101 = 2 mOhm (Bourns CSS2H-2512K-2L00F, 5 W): 9.2 A average -> 0.17 W; current register range +/-51.2 mV / 2 mOhm = +/-25.6 A covers the 21 A peak.
 PROTECTION THRESHOLDS (non-volatile configuration, R-16 coordination, contract §9): fast over-discharge ODTH = -70 mV = 35 A, OCDLY = 5 -> 70 us + 5 x 977 us = 4.96 ms; short circuit SCTH = -130 mV = 65 A, SCDLY = 2 -> 70 + 2 x 61 = 192 us (>= 100 us). Both are above everything a limited branch can draw (eFuse 13 A, regulator fuses 1/1/3 A, load test 10.5 A, coil boost 2 A).
-'Auto-retry': the MAX17320 releases an over-discharge / short-circuit fault when PCKP rises above 1 V while it sources 30 uA into PCKP, or when a charger is detected (datasheet 'Overcurrent Protection'). That works only if VBAT_SYS carries no resistive load below about 33 kohm (1 V / 30 uA): every sheet on VBAT_SYS must keep that (capture notes). It is NOT a timed retry [contract wording 'auto-retry' approximated].
+'Auto-retry': the MAX17320 releases an over-discharge / short-circuit fault when PCKP rises above 1 V while it sources 30 uA into PCKP, or when a charger is detected (datasheet 'Overcurrent Protection'). That works only if VBAT_SYS is nearly unloaded. Issue 3 rule (D-66, contract §4): no steady resistive load below 1 MOhm on VBAT_SYS from any sheet; the lowest drawn is 8.0 MOhm (R316 + R317 on 03). The datasheet (Rev 12, 7/25) gives the test current only as 30 uA with no minimum and the release threshold as 1 V in one place, 1.5 V (SCDet) in another; with the 1 MOhm rule release works down to about 10 uA [CALC: 8 uA leakage + 1.5 V / 0.89 MOhm = 9.7 uA]. ADI minimum still to be obtained (design O-5). It is NOT a timed retry.
+CONFIGURATION RECORD (issue 3, rev 0.3 A-4; non-volatile, firmware FW-20; MAX17320 datasheet 19-100749 Rev 12 7/25): nConfig.COMMSH = 0; nODSCTh.ODTH = 3 (-77.5 + 3 x 2.5 = -70 mV = 35 A nominal; comparator offset +/-1.2 mV and gain +/-5 % give 32.6-37.4 A) with nODSCCfg.OCDLY = 5 (4.96 ms): the '>= 35 A OR >= 1 ms' rule is met by the delay (4.96 ms >> the charger eFuse's 30 A / 0.48 ms), not by the threshold alone; nODSCTh.SCTH = 5 (-155 + 25 = -130 mV = 65 A, 61.2-68.9 A with the same errors, >= 60 A) with nODSCCfg.SCDLY = 2 (192 us); nBalTh.BALCFG = 0 (Table 21: 'When set to 0, cell balancing is disabled') so only the BQ25887 balances, through CBSET on 02; nBalTh.Imbalance may stay as a charge-fault threshold (protection, not balancing).
 nConfig.COMMSH MUST be 0: with COMMSH = 1 the part shuts down (FETs off) when SCL and SDA are both held low, which is exactly the state of I2C_M_* with the main controller off (design §B11, F-10). Answers design §16 rank 17.
 """
 
@@ -74,14 +75,15 @@ Coordination: a hard short on VBAT_SYS is ended by the MAX17320 short-circuit co
 
 [[group]]
 id = "load"
-title = "Battery-under-load test: 2 x 0.40 ohm PWR263S in series, Q103, hardware on-time limit (TLV7031 + RC, 124-220 ms)"
+title = "Battery-under-load test: 2 x 0.40 ohm PWR263S in series, Q103, hardware on-time limit (TLV7031 + RC + BAS116, 131-224 ms), not re-armed by toggling"
 note = """
 Load: R102 + R103 = 0.80 ohm (DEPARTURE from 0.82 ohm: 0.82 is not a catalogue value of a part with a published pulse rating; two in series halve the energy per part). At 8.4 V: 8.4 / 0.809 ohm (incl. FET, fuse, sense, FETs) = 10.4 A, 86 W, 43 W per resistor; 100 ms test = 4.3 J per resistor.
-Pulse rating: Bourns PWR263S-35 'Pulse Power Rating' graph reads about 8 J at 0.1 s (graph ends at 0.1 s) -> 4.3 J at 100 ms has 1.9x margin; the worst-case 220 ms hardware limit gives 9.5 J per resistor, beyond the graph [UNVERIFIED: VERIFY with Bourns; short-term overload 2 x Pr = 70 W per part is stated for R < 2 ohm, 43 W is below it]. Design target 25 J single pulse in total = 12.5 J per part: [UNVERIFIED].
-Time limit: BAT_LOAD_EN (100k pull-down R110, contract) is AC-coupled by C108 2.2 uF into R111 118 k (tau = 260 ms). The comparator U102 turns Q103 on while the node is above about half of 3V3_MAIN: on at the rising edge, off when the node decays below the threshold, off at once when BAT_LOAD_EN falls (node steps negative). R116 1 M adds hysteresis: threshold 1.73 V while on, 1.57 V while off (at 3.3 V).
-On-time = tau x ln(21/11) = 0.647 tau = 168 ms nominal; C 2.2 uF X7R x0.765..x1.265 (10 % tolerance, 15 % over temperature) and R 1 % -> tau 197-332 ms; threshold factor 0.631-0.662 (1 % divider, +/-8 mV offset) -> 124-220 ms. Firmware uses <= 100 ms (design §B1.3). Ratiometric to 3V3_MAIN, so supply tolerance cancels.
-R112 10 k limits the comparator input current when the node goes to -3.3 V at the falling edge: 0.33 mA << 10 mA abs max (TLV7031 SLVSE13J 5.1).
-Limitation (capture notes, doubt 3): repeated rising edges re-trigger the timer; a pin toggled at a high rate can hold the load on for up to about half the time. The limit covers a STUCK-HIGH line, not a toggling one.
+Pulse rating: Bourns PWR263S-35 'Pulse Power Rating' graph reads about 8 J at 0.1 s (graph ends at 0.1 s) -> 4.3 J at 100 ms has 1.9x margin; the worst-case 224 ms hardware limit gives 9.6 J per resistor, beyond the graph [UNVERIFIED: VERIFY with Bourns; short-term overload 2 x Pr = 70 W per part is stated for R < 2 ohm, 43 W is below it]. Design target 25 J single pulse in total = 12.5 J per part: [UNVERIFIED].
+Time limit (issue 3, rev 0.3 A-2, I-25): BAT_LOAD_EN (100k pull-down R110, contract) is AC-coupled by C108 2.2 uF into LT_NODE. While LT_NODE is positive it decays through D101 BAS116 and R111 78.7 k; when it is negative D101 blocks, so it can only creep back through R117 4.7 M and through R112 4.7 M into the comparator's input clamp: tau about 5 s. U102 turns Q103 on while LT_IN is above about half of 3V3_MAIN: on at a rising edge, off when the node decays below the threshold, off at once when BAT_LOAD_EN falls (node steps to about -3 V). R116 1 M adds hysteresis: threshold 1.73 V while on, 1.57 V while off (at 3.3 V). Ratiometric to 3V3_MAIN.
+Why the diode: as issue 2 drew it (R111 straight to GND) a line toggled at 10-100 Hz re-armed the timer every cycle and kept 14.5-22.7 W in R102 + R103 [SIM logic-relay §4.3]. With D101 the node stays negative after each falling edge, so the next rising edge does not reach the threshold.
+On-time: with the diode the decay ends near the diode drop instead of 0 V, so 118 k would give 255 ms [SIM logic-relay §4.3]; R111 lowered to 78.7 k: 255.5 x 78.7 / 118 = 170 ms [CALC]. WP-A check run (behavioural ngspice, logic-relay models plus a TLV7031 input clamp; capture notes WP-A rev 0.3): 133.6 / 174.7 / 220.9 ms with C108 at x0.765 / x1.000 / x1.265 [SIM, comparator offset not varied] -> band about 131-224 ms with the +/-8 mV offset and 1 % parts [CALC], inside the contract's <= 250 ms. Firmware uses <= 100 ms (FW-19), below the 131 ms minimum.
+DEPARTURE from the change order (R112 = 100 k): R112 is 4.7 M. TLV7031 inputs are diode-clamped to V- (SLVSE13J §6.4.1), and that clamp puts charge back into C108 through R112 on every low half-cycle while D101 + R111 take it out on every high half-cycle. With R112 = 100 k (comparable to R111) the two balance and toggling works again: 10-14.5 W at 4-100 Hz, 25-50 % duty, 4-14 W at 0.5-2 Hz, i.e. as bad as issue 2 [SIM, WP-A check run with a clamp diode; logic-relay battery.cir has no input clamp, which is why it showed 1.8-2.2 W]. With R112 = 4.7 M (60 x R111): <= 0.77 W at 0.2-10 Hz, 10-50 % duty, 0 W from 0.5 Hz up [SIM]; 1 M was not enough (up to 5.8 W at 10 % duty) [SIM]. Clamp current at -3.3 V: 0.6 uA << 10 mA (SLVSE13J abs max). Input bias 2 pA typ, doubling per 10 C (about 0.13 nA at 85 C [CALC]) x 4.7 M = 0.6 mV: negligible against the 160 mV hysteresis step. No phase reversal for inputs beyond the rails (SLVSE13J §6.4.1): a negative input keeps the output low (load off).
+Limitation still open: once the line has been low for several seconds the timer is fully re-armed, so a line toggled that slowly still gets one pulse per cycle (0.77 W average at 0.2 Hz, 10 % duty [SIM]); FW-19 (<= 100 ms, not repeated within 1 s) is the firmware rule on top.
 Unpowered: 3V3_MAIN off -> U102 unpowered -> R115 holds the gate low (load off). R11: an open or unpowered BAT_LOAD_EN reads 'load off'.
 Q103 CSD17573Q5B: 30 V, IDM 400 A, RDS(on) 1.45 mOhm max at VGS 4.5 V; at the comparator's ~3.2 V gate drive RDS(on) is only given by the curve [UNVERIFIED value, VGS(th) 1.1-1.8 V]; even 10 mOhm would dissipate 1 W for 0.2 s.
 """
@@ -105,7 +107,7 @@ fields = { DocRef = "design §B1.1 'keyed connector'", Verify = "terminal curren
 pins = """
   1   Pin_1   BAT_TOP     # pack + (cell 2 positive)
   2   Pin_2   BAT_TOP     # pack + (second contact)
-  3   Pin_3   BAT_MID     # mid-point (cell 1 positive / cell 2 negative)
+  3   Pin_3   VBAT_MID    # mid-point (cell 1 positive / cell 2 negative)
   4   Pin_4   NTC1        # cell 1 NTC
   5   Pin_5   BAT_NEG     # pack - (cell 1 negative)
   6   Pin_6   BAT_NEG     # pack - (second contact)
@@ -292,7 +294,7 @@ footprint = "Resistor_SMD:R_1206_3216Metric"
 mpn = "generic 1206 100R 1% 0.25W"
 manufacturer = "any"
 description = "RBAL mid-point -> CELL1/2/3 (2S, Figure 23); 39 mA balancing max, 0.15 W"
-between = ["BAT_MID", "U101_CELL"]
+between = ["VBAT_MID", "U101_CELL"]
 
 [[part]]
 ref = "C106"
@@ -387,7 +389,7 @@ mpn = "PWR263S-35-R400F"
 manufacturer = "Bourns"
 datasheet = "https://www.bourns.com/docs/Product-Datasheets/PWR263S-35.pdf"
 description = "Load resistor 0.40 ohm 1 % D2PAK, upper half of the 0.80 ohm battery load; tab isolated (2 kV AC), tied to GND copper for heat"
-fields = { DocRef = "design §B1.3 '0.82 ohm'", Verify = "pulse energy 4.3 J / 100 ms (graph ~8 J at 0.1 s), 9.5 J / 220 ms beyond the graph; 1 % tolerance availability at R400" }
+fields = { DocRef = "design §B1.3 '0.82 ohm'", Verify = "pulse energy 4.3 J / 100 ms (graph ~8 J at 0.1 s), 9.6 J / 224 ms beyond the graph; 1 % tolerance availability at R400" }
 pins = """
   1   T1    VBAT_SYS
   3   T2    LOAD_MID
@@ -450,29 +452,59 @@ value = "2.2uF"
 footprint = "Capacitor_SMD:C_0805_2012Metric"
 mpn = "generic 0805 X7R 2.2uF 25V 10%"
 manufacturer = "any"
-description = "Timer coupling capacitor (tau = 2.2 uF x 118 k = 260 ms)"
+description = "Timer coupling capacitor (tau = 2.2 uF x 78.7 k = 173 ms through D101 + R111; about 5 s back through R117 / R112 when negative)"
 between = ["BAT_LOAD_EN", "LT_NODE"]
 
 [[part]]
 ref = "R111"
 group = "load"
 lib_id = "Device:R"
-value = "118k"
+value = "78.7k"
 footprint = "Resistor_SMD:R_0402_1005Metric"
-mpn = "generic 0402 118k 1%"
+mpn = "generic 0402 78.7k 1%"
 manufacturer = "any"
-description = "Timer resistor to GND"
+description = "Timer resistor LT_R to GND, in series with D101 (issue 3 A-2: 118 k -> 78.7 k; 170 ms nominal [CALC], 174.7 ms [SIM WP-A check])"
+fields = { Verify = "on-time band 131-224 ms to be confirmed in second-round simulation S-6" }
+between = ["LT_R", "GND"]
+
+[[part]]
+ref = "D101"
+group = "load"
+lib_id = "aed_logic:BAS116LT1G"
+value = "BAS116LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAS116LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bas116lt1-d.pdf"
+description = "Timer diode, anode LT_NODE, cathode LT_R: the node discharges only while positive (issue 3 A-2, I-25). 75 V; IR <= 5 nA at 75 V / 25 C, 80 nA at 150 C (BAS116LT1/D Rev 14); reverse here <= 3.3 V. SOT-23 style 8: 1 A, 3 K, 2 NC. Symbol shared from WP-D's library (aed_logic), used unchanged"
+fields = { DocRef = "rev3-changes.md A-2; design §B1.3 v0.3" }
+pins = """
+  1   A    LT_NODE
+  3   K    LT_R
+  2   NC   NC
+"""
+
+[[part]]
+ref = "R117"
+group = "load"
+lib_id = "Device:R"
+value = "4.7M"
+footprint = "Resistor_SMD:R_0402_1005Metric"
+mpn = "generic 0402 4.7M 1%"
+manufacturer = "any"
+description = "Timer recharge LT_NODE to GND (issue 3 A-2): tau 4.7 M x 2.2 uF = 10 s alone; also the node's default to 0 V"
 between = ["LT_NODE", "GND"]
 
 [[part]]
 ref = "R112"
 group = "load"
 lib_id = "Device:R"
-value = "10k"
+value = "4.7M"
 footprint = "Resistor_SMD:R_0402_1005Metric"
-mpn = "generic 0402 10k 1%"
+mpn = "generic 0402 4.7M 1%"
 manufacturer = "any"
-description = "Comparator input current limit for the -3.3 V step at the falling edge (0.33 mA)"
+description = "Comparator input resistor (issue 3: 10 k -> 4.7 M; DEPARTURE from the change order's 100 k, see box note): stops the TLV7031 input clamp recharging C108 quickly; 0.6 uA at -3.3 V"
+fields = { Verify = "departure from rev3-changes A-2 (100 k), for the design authority; second-round simulation S-6 with an input-clamp model" }
 between = ["LT_NODE", "LT_IN"]
 
 [[part]]

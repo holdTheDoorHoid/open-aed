@@ -165,3 +165,25 @@ pins = """
 3 K   passive    right
 2 NC  no_connect bottom
 """
+
+[[symbol]]
+name = "SN74LVC1G74DCT"
+reference = "U"
+value = "SN74LVC1G74DCTR"
+footprint = "Package_SO:SSOP-8_2.95x2.8mm_P0.65mm"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g74.pdf"
+description = "TI SN74LVC1G74 single positive-edge D flip-flop with clear and preset, 1.65-5.5 V, Ioff (partial power-down), PRE and CLR both low = Q and Q_N both high (nonstable), SM8 (DCT). Defined here because KiCad's 74xGxx library has no 74LVC1G74 (revision 0.3, sheet 12)"
+mpn = "SN74LVC1G74DCTR"
+manufacturer = "Texas Instruments"
+pinout_source = "TI SCES794G (Oct 2009, rev. Sep 2021), Figure 5-1 (DCT 8-pin SM8) and Pin Functions table; function table 8-1"
+keywords = "flip-flop latch preset clear"
+pins = """
+1 CLK     input    left
+2 D       input    left
+7 ~{PRE}  input    left
+6 ~{CLR}  input    left
+5 Q       output   right
+3 ~{Q}    output   right
+8 VCC     power_in top
+4 GND     power_in bottom
+"""

@@ -41,8 +41,8 @@ use aed_waveform::BtePlanner;
 
 use crate::hw::{MainView, SupervisorView};
 use crate::plant::{Fault, Plant, PlantConfig};
-use crate::thermal::{TempSensorFault, Thermal};
 use crate::runner::MAIN_TICK_MS;
+use crate::thermal::{TempSensorFault, Thermal};
 
 /// Seconds in a day.
 pub const DAY_S: u32 = 86_400;
@@ -161,13 +161,21 @@ impl StandbyResult {
     /// The schedule's readiness at or just before simulation second `at_s`.
     #[must_use]
     pub fn readiness_at(&self, at_s: u32) -> Option<Readiness> {
-        self.readiness.iter().rev().find(|(t, _)| *t <= at_s).map(|(_, r)| *r)
+        self.readiness
+            .iter()
+            .rev()
+            .find(|(t, _)| *t <= at_s)
+            .map(|(_, r)| *r)
     }
 
     /// The whole standby decision at or just before simulation second `at_s`.
     #[must_use]
     pub fn decision_at(&self, at_s: u32) -> Option<StandbyDecision> {
-        self.decisions.iter().rev().find(|(t, _)| *t <= at_s).map(|(_, d)| *d)
+        self.decisions
+            .iter()
+            .rev()
+            .find(|(t, _)| *t <= at_s)
+            .map(|(_, d)| *d)
     }
 }
 
@@ -229,7 +237,8 @@ fn run_one(
     let mut sup_view = SupervisorView::new(Rc::clone(&plant));
     let mut run = PeriodicTestRun::new(config, test, full_voltage);
     let mut highest = 0.0_f64;
-    let heat = |p: &Plant| p.dump_energy_j + p.charger_energy_j * p.thermal.config.charger_loss_per_j;
+    let heat =
+        |p: &Plant| p.dump_energy_j + p.charger_energy_j * p.thermal.config.charger_loss_per_j;
     // At most 30 s: the full-energy charge limit is 11.4 s.
     for _ in 0..30_000 {
         let _ = plant.borrow_mut().step();
@@ -262,7 +271,13 @@ fn run_one(
 
 /// Advance the thermal model from `from` to `to` (simulation seconds), in
 /// steps of at most a minute, following the weather if there is one.
-fn advance_thermal(env: &mut Environment, s: &StandbyScenario, from: u32, to: u32, electronics_on: bool) {
+fn advance_thermal(
+    env: &mut Environment,
+    s: &StandbyScenario,
+    from: u32,
+    to: u32,
+    electronics_on: bool,
+) {
     let mut t = from;
     while t < to {
         let step = (to - t).min(60);
@@ -409,12 +424,20 @@ pub fn run(s: &StandbyScenario) -> Result<StandbyResult, aed_core::ConfigError> 
         if hot > 60.0 {
             last_too_hot_at = Some(t);
         }
-        if healthy && d.battery_charging_allowed && cells.iter().any(|c| *c < -tol || *c > 45.0 + tol) {
-            violations.push(format!("at {t} s: dock charging allowed with cells at {cells:?} °C"));
+        if healthy
+            && d.battery_charging_allowed
+            && cells.iter().any(|c| *c < -tol || *c > 45.0 + tol)
+        {
+            violations.push(format!(
+                "at {t} s: dock charging allowed with cells at {cells:?} °C"
+            ));
         }
-        let recently_too_hot = last_too_hot_at.is_some_and(|h| t.saturating_sub(h) < cfg.heat_cooled_for_s);
+        let recently_too_hot =
+            last_too_hot_at.is_some_and(|h| t.saturating_sub(h) < cfg.heat_cooled_for_s);
         if healthy && d.readiness.is_ready() && (hot > 60.0 + tol || recently_too_hot) {
-            violations.push(format!("at {t} s: shown ready at {hot:.1} °C / recently too hot"));
+            violations.push(format!(
+                "at {t} s: shown ready at {hot:.1} °C / recently too hot"
+            ));
         }
         temperatures.push((t, th.interior_c));
         wakes.push((t, d.tests));
@@ -425,12 +448,14 @@ pub fn run(s: &StandbyScenario) -> Result<StandbyResult, aed_core::ConfigError> 
                 let cap = th.true_at(TempPoint::Capacitor);
                 let over = hot > 60.0 + tol
                     || (test == PeriodicTest::Full
-                        && (cap > 50.0 + tol || cells.iter().any(|c| *c < -tol || *c > 45.0 + tol)));
+                        && (cap > 50.0 + tol
+                            || cells.iter().any(|c| *c < -tol || *c > 45.0 + tol)));
                 if over {
                     violations.push(format!("at {t} s: {test:?} test charged at {hot:.1} °C (capacitor {cap:.1}, cells {cells:?})"));
                 }
             }
-            let (outcome, highest_v, final_v, took_ms, heat_j) = run_one(cfg, supervisor.clone(), test, &env);
+            let (outcome, highest_v, final_v, took_ms, heat_j) =
+                run_one(cfg, supervisor.clone(), test, &env);
             env.thermal.step(f64::from(took_ms) / 1_000.0, heat_j, true);
             sb.record(timer, test, &outcome);
             tests.push(TestRun {
@@ -457,11 +482,22 @@ pub fn run(s: &StandbyScenario) -> Result<StandbyResult, aed_core::ConfigError> 
     }
     // The heat record never loses the hottest reading.
     let life_max = sb.heat().lifetime().max;
-    if life_max != hottest_seen.map_or(life_max, |h| life_max.map(|m| m.max(h))) || (hottest_seen.is_some() && life_max.is_none()) {
-        violations.push(format!("lifetime peak {life_max:?} below the hottest reading seen {hottest_seen:?}"));
+    if life_max != hottest_seen.map_or(life_max, |h| life_max.map(|m| m.max(h)))
+        || (hottest_seen.is_some() && life_max.is_none())
+    {
+        violations.push(format!(
+            "lifetime peak {life_max:?} below the hottest reading seen {hottest_seen:?}"
+        ));
     }
     if sb.heat().log().overwritten() == 0 && power_losses == 0 {
-        let logged = sb.heat().log().iter().copied().chain(sb.heat().current_entry()).filter_map(|e| e.max).max();
+        let logged = sb
+            .heat()
+            .log()
+            .iter()
+            .copied()
+            .chain(sb.heat().current_entry())
+            .filter_map(|e| e.max)
+            .max();
         if logged != hottest_seen {
             violations.push(format!("heat record peak {logged:?} differs from the hottest reading seen {hottest_seen:?}"));
         }

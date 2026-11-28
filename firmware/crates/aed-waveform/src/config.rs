@@ -48,8 +48,10 @@ pub struct WaveformConfig {
     /// assumption, about the cardiac chronaxie; not from the standard).
     pub phase1_min: Micros,
 
-    /// Longest allowed first phase. Default 12 ms (ARCHITECTURE.md
-    /// starting assumption).
+    /// Longest allowed first phase. Default 10 ms (D-63, change order
+    /// FW-8): below the hardware's phase-1 cap, whose lowest value is
+    /// 10.75 ms (HARDWARE_DESIGN.md §B13.3, calculated band), so the cap can
+    /// never cut a planned phase. The design table's longest is 9.011 ms.
     pub phase1_max: Micros,
 
     /// Second phase length as a fraction of the first. Default 2/3
@@ -61,8 +63,9 @@ pub struct WaveformConfig {
     /// minimum first phase).
     pub phase2_min: Micros,
 
-    /// Longest allowed second phase. Default 8 ms (2/3 of the 12 ms
-    /// maximum first phase).
+    /// Longest allowed second phase. Default 6.7 ms (D-63, FW-8): below
+    /// the hardware's phase-2 cap, lowest value 7.31 ms. The design
+    /// table's longest is 6.007 ms.
     pub phase2_max: Micros,
 
     /// Gap between the phases, while the output switches change over and
@@ -71,7 +74,8 @@ pub struct WaveformConfig {
     pub interphase: Micros,
 
     /// Longest allowed whole shock (phase 1 + gap + phase 2). Default
-    /// 20 ms (ARCHITECTURE.md starting assumption).
+    /// 17.2 ms (FW-8: 10 + 0.5 + 6.7), below the 25 ms overall hardware
+    /// cap's lowest value, 23.77 ms (simulated, logic-relay notes §2).
     pub max_total: Micros,
 
     /// Highest current the device may push through the patient at any
@@ -151,12 +155,12 @@ impl Default for WaveformConfig {
             child_charge: Volts(1150),
             max_charge: Volts(2000),
             phase1_min: Micros(3_000),
-            phase1_max: Micros(12_000),
+            phase1_max: Micros(10_000),
             phase2_ratio: 2.0 / 3.0,
             phase2_min: Micros(2_000),
-            phase2_max: Micros(8_000),
+            phase2_max: Micros(6_700),
             interphase: Micros(500),
-            max_total: Micros(20_000),
+            max_total: Micros(17_200),
             max_peak_current_amps: 80.0,
             energy_tolerance: 0.15,
         }

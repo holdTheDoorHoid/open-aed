@@ -24,7 +24,9 @@ use aed_cpr_eval::summary::render;
 use aed_types::ChestState;
 
 fn set(settings: &mut Settings, kv: &str) -> Result<(), String> {
-    let (k, v) = kv.split_once('=').ok_or(format!("expected key=value, got {kv}"))?;
+    let (k, v) = kv
+        .split_once('=')
+        .ok_or(format!("expected key=value, got {kv}"))?;
     let u = || v.parse::<u32>().map_err(|e| e.to_string());
     let f = || v.parse::<f32>().map_err(|e| e.to_string());
     match k {
@@ -45,10 +47,19 @@ fn set(settings: &mut Settings, kv: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn write_marks(dir: &PathBuf, case: &Case, states: &[ChestState], reference: &aed_cpr_eval::reference::Reference) {
+fn write_marks(
+    dir: &PathBuf,
+    case: &Case,
+    states: &[ChestState],
+    reference: &aed_cpr_eval::reference::Reference,
+) {
     let mut text = String::new();
     for r in &reference.runs {
-        text.push_str(&format!("{:.3} {:.3} C\n", r.start as f64 / RATE_HZ, r.end as f64 / RATE_HZ));
+        text.push_str(&format!(
+            "{:.3} {:.3} C\n",
+            r.start as f64 / RATE_HZ,
+            r.end as f64 / RATE_HZ
+        ));
     }
     let mut i = 0;
     while i < states.len() {
@@ -63,7 +74,11 @@ fn write_marks(dir: &PathBuf, case: &Case, states: &[ChestState], reference: &ae
             ChestState::HandsOff => None,
         };
         if let Some(k) = kind {
-            text.push_str(&format!("{:.3} {:.3} {k}\n", i as f64 / RATE_HZ, j as f64 / RATE_HZ));
+            text.push_str(&format!(
+                "{:.3} {:.3} {k}\n",
+                i as f64 / RATE_HZ,
+                j as f64 / RATE_HZ
+            ));
         }
         i = j;
     }
@@ -72,12 +87,27 @@ fn write_marks(dir: &PathBuf, case: &Case, states: &[ChestState], reference: &ae
 }
 
 fn describe(cases: &[Case]) {
-    println!("{:<18} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}", "case", "minutes", "clipped", "missing", "zeros", "analyses", "breaths");
+    println!(
+        "{:<18} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}",
+        "case", "minutes", "clipped", "missing", "zeros", "analyses", "breaths"
+    );
     let mut extremes: Vec<f64> = Vec::new();
     for c in cases {
-        let clipped = c.samples.iter().filter(|s| matches!(s, Sample::Clipped)).count();
-        let missing = c.samples.iter().filter(|s| matches!(s, Sample::Missing)).count();
-        let zeros = c.samples.iter().filter(|s| matches!(s, Sample::Ohms(z) if *z == 0.0)).count();
+        let clipped = c
+            .samples
+            .iter()
+            .filter(|s| matches!(s, Sample::Clipped))
+            .count();
+        let missing = c
+            .samples
+            .iter()
+            .filter(|s| matches!(s, Sample::Missing))
+            .count();
+        let zeros = c
+            .samples
+            .iter()
+            .filter(|s| matches!(s, Sample::Ohms(z) if *z == 0.0))
+            .count();
         for s in &c.samples {
             if let Sample::Ohms(z) = s {
                 if z.abs() > 20.0 {
@@ -108,7 +138,9 @@ fn describe(cases: &[Case]) {
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else {
-        eprintln!("usage: aed-cpr-eval describe|dev|heldout [--data DIR] [--marks DIR] [key=value ...]");
+        eprintln!(
+            "usage: aed-cpr-eval describe|dev|heldout [--data DIR] [--marks DIR] [key=value ...]"
+        );
         return ExitCode::FAILURE;
     };
     let mut root = default_root();
@@ -194,7 +226,10 @@ fn main() -> ExitCode {
                 })
             })
             .collect();
-        handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok().flatten())
+            .collect()
     });
     let title = match half {
         Half::Development => format!("development half, settings {settings:?}"),

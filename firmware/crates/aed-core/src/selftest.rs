@@ -35,6 +35,26 @@
 //! 8. that both together empty it in time;
 //! 9. that the pads are present and in date.
 //!
+//! **Design revision 0.3 (D-62, change order FW-15).** Added:
+//!
+//! * after the link, all four discharge-path "held" sensors must read held
+//!   (FW-11), and in the per-path discharge steps both sensors of the
+//!   released path must read "not held" within 25 ms while the other pair
+//!   stays held (T-7);
+//! * every test-permit episode waits [`Config::rearm_wait_ms`] (75 ms) of
+//!   consent absence before the next (FW-4);
+//! * the periodic tests check the two per-phase caps (an overlong phase 1,
+//!   then an overlong phase 2) and the overall cap (a long gap) separately
+//!   (T-8, T-9), and the over-voltage latch (T-6);
+//! * the REAL-permit steps (T-1 real permit alone; T-2/T-3 rail and relay
+//!   move; T-4 refused start without the high-side lead; periodic: T-3b
+//!   coil cap and, with the pads reading open, T-5 the dry shock-mode run),
+//!   each under one bounded real permit that the supervisor gives only with
+//!   both readings empty and the charger off (FW-16). They run with the
+//!   capacitor empty, before the charge step. The coil supply is raised at
+//!   least [`Config::coil_supply_lead_ms`] before the relay is commanded
+//!   (FW-12).
+//!
 //! **Why the caps are left to the periodic tests.** Everything in step 4
 //! except the two cap checks costs a few tens of milliseconds and finds a
 //! single fault that would otherwise stay hidden until a rescue (a shorted
@@ -65,8 +85,8 @@
 
 use crate::config::Config;
 use crate::hal::{
-    BatteryStatus, BridgeTestOutcome, BridgeTestStep, MainHardware, PadCartridge, RelayPosition,
-    SequenceEnd, SequenceStatus,
+    BatteryStatus, BridgeTestOutcome, BridgeTestStep, MainHardware, PadCartridge, Probe,
+    RelayPosition, SequenceEnd, SequenceStatus,
 };
 use crate::link::{SupervisorReport, TestRequest};
 use aed_types::{Decijoules, Micros, Millis, ShockPlan, Volts};
@@ -148,6 +168,39 @@ pub enum SelfTestFailure {
     /// The pads have used up their heat allowance (D-52). Advisory, like
     /// expired pads: the rescue still continues.
     PadsHeatWorn,
+    /// A discharge path's "held" sensors did not all read held in time
+    /// after both holds were set (FW-11), or a pair did not follow its
+    /// hold (T-7): `(path A, path B)` as read.
+    HoldSensor(crate::hal::HoldReadback),
+    /// The real permit was refused when asked for (D-62).
+    RealPermitRefused,
+    /// T-1: the rail rose with the real permit alone.
+    InterlockPassedRealPermitAlone,
+    /// T-2: request and real permit did not raise the rail in time.
+    RealRailDidNotRise,
+    /// T-3: the patient relay did not leave the front ends in time.
+    RelayDidNotMove,
+    /// T-3: the patient relay did not return in time after `RELAY_CMD` fell.
+    RelayDidNotReturn,
+    /// T-3b: the relay coil's hardware cap did not end the coil drive in
+    /// its band.
+    CoilCapDidNotExpire,
+    /// T-4: a low side commanded without its high-side lead started a
+    /// sequence.
+    LeadGateDidNotRefuse,
+    /// T-5: the dry shock-mode run did not latch and complete (for example
+    /// the sequence hold `SEQ_HOLD` is dead and withdrawal cut it short).
+    DryRunFailed,
+    /// T-6: the holds did not all release while the over-voltage latch was
+    /// tripped, or did not come back after its reset.
+    OvpHoldsDidNotFollow,
+    /// T-8: a per-phase cap did not end an overlong phase near its time.
+    PhaseCapDidNotTrip,
+    /// T-8: a per-phase cap ended a phase well before its nominal time.
+    PhaseCapTooShort,
+    /// The charger ended the self-test charge by itself (`CHG_DONE_N`):
+    /// its last-resort over-voltage trip.
+    ChargerStoppedItself,
     /// The test was stopped from outside before it finished (for example
     /// the battery failed or the cancel control was found stuck). The
     /// cancel control itself does NOT stop the self-test (decision D-31).
@@ -193,41 +246,138 @@ pub struct LinkSnapshot {
     pub received_at: Millis,
 }
 
-/// What a test-permit episode is for.
+/// What a test-permit (or real-permit) episode is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Episode {
     /// Permit alone, hold probe, test rail, switches, latch and lockout.
     Interlock,
-    /// The hardware time cap.
+    /// T-8: the phase-1 cap.
+    Phase1Cap,
+    /// T-8: the phase-2 cap.
+    Phase2Cap,
+    /// T-9: the overall hardware time cap (a long gap).
     TimeCap,
     /// The hardware permit-duration cap.
     PermitCap,
+    /// T-1: real permit alone.
+    RealAlone,
+    /// T-2, T-3: real permit with request; relay move.
+    RealRelay,
+    /// T-4: start without the lead.
+    RealRefused,
+    /// T-3b: coil cap.
+    RealCoilCap,
+    /// T-5: dry shock-mode run.
+    RealDry,
+    /// T-6: over-voltage latch.
+    Ovp,
+}
+
+impl Episode {
+    const fn real(self) -> bool {
+        matches!(
+            self,
+            Episode::RealAlone
+                | Episode::RealRelay
+                | Episode::RealRefused
+                | Episode::RealCoilCap
+                | Episode::RealDry
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Battery,
-    Link { since: Millis },
-    ModeContacts { since: Millis },
+    Link {
+        since: Millis,
+    },
+    ModeContacts {
+        since: Millis,
+    },
+    HoldEngage {
+        since: Millis,
+    },
     Relay,
-    RequestAlone { since: Millis },
-    AskPermit { since: Millis, episode: Episode },
-    PermitAlone { since: Millis },
-    HoldProbe { since: Millis },
-    TestRail { since: Millis },
-    Switch { index: usize },
-    RailDown { since: Millis },
-    LatchRun { since: Millis },
-    Lockout { since: Millis, reraised: bool },
-    Clear { since: Millis, after: Episode },
-    TimeCap { since: Millis, active_at: Option<Millis> },
-    PermitCap { since: Millis, armed_at: Option<Millis> },
-    Charge { since: Millis },
-    Agree { since: Millis },
-    PathA { since: Millis, v0: Volts },
-    PathBWait { since: Millis },
-    PathB { since: Millis, v0: Volts },
-    Discharge { since: Millis },
+    RequestAlone {
+        since: Millis,
+    },
+    AskPermit {
+        since: Millis,
+        episode: Episode,
+    },
+    PermitAlone {
+        since: Millis,
+    },
+    HoldProbe {
+        since: Millis,
+        released_at: Option<Millis>,
+    },
+    TestRail {
+        since: Millis,
+    },
+    Switch {
+        index: usize,
+    },
+    RailDown {
+        since: Millis,
+    },
+    LatchRun {
+        since: Millis,
+    },
+    Lockout {
+        since: Millis,
+        reraised: bool,
+    },
+    Clear {
+        since: Millis,
+        after: Episode,
+    },
+    TimeCap {
+        since: Millis,
+        active_at: Option<Millis>,
+        episode: Episode,
+    },
+    PermitCap {
+        since: Millis,
+        armed_at: Option<Millis>,
+    },
+    RealAlone {
+        since: Millis,
+    },
+    RealRun {
+        since: Millis,
+        episode: Episode,
+        armed_at: Option<Millis>,
+        left_at: Option<Millis>,
+        back_at: Option<Millis>,
+        active: bool,
+    },
+    OvpRun {
+        since: Millis,
+        released: bool,
+        ok_at: Option<Millis>,
+    },
+    Charge {
+        since: Millis,
+    },
+    Agree {
+        since: Millis,
+    },
+    PathA {
+        since: Millis,
+        v0: Volts,
+    },
+    PathBWait {
+        since: Millis,
+    },
+    PathB {
+        since: Millis,
+        v0: Volts,
+    },
+    Discharge {
+        since: Millis,
+    },
     Pads,
     Finished(Result<SelfTestPass, SelfTestFailure>),
 }
@@ -238,7 +388,9 @@ enum Request {
     Off,
     NoSequence,
     Short,
-    Long,
+    /// A test sequence of phase 1, gap, phase 2 (µs).
+    Plan(u32, u32, u32),
+    Probe(crate::hal::Probe),
 }
 
 /// The self-test sequencer. Non-blocking: call [`SelfTest::step`] repeatedly.
@@ -256,6 +408,7 @@ pub struct SelfTest {
     path_failure: Option<SelfTestFailure>,
     interlock_ms: u32,
     interlock_started: Option<Millis>,
+    coil_on_at: Option<Millis>,
 }
 
 impl SelfTest {
@@ -278,6 +431,7 @@ impl SelfTest {
             path_failure: None,
             interlock_ms: 0,
             interlock_started: None,
+            coil_on_at: None,
         }
     }
 
@@ -354,6 +508,26 @@ impl SelfTest {
     #[must_use]
     pub const fn test_request(&self) -> TestRequest {
         match self.step {
+            Step::AskPermit { episode, .. } if episode.real() => {
+                if matches!(episode, Episode::RealDry) {
+                    TestRequest::RealPermitDryRun
+                } else {
+                    TestRequest::RealPermit
+                }
+            }
+            Step::RealAlone { .. } => TestRequest::RealPermit,
+            Step::RealRun { episode, .. } => {
+                if matches!(episode, Episode::RealDry) {
+                    TestRequest::RealPermitDryRun
+                } else {
+                    TestRequest::RealPermit
+                }
+            }
+            Step::AskPermit {
+                episode: Episode::Ovp,
+                ..
+            }
+            | Step::OvpRun { .. } => TestRequest::OvpTest,
             Step::AskPermit { .. }
             | Step::PermitAlone { .. }
             | Step::HoldProbe { .. }
@@ -383,16 +557,51 @@ impl SelfTest {
         self.step = Step::Finished(Err(SelfTestFailure::Aborted));
     }
 
-    /// The test sequence plan: no charge, phase 1 of `phase1_us`, the
-    /// normal gap and a 1 ms phase 2, into the internal test load.
-    const fn test_plan(phase1_us: u32) -> ShockPlan {
+    /// A test sequence plan into the internal test load: no charge.
+    const fn test_plan(phase1_us: u32, gap_us: u32, phase2_us: u32) -> ShockPlan {
         ShockPlan {
             charge_voltage: Volts(0),
             phase1: Micros(phase1_us),
-            interphase: Micros(500),
-            phase2: Micros(1_000),
+            interphase: Micros(gap_us),
+            phase2: Micros(phase2_us),
             expected_energy: Decijoules(0),
         }
+    }
+
+    /// The episodes after the interlock one, in order, for this test.
+    fn next_episode(&self, done: Episode) -> Option<Episode> {
+        let real = self.config.self_test_real_permit_steps;
+        let order: &[Episode] = match (self.periodic, real) {
+            (true, true) => &[
+                Episode::Interlock,
+                Episode::Phase1Cap,
+                Episode::Phase2Cap,
+                Episode::TimeCap,
+                Episode::PermitCap,
+                Episode::RealAlone,
+                Episode::RealRelay,
+                Episode::RealRefused,
+                Episode::RealCoilCap,
+                Episode::RealDry,
+                Episode::Ovp,
+            ],
+            (true, false) => &[
+                Episode::Interlock,
+                Episode::Phase1Cap,
+                Episode::Phase2Cap,
+                Episode::TimeCap,
+                Episode::PermitCap,
+            ],
+            (false, true) => &[
+                Episode::Interlock,
+                Episode::RealAlone,
+                Episode::RealRelay,
+                Episode::RealRefused,
+            ],
+            (false, false) => &[Episode::Interlock],
+        };
+        let i = order.iter().position(|e| *e == done)?;
+        order.get(i.saturating_add(1)).copied()
     }
 
     /// After the battery and the link: the next check.
@@ -406,19 +615,13 @@ impl SelfTest {
 
     /// After a cleared episode: the next episode, or the charge.
     fn after_episode(&mut self, done: Episode, now: Millis) -> Step {
-        match (done, self.periodic) {
-            (Episode::Interlock, true) => Step::AskPermit {
+        match self.next_episode(done) {
+            Some(episode) => Step::AskPermit {
                 since: now,
-                episode: Episode::TimeCap,
+                episode,
             },
-            (Episode::TimeCap, _) => Step::AskPermit {
-                since: now,
-                episode: Episode::PermitCap,
-            },
-            _ => {
-                self.interlock_ms = self
-                    .interlock_started
-                    .map_or(0, |t| now.since(t));
+            None => {
+                self.interlock_ms = self.interlock_started.map_or(0, |t| now.since(t));
                 Step::Charge { since: now }
             }
         }
@@ -454,14 +657,16 @@ impl SelfTest {
             // the discharge path open: the interlock and the charger both
             // need it (interlock rules).
             Step::Link { since } => match fresh_link {
-                Some(l) if l.report.fault.is_some() => fail(SelfTestFailure::SupervisorFaultLatched),
+                Some(l) if l.report.fault.is_some() => {
+                    fail(SelfTestFailure::SupervisorFaultLatched)
+                }
                 Some(l) if self.skip_charge || (self.heat_skip_allowed && l.report.too_hot) => {
                     // The supervisor answers; charging waits for the device
                     // to cool (D-51). The pads are still checked.
                     self.charge_skipped = true;
                     Step::Pads
                 }
-                Some(l) if l.report.holding => self.after_link(now),
+                Some(l) if l.report.holding => Step::HoldEngage { since: now },
                 Some(_) if now.since(since) > c.self_test_link_wait_ms => {
                     fail(SelfTestFailure::SupervisorNotHolding)
                 }
@@ -470,6 +675,20 @@ impl SelfTest {
                 }
                 Some(_) | None => Step::Link { since },
             },
+            // FW-11: all four "held" sensors must read held. The allowance
+            // is the link wait (not only the 35 ms the pump needs): a
+            // supervisor resetting an over-voltage latch that powered up
+            // tripped holds the paths open until it has.
+            Step::HoldEngage { since } => {
+                let rb = hw.hold_readback();
+                if rb.all_held() {
+                    self.after_link(now)
+                } else if now.since(since) > c.self_test_link_wait_ms {
+                    fail(SelfTestFailure::HoldSensor(rb))
+                } else {
+                    Step::HoldEngage { since }
+                }
+            }
             Step::ModeContacts { since } => {
                 if hw.patient_mode() == hw.patient_mode_ceiling() {
                     Step::Relay
@@ -501,18 +720,70 @@ impl SelfTest {
                     Step::RequestAlone { since }
                 }
             }
+            Step::AskPermit { since, episode } if episode == Episode::Ovp => {
+                // T-6 is the supervisor's own step; it needs the capacitor
+                // proven empty first (its reading goes to full scale).
+                if c.reads_empty(hw.capacitor_voltage()) {
+                    Step::OvpRun {
+                        since: now,
+                        released: false,
+                        ok_at: None,
+                    }
+                } else if now.since(since) > c.self_test_link_wait_ms {
+                    fail(SelfTestFailure::OvpHoldsDidNotFollow)
+                } else {
+                    Step::AskPermit { since, episode }
+                }
+            }
+            Step::AskPermit { since, episode } if episode.real() => {
+                let coil_ready = self
+                    .coil_on_at
+                    .is_some_and(|t| now.since(t) >= c.coil_supply_lead_ms);
+                let dry_skip =
+                    episode == Episode::RealDry && aed_types::pads_sensed(hw.pad_resistance());
+                if dry_skip {
+                    // T-5 runs only with the pads reading open (docked, not
+                    // on a person); otherwise it waits for the next test.
+                    self.after_episode(episode, now)
+                } else if !coil_ready || !c.reads_empty(hw.capacitor_voltage()) {
+                    if now.since(since) > c.self_test_link_wait_ms {
+                        fail(SelfTestFailure::RealPermitRefused)
+                    } else {
+                        Step::AskPermit { since, episode }
+                    }
+                } else if fresh_link.is_some_and(|l| l.received_at > since && l.report.permit) {
+                    match episode {
+                        Episode::RealAlone => Step::RealAlone { since: now },
+                        _ => Step::RealRun {
+                            since: now,
+                            episode,
+                            armed_at: None,
+                            left_at: None,
+                            back_at: None,
+                            active: false,
+                        },
+                    }
+                } else if now.since(since) > c.self_test_link_wait_ms {
+                    fail(SelfTestFailure::RealPermitRefused)
+                } else {
+                    Step::AskPermit { since, episode }
+                }
+            }
             Step::AskPermit { since, episode } => {
                 if Self::permit_reported(fresh_link, since, true) {
                     match episode {
-                        Episode::Interlock => Step::PermitAlone { since: now },
-                        Episode::TimeCap => Step::TimeCap {
-                            since: now,
-                            active_at: None,
-                        },
                         Episode::PermitCap => Step::PermitCap {
                             since: now,
                             armed_at: None,
                         },
+                        Episode::Phase1Cap | Episode::Phase2Cap | Episode::TimeCap => {
+                            Step::TimeCap {
+                                since: now,
+                                active_at: None,
+                                episode,
+                            }
+                        }
+                        _ => Step::PermitAlone { since: now },
                     }
                 } else if now.since(since) > c.self_test_link_wait_ms {
                     fail(SelfTestFailure::TestPermitRefused)
@@ -520,22 +791,110 @@ impl SelfTest {
                     Step::AskPermit { since, episode }
                 }
             }
+            Step::RealAlone { since } => {
+                if hw.sequence_status() != SequenceStatus::Idle {
+                    fail(SelfTestFailure::InterlockPassedRealPermitAlone)
+                } else if now.since(since) >= 20 {
+                    Step::Clear {
+                        since: now,
+                        after: Episode::RealAlone,
+                    }
+                } else {
+                    Step::RealAlone { since }
+                }
+            }
+            Step::RealRun {
+                since,
+                episode,
+                armed_at,
+                left_at,
+                back_at,
+                active,
+            } => self.real_run(hw, now, since, episode, armed_at, left_at, back_at, active),
+            Step::OvpRun {
+                since,
+                released,
+                ok_at,
+            } => {
+                let rb = hw.hold_readback();
+                let released = released || rb.none_held();
+                let ok = fresh_link.is_some_and(|l| l.received_at > since && l.report.ovp_test_ok);
+                match (ok_at, fresh_link) {
+                    (_, Some(l)) if l.report.fault.is_some() => {
+                        fail(SelfTestFailure::SupervisorFaultLatched)
+                    }
+                    (None, _) if ok => {
+                        if released {
+                            Step::OvpRun {
+                                since,
+                                released,
+                                ok_at: Some(now),
+                            }
+                        } else {
+                            fail(SelfTestFailure::OvpHoldsDidNotFollow)
+                        }
+                    }
+                    (Some(t), _) => {
+                        if rb.all_held() {
+                            Step::Clear {
+                                since: now,
+                                after: Episode::Ovp,
+                            }
+                        } else if now.since(t)
+                            > c.hold_engage_wait_ms.saturating_add(c.heartbeat_timeout_ms)
+                        {
+                            fail(SelfTestFailure::OvpHoldsDidNotFollow)
+                        } else {
+                            Step::OvpRun {
+                                since,
+                                released,
+                                ok_at,
+                            }
+                        }
+                    }
+                    (None, _) if now.since(since) > c.self_test_link_wait_ms => {
+                        fail(SelfTestFailure::OvpHoldsDidNotFollow)
+                    }
+                    (None, _) => Step::OvpRun {
+                        since,
+                        released,
+                        ok_at,
+                    },
+                }
+            }
             Step::PermitAlone { since } => {
                 if hw.sequence_status() != SequenceStatus::Idle {
                     fail(SelfTestFailure::InterlockPassedPermitAlone)
                 } else if now.since(since) >= c.interlock_probe_ms {
-                    Step::HoldProbe { since: now }
+                    Step::HoldProbe {
+                        since: now,
+                        released_at: None,
+                    }
                 } else {
                     Step::PermitAlone { since }
                 }
             }
-            Step::HoldProbe { since } => {
-                if hw.sequence_status() != SequenceStatus::Idle {
-                    fail(SelfTestFailure::InterlockPassedWithoutHold)
-                } else if now.since(since) >= c.interlock_probe_ms {
-                    Step::TestRail { since: now }
-                } else {
-                    Step::HoldProbe { since }
+            // FW-11: the main controller's path takes up to 25 ms to read
+            // "not held" after its clock stops, so the request is raised only
+            // once both its sensors say so; then the rail must stay down.
+            Step::HoldProbe { since, released_at } => {
+                let rb = hw.hold_readback();
+                match released_at {
+                    None if rb.a_released() => Step::HoldProbe {
+                        since,
+                        released_at: Some(now),
+                    },
+                    None if now.since(since) > c.hold_release_wait_ms => {
+                        fail(SelfTestFailure::HoldSensor(rb))
+                    }
+                    None => Step::HoldProbe { since, released_at },
+                    Some(_) if hw.sequence_status() != SequenceStatus::Idle => {
+                        fail(SelfTestFailure::InterlockPassedWithoutHold)
+                    }
+                    Some(t) if now.since(t) >= c.interlock_probe_ms => {
+                        Step::TestRail { since: now }
+                    }
+                    Some(_) => Step::HoldProbe { since, released_at },
                 }
             }
             Step::TestRail { since } => {
@@ -544,7 +903,11 @@ impl SelfTest {
                     fail(SelfTestFailure::RelayMovedUnderTestPermit)
                 } else if status == SequenceStatus::Armed {
                     Step::Switch { index: 0 }
-                } else if now.since(since) > c.interlock_probe_ms {
+                } else if now.since(since)
+                    > c.interlock_probe_ms.saturating_add(c.hold_engage_wait_ms)
+                {
+                    // The hold re-engages (≤ 35 ms, FW-11) before the
+                    // request is raised again.
                     fail(SelfTestFailure::TestRailDidNotRise)
                 } else {
                     Step::TestRail { since }
@@ -556,7 +919,9 @@ impl SelfTest {
                     if hw.patient_relay() != RelayPosition::FrontEnds {
                         fail(SelfTestFailure::RelayMovedUnderTestPermit)
                     } else if r.outcome == BridgeTestOutcome::Pass {
-                        Step::Switch { index: index.saturating_add(1) }
+                        Step::Switch {
+                            index: index.saturating_add(1),
+                        }
                     } else {
                         fail(SelfTestFailure::BridgeSwitch(s, r.outcome))
                     }
@@ -609,8 +974,17 @@ impl SelfTest {
                 }
             }
             Step::Clear { since, after } => {
+                let permit_down = if after.real() {
+                    fresh_link.is_some_and(|l| l.received_at > since && !l.report.permit)
+                } else {
+                    Self::permit_reported(fresh_link, since, false)
+                };
+                // FW-4: consent absent for the re-arm wait, counted from our
+                // own withdrawal (the start of this step), as well as the
+                // hardware reading idle.
                 if hw.sequence_status() == SequenceStatus::Idle
-                    && Self::permit_reported(fresh_link, since, false)
+                    && permit_down
+                    && now.since(since) >= c.rearm_wait_ms
                 {
                     self.after_episode(after, now)
                 } else if now.since(since) > c.self_test_link_wait_ms {
@@ -619,39 +993,82 @@ impl SelfTest {
                     Step::Clear { since, after }
                 }
             }
-            Step::TimeCap { since, active_at } => match hw.sequence_status() {
-                SequenceStatus::Active => Step::TimeCap {
-                    since,
-                    active_at: active_at.or(Some(now)),
-                },
-                SequenceStatus::Ended(SequenceEnd::TimeCapTripped) => {
-                    // The cap must have cut it close to its nominal time:
-                    // allow two of the main controller's own sampling
-                    // intervals of slack either side of what it can see.
-                    let ran = active_at.map_or(0, |t| now.since(t));
-                    if ran > c.hardware_time_cap_ms.saturating_add(5) {
-                        fail(SelfTestFailure::TimeCapDidNotTrip)
-                    } else if ran.saturating_add(5) < c.hardware_time_cap_ms {
-                        fail(SelfTestFailure::TimeCapTooShort)
-                    } else {
-                        Step::Clear {
-                            since: now,
-                            after: Episode::TimeCap,
+            Step::TimeCap {
+                since,
+                active_at,
+                episode,
+            } => {
+                // What should end the overlong sequence, and when (ms after
+                // the first conducting moment, nominal).
+                let (want, nominal) = match episode {
+                    Episode::Phase1Cap => (SequenceEnd::PhaseCapTripped, c.hardware_phase1_cap_ms),
+                    Episode::Phase2Cap => (
+                        SequenceEnd::PhaseCapTripped,
+                        c.hardware_phase2_cap_ms.saturating_add(2),
+                    ),
+                    _ => (SequenceEnd::TimeCapTripped, c.hardware_time_cap_ms),
+                };
+                let (too_long, too_short) = if want == SequenceEnd::TimeCapTripped {
+                    (
+                        SelfTestFailure::TimeCapDidNotTrip,
+                        SelfTestFailure::TimeCapTooShort,
+                    )
+                } else {
+                    (
+                        SelfTestFailure::PhaseCapDidNotTrip,
+                        SelfTestFailure::PhaseCapTooShort,
+                    )
+                };
+                let slack = if want == SequenceEnd::TimeCapTripped {
+                    5
+                } else {
+                    2
+                };
+                match hw.sequence_status() {
+                    SequenceStatus::Active => Step::TimeCap {
+                        since,
+                        active_at: active_at.or(Some(now)),
+                        episode,
+                    },
+                    SequenceStatus::Ended(end) if end == want => {
+                        let ran = active_at.map_or(0, |t| now.since(t));
+                        if ran > nominal.saturating_add(slack) {
+                            fail(too_long)
+                        } else if ran.saturating_add(slack) < nominal {
+                            fail(too_short)
+                        } else {
+                            Step::Clear {
+                                since: now,
+                                after: episode,
+                            }
                         }
                     }
+                    // The overall cap cut a phase-cap check: it is too short.
+                    SequenceStatus::Ended(SequenceEnd::TimeCapTripped) => {
+                        fail(SelfTestFailure::TimeCapTooShort)
+                    }
+                    SequenceStatus::Ended(_) | SequenceStatus::LockedOut => fail(too_long),
+                    _ if now.since(since)
+                        > c.test_sequence_timeout_ms
+                            .saturating_add(c.hardware_time_cap_ms) =>
+                    {
+                        fail(too_long)
+                    }
+                    _ => Step::TimeCap {
+                        since,
+                        active_at,
+                        episode,
+                    },
                 }
-                SequenceStatus::Ended(_) | SequenceStatus::LockedOut => {
-                    fail(SelfTestFailure::TimeCapDidNotTrip)
-                }
-                _ if now.since(since) > c.test_sequence_timeout_ms.saturating_add(c.hardware_time_cap_ms) => {
-                    fail(SelfTestFailure::TimeCapDidNotTrip)
-                }
-                _ => Step::TimeCap { since, active_at },
-            },
+            }
             Step::PermitCap { since, armed_at } => {
-                let limit = c.hardware_permit_cap_ms.saturating_add(c.interlock_probe_ms);
+                let limit = c
+                    .hardware_permit_cap_ms
+                    .saturating_add(c.interlock_probe_ms);
                 match (hw.sequence_status(), armed_at) {
-                    (SequenceStatus::Armed, _) if armed_at.is_none_or(|t| now.since(t) <= limit) => {
+                    (SequenceStatus::Armed, _)
+                        if armed_at.is_none_or(|t| now.since(t) <= limit) =>
+                    {
                         Step::PermitCap {
                             since,
                             armed_at: armed_at.or(Some(now)),
@@ -672,7 +1089,9 @@ impl SelfTest {
             }
             Step::Charge { since } => {
                 let v = hw.capacitor_voltage();
-                if v > c.overvoltage_limit {
+                if hw.charger_done() {
+                    fail(SelfTestFailure::ChargerStoppedItself)
+                } else if v > c.overvoltage_limit {
                     fail(SelfTestFailure::Overvoltage)
                 } else if c.reached_plan(v, self.test_voltage) {
                     Step::Agree { since: now }
@@ -698,6 +1117,16 @@ impl SelfTest {
                 }
             }
             Step::PathA { since, v0 } => {
+                let rb = hw.hold_readback();
+                if now.since(since) >= c.hold_release_wait_ms
+                    && now.since(since) < c.discharge_path_test_ms
+                    && !(rb.a_released() && rb.b_held())
+                {
+                    // T-7: path A released, both its sensors must say so,
+                    // and path B's must still read held.
+                    self.path_failure
+                        .get_or_insert(SelfTestFailure::HoldSensor(rb));
+                }
                 if now.since(since) >= c.discharge_path_test_ms {
                     // A slow path is reported only after both paths have
                     // been let go together and the capacitor is confirmed
@@ -711,23 +1140,37 @@ impl SelfTest {
                 }
             }
             Step::PathBWait { since } => {
-                let released = fresh_link.is_some_and(|l| l.received_at > since && !l.report.holding);
+                let released =
+                    fresh_link.is_some_and(|l| l.received_at > since && !l.report.holding);
                 if released {
                     Step::PathB {
                         since: now,
                         v0: hw.capacitor_voltage(),
                     }
                 } else if now.since(since) > c.self_test_link_wait_ms {
-                    self.path_failure.get_or_insert(SelfTestFailure::PathBNotReleased);
+                    self.path_failure
+                        .get_or_insert(SelfTestFailure::PathBNotReleased);
                     Step::Discharge { since: now }
                 } else {
                     Step::PathBWait { since }
                 }
             }
             Step::PathB { since, v0 } => {
+                let rb = hw.hold_readback();
+                // Path B released: both its sensors must say so within the
+                // release wait. Path A was re-held when path B's step began,
+                // so its pair is checked at the end of the window, once its
+                // engage time (≤ 35 ms) is surely over.
+                let late = now.since(since) >= c.discharge_path_test_ms;
+                let early = now.since(since) >= c.hold_release_wait_ms && !late;
+                if (early && !rb.b_released()) || (late && !(rb.b_released() && rb.a_held())) {
+                    self.path_failure
+                        .get_or_insert(SelfTestFailure::HoldSensor(rb));
+                }
                 if now.since(since) >= c.discharge_path_test_ms {
                     if !Self::fell_enough(&c, v0, hw.capacitor_voltage()) {
-                        self.path_failure.get_or_insert(SelfTestFailure::DischargePathBSlow);
+                        self.path_failure
+                            .get_or_insert(SelfTestFailure::DischargePathBSlow);
                     }
                     Step::Discharge { since: now }
                 } else {
@@ -766,6 +1209,118 @@ impl SelfTest {
         }
     }
 
+    /// The real-permit steps T-2/T-3, T-3b, T-4 and T-5 (D-62).
+    #[allow(clippy::too_many_arguments)]
+    fn real_run(
+        &self,
+        hw: &mut impl MainHardware,
+        now: Millis,
+        since: Millis,
+        episode: Episode,
+        armed_at: Option<Millis>,
+        left_at: Option<Millis>,
+        back_at: Option<Millis>,
+        active: bool,
+    ) -> Step {
+        let c = self.config;
+        let status = hw.sequence_status();
+        let relay = hw.patient_relay();
+        let fail = |f| Step::Finished(Err(f));
+        let armed_at = armed_at.or((status != SequenceStatus::Idle).then_some(now));
+        let left_at = left_at.or((relay != RelayPosition::FrontEnds).then_some(now));
+        let back_at = match (left_at, back_at) {
+            (Some(_), None) if relay == RelayPosition::FrontEnds => Some(now),
+            (_, b) => b,
+        };
+        let active = active || status.started();
+        let next = Step::RealRun {
+            since,
+            episode,
+            armed_at,
+            left_at,
+            back_at,
+            active,
+        };
+        let clear = Step::Clear {
+            since: now,
+            after: episode,
+        };
+        let Some(armed) = armed_at else {
+            // T-2: the rail must rise promptly under the real permit.
+            return if now.since(since) > c.interlock_probe_ms.saturating_add(c.heartbeat_period_ms)
+            {
+                fail(SelfTestFailure::RealRailDidNotRise)
+            } else {
+                next
+            };
+        };
+        let relay_cmd_at = c.rail_ready_wait_ms;
+        let move_by = relay_cmd_at
+            .saturating_add(c.relay_settle_abort_ms)
+            .saturating_add(2);
+        if left_at.is_none() && now.since(armed) > move_by && episode != Episode::RealDry {
+            return fail(SelfTestFailure::RelayDidNotMove);
+        }
+        match episode {
+            Episode::RealRelay => {
+                if let Some(b) = back_at {
+                    let _ = b;
+                    clear
+                } else if now.since(armed) > relay_cmd_at.saturating_add(30 + 50 + 2) {
+                    fail(SelfTestFailure::RelayDidNotReturn)
+                } else {
+                    next
+                }
+            }
+            Episode::RealCoilCap => {
+                // The coil cap (83.7–96.4 ms after K_EN, which rises with
+                // RELAY_CMD) must bring the relay back while RELAY_CMD is
+                // still held (115 ms).
+                let limit = relay_cmd_at.saturating_add(96 + 10 + 2);
+                match back_at {
+                    Some(b) => {
+                        let t = b.since(armed).saturating_sub(relay_cmd_at);
+                        if (80..=108).contains(&t) {
+                            clear
+                        } else {
+                            fail(SelfTestFailure::CoilCapDidNotExpire)
+                        }
+                    }
+                    None if now.since(armed) > limit => fail(SelfTestFailure::CoilCapDidNotExpire),
+                    None => next,
+                }
+            }
+            Episode::RealRefused => {
+                if active {
+                    fail(SelfTestFailure::LeadGateDidNotRefuse)
+                } else if now.since(armed)
+                    > move_by.saturating_add(c.relay_settle_ms).saturating_add(5)
+                {
+                    clear
+                } else {
+                    next
+                }
+            }
+            _ => {
+                // T-5: must latch and complete into the open pads.
+                match status {
+                    SequenceStatus::Ended(SequenceEnd::Completed) => clear,
+                    SequenceStatus::Ended(_) | SequenceStatus::LockedOut => {
+                        fail(SelfTestFailure::DryRunFailed)
+                    }
+                    SequenceStatus::Idle if active => fail(SelfTestFailure::DryRunFailed),
+                    _ if now.since(armed)
+                        > c.sequence_start_timeout_ms
+                            .saturating_add(c.hardware_time_cap_ms) =>
+                    {
+                        fail(SelfTestFailure::DryRunFailed)
+                    }
+                    _ => next,
+                }
+            }
+        }
+    }
+
     /// True if the reading fell to at most the allowed share of `v0`.
     fn fell_enough(c: &Config, v0: Volts, v: Volts) -> bool {
         u32::from(v.0) * 100 <= u32::from(v0.0) * u32::from(c.discharge_path_max_remaining_percent)
@@ -777,16 +1332,68 @@ impl SelfTest {
     fn drive_outputs(&mut self, hw: &mut impl MainHardware) {
         let (hold, charge, request) = match self.step {
             Step::Charge { .. } | Step::Agree { .. } => (true, true, Request::Off),
-            Step::RequestAlone { .. } | Step::TestRail { .. } | Step::Switch { .. } => {
-                (true, false, Request::NoSequence)
+            Step::RequestAlone { .. } | Step::Switch { .. } => (true, false, Request::NoSequence),
+            Step::TestRail { .. } => {
+                let held = hw.hold_readback().all_held();
+                (
+                    true,
+                    false,
+                    if held {
+                        Request::NoSequence
+                    } else {
+                        Request::Off
+                    },
+                )
             }
-            Step::HoldProbe { .. } => (false, false, Request::NoSequence),
+            Step::HoldProbe { released_at, .. } => (
+                false,
+                false,
+                if released_at.is_some() {
+                    Request::NoSequence
+                } else {
+                    Request::Off
+                },
+            ),
             Step::PermitCap { .. } => (true, false, Request::NoSequence),
             Step::LatchRun { .. } => (true, false, Request::Short),
-            Step::Lockout { reraised, .. } => {
-                (true, false, if reraised { Request::Short } else { Request::Off })
+            Step::RealAlone { .. } | Step::OvpRun { .. } | Step::HoldEngage { .. } => {
+                (true, false, Request::Off)
             }
-            Step::TimeCap { .. } => (true, false, Request::Long),
+            Step::RealRun {
+                episode, active, ..
+            } => (
+                true,
+                false,
+                match episode {
+                    Episode::RealRelay => Request::Probe(Probe::RelayMove { hold_ms: 30 }),
+                    Episode::RealCoilCap => Request::Probe(Probe::RelayMove { hold_ms: 115 }),
+                    Episode::RealRefused => Request::Probe(Probe::StartWithoutLead),
+                    // T-5: withdraw as soon as the sequence is seen running,
+                    // so only the sequence hold keeps the rail up.
+                    _ if active => Request::Off,
+                    _ => Request::Probe(Probe::DryRun),
+                },
+            ),
+            Step::Lockout { reraised, .. } => (
+                true,
+                false,
+                if reraised {
+                    Request::Short
+                } else {
+                    Request::Off
+                },
+            ),
+            Step::TimeCap { episode, .. } => {
+                let cap = self.config.hardware_time_cap_ms.saturating_mul(1_000);
+                let plan = match episode {
+                    // B14.5 T-8: phase 1 held 15 ms; then phase 1 = 1 ms and
+                    // phase 2 held 12 ms; T-9: a 30 ms gap.
+                    Episode::Phase1Cap => Request::Plan(15_000, 500, 1_000),
+                    Episode::Phase2Cap => Request::Plan(1_000, 500, 12_000),
+                    _ => Request::Plan(1_000, cap.saturating_add(5_000), 1_000),
+                };
+                (true, false, plan)
+            }
             Step::Relay
             | Step::ModeContacts { .. }
             | Step::AskPermit { .. }
@@ -804,15 +1411,45 @@ impl SelfTest {
         };
         if request != self.raised {
             hw.withdraw_shock_request();
-            let cap_plus = self.config.hardware_time_cap_ms.saturating_add(15).saturating_mul(1_000);
             match request {
                 Request::Off => {}
                 Request::NoSequence => hw.request_shock(None),
-                Request::Short => hw.request_shock(Some(&Self::test_plan(1_000))),
-                Request::Long => hw.request_shock(Some(&Self::test_plan(cap_plus))),
+                Request::Short => hw.request_shock(Some(&Self::test_plan(1_000, 500, 1_000))),
+                Request::Plan(p1, gap, p2) => hw.request_shock(Some(&Self::test_plan(p1, gap, p2))),
+                Request::Probe(p) => hw.request_probe(p),
             }
             self.raised = request;
         }
+        // FW-12: the coil supply is up from the interlock steps until the
+        // real-permit steps are over, so it has been up at least
+        // `coil_supply_lead_ms` before any relay command.
+        let coil = self.config.self_test_real_permit_steps
+            && matches!(
+                self.step,
+                Step::Relay
+                    | Step::RequestAlone { .. }
+                    | Step::AskPermit { .. }
+                    | Step::PermitAlone { .. }
+                    | Step::HoldProbe { .. }
+                    | Step::TestRail { .. }
+                    | Step::Switch { .. }
+                    | Step::RailDown { .. }
+                    | Step::LatchRun { .. }
+                    | Step::Lockout { .. }
+                    | Step::Clear { .. }
+                    | Step::TimeCap { .. }
+                    | Step::PermitCap { .. }
+                    | Step::RealAlone { .. }
+                    | Step::RealRun { .. }
+                    | Step::OvpRun { .. }
+            );
+        if coil {
+            let now = hw.now();
+            self.coil_on_at.get_or_insert(now);
+        } else {
+            self.coil_on_at = None;
+        }
+        hw.set_coil_supply(coil);
         if hold {
             hw.set_discharge_hold(true);
         }

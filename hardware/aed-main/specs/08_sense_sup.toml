@@ -2,16 +2,18 @@
 # NOT FOR CONSTRUCTION — unreviewed design.
 # Source: docs/HARDWARE_DESIGN.md §B9.1, §B4.4 (threshold stack-up), §B4.6, §B5.4 (OVP force); contract.md issue 2
 # §5.4 (OVP_TRIP), §5.6, §8 (sheet 08). References 801-899. Work package WP-C. Arithmetic: capture-notes/WP-C.md.
+# Revision 0.3 (contract issue 3, capture-notes/rev3-changes.md WP-C C-2..C-5): latching OVP comparator with an
+# edge-only reset (OVP_RST) and a test input (OVP_TEST). Checks: sim/rev3-wpc (ovp_band.py, ovp_latch.cir).
 # The supervisor string (12 x 3.32 MOhm thin film + 2 x 79.6 kOhm) and its tap clamp are on 11_hv_storage.
 
 [sheet]
 name = "08_sense_sup"
-title = "Supervisor capacitor-voltage chain: AD7171 + ADR3425, hardware over-voltage comparator"
-source = "docs/HARDWARE_DESIGN.md §B9.1, §B4.4, §B4.6; contract.md §5.4, §5.6"
+title = "Supervisor capacitor-voltage chain: AD7171 + ADR3425, latching hardware over-voltage comparator"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B9.1, §B4.4, §B4.6, §B14.5 (T-6); contract.md issue 3 §5.4, §5.6"
 date = "2026-11-27"
 comments = [
   "Shares nothing with 07_sense_main: own rail 3V3_SUP, ADI ADC and reference, a different op-amp and comparator family, internal ADC clock (D-28).",
-  "OVP_TRIP trips at 2,160 V nominal (band 2,132-2,189 V worst case) and releases near 1,000 V: the forced dump continues well below the operating range.",
+  "OVP_TRIP trips at 2,107 V nominal (2,071-2,141 V worst case, -20..+70 C) and LATCHES: it stays high for any capacitor voltage until an OVP_RST rising edge or loss of 3V3_SUP (revision 0.3). OVP_TEST injects a trip at 0 V for the self-test T-6.",
 ]
 
 [nets]
@@ -20,7 +22,9 @@ global = [
   "VCAP_S_TAP",               # 11 -> 08, scaled capacitor voltage 1:1,002
   "HVS_SCLK", "HVS_PDRST_N",  # 05 -> 08
   "HVS_DOUT",                 # 08 -> 05
-  "OVP_TRIP",                 # 08 -> 11 (opto LEDs), 05 ; high = over-voltage
+  "OVP_TRIP",                 # 08 -> 11 (Q1111 gate), 05 ; high = over-voltage, latched (issue 3)
+  "OVP_RST",                  # 05 -> 08 ; rising edge clears the latch (issue 3)
+  "OVP_TEST",                 # 05 -> 08 ; high = inject a trip (issue 3)
 ]
 
 [[erc_accepted]]
@@ -49,9 +53,9 @@ reason = "Driven from the supervisor string tap on 11_hv_storage (WP-F), placeho
 
 [[erc_accepted]]
 type = "isolated_pin_label"
-match = "HVS_|OVP_TRIP"
+match = "HVS_|OVP_TRIP|OVP_RST|OVP_TEST"
 until_sheet = "05_supervisor_mcu"
-reason = "Partner is the supervisor on 05_supervisor_mcu (WP-B); OVP_TRIP also goes to the opto LEDs on 11_hv_storage. Placeholders in this worktree."
+reason = "Partner is the supervisor on 05_supervisor_mcu (WP-B); OVP_TRIP also goes to Q1111 on 11_hv_storage. OVP_RST and OVP_TEST are new in contract issue 3 and sheet 05 may still be at issue 2 (single-ended until WP-B draws them)."
 
 [[group]]
 id = "tap"
@@ -83,14 +87,35 @@ VREF_S is drawn as a power symbol made here by the reference's power_out pin (co
 
 [[group]]
 id = "ovp"
-title = "Hardware over-voltage comparator OVP_TRIP (2,160 V), TLV9031 push-pull on 3V3_SUP"
+title = "LATCHING over-voltage comparator OVP_TRIP (2,107 V), TLV9031 push-pull on 3V3_SUP (revision 0.3)"
 note = """
-U803 IN- = VREF_S x 15.6 k / (9.09 k + 15.6 k) = 1.5796 V (0.1 % parts, C810 100 nF). IN+ = buffered tap through R805 36.5 k, positive feedback R806 100 k from the output.
-Trip (output low before): tap = 1.5796 x (1 + 36.5/100) = 2.1561 V = 2,160 V nominal. Release (output high, VOH about 3.15 V): tap = 2.1561 - 3.15 x 0.365 = 1.006 V = about 1,000 V.
-Band [CALC, worst case]: TLV9031 Vos +-2 mV over temperature (SNOSDA3H 5.7), ADR3425 0.24 %, resistors 0.1 % + 25 ppm/K, follower 0.07 mV, supervisor string ratio +-0.2 % tolerance +-0.225 % temperature +-0.25 % life -> 2,132-2,189 V (design table §B4.4: 2,138-2,182 V). Top 11 V below the 2,200 V rating; bottom 123 V above the top of the firmware window (2,008.6 V). Release 919-1,098 V (depends on VOH, i.e. on 3V3_SUP and the opto LED load on 11).
-Why a wide hysteresis: after a hardware over-voltage something has already failed; the forced dump runs to about 1,000 V instead of stopping 1-2 % below the trip point and re-arming the charger at the top of the range. The comparator does not latch (no latch net in the contract): see capture notes, contract issue C-5.
-Output: push-pull high = over-voltage -> opto LEDs on 11 (series resistor and 100 kOhm pull-down on 11) and the supervisor (R7 receiver on 05). TLV9031 inputs are fault-tolerant to 6 V regardless of V+ (SNOSDA3H 5.1 note 2).
-Unpowered (3V3_SUP off) -> OVP_TRIP low = no force: the accepted latent fault 33 (§13); 3V3_SUP off also stops the supervisor's hold clock, so stack B conducts anyway.
+U803 IN- = OVP_REF = VREF_S x 15.6 k / (21.5 k + 15.6 k) = 1.0512 V (0.1 % parts, C810 100 nF). IN+ = OVP_SENSE: R805 100 k from the buffered tap, R806 100 k from the output (Rin = Rf).
+Trip (output low before): VCAPS_BUF = 2 x 1.0512 = 2.1024 V -> x 1,002.0 = 2,107 V nominal. Once OVP_TRIP is high (>= 2.1 V is enough) OVP_SENSE >= OVP_TRIP / 2 > OVP_REF for any tap >= 0 V: LATCHED.
+Band [CALC, sim/rev3-wpc/ovp_band.py, worst case of every term, -20..+70 C]: 2,071-2,141 V (2,071-2,152 V if 100 nA of Q801 off-state leakage is assumed on OVP_SENSE). Bottom 62 V above the top of a normal adult charge (2,008.6 V); top 59 V (48 V) below the 2,200 V rating. Largest term: the supervisor string ratio (+-14 V).
+Release: ONLY by an OVP_RST rising edge (group ovp_rst) or loss of 3V3_SUP. The issue-2 text (2,160 V, release near 1,000 V) is obsolete (C-5).
+Power-up: TLV9031 SNOSDA3H rev. H deleted the power-on-reset feature, so the output state while 3V3_SUP rises is not guaranteed; powering up tripped is the safe direction (both paths forced on, no charge) and firmware clears it with an OVP_RST edge at switch-on (simulated untripped with an ideal comparator).
+Output: push-pull, high = over-voltage -> Q1111 gate on 11 (100 kOhm pull-down there) and the supervisor (R7 receiver on 05). Load <= 0.1 mA: VOH within 0.1 V of 3V3_SUP. TLV9031 inputs fault-tolerant to 6 V regardless of V+ (SNOSDA3H 5.1).
+Unpowered (3V3_SUP off) -> OVP_TRIP low = no force: accepted latent fault 33; 3V3_SUP off also stops HOLD_S_CLK, so stack B conducts anyway.
+"""
+
+[[group]]
+id = "ovp_rst"
+title = "OVP_RST: edge-only reset of the latch (C812 100 nF / R809 100 k into Q801 BSS138, 1 k to OVP_SENSE)"
+note = """
+OVP_RST rising edge -> OVP_RG jumps to 3.3 V and decays with 100 k x 100 nF = 10 ms; Q801 (VGS(th) 0.8-1.5 V at 1 mA, onsemi BSS138/D Rev. 7) conducts for 10 ms x ln(3.3/VGS(th)) = 7.9-14 ms and pulls OVP_SENSE to 3.2 V x 1 k / 101 k = 32 mV < OVP_REF: output low. After the pulse the latch stays clear if the capacitor is below the trip, and re-trips at once if it is not.
+A line stuck HIGH cannot hold the latch clear (the gate decays through R809): simulated, sim/rev3-wpc case 'test_with_RST_stuck_high'. A falling edge drives the gate to about -3.3 V (VGS rating +-20 V).
+R811 100 kOhm = contract default resistor (OVP_RST low).
+"""
+
+[[group]]
+id = "ovp_test"
+title = "OVP_TEST: test injection into the follower INPUT VCAPS_IN (R812 4.7 k + D801 BAS116) - departs from C-4, see note"
+note = """
+OVP_TEST high: VCAPS_IN = (OVP_TEST - VF) x 149.8 k / (149.8 k + 4.7 k) = 2.42-2.86 V [CALC: 3V3_SUP 3.2-3.4 V assumed, BAS116 VF 0.45-0.70 V at 15-20 uA EST] -> the follower, R805 and the comparator all see a tap above the trip (top of band 2.133 V at VCAPS_BUF, sheet-08 parts only): trips within about 0.1 ms. 149.8 k = R801 100 k + the string's tap source on 11 (10 k + 39.8 k).
+DEPARTURE from change order C-4 (which injects at OVP_SENSE through 22 k): injecting after R805 leaves a single-part fault hidden: R805 open (the real tap can no longer reach the comparator, but the injected test still trips and latches) - simulated, sim/rev3-wpc case arr2_R805_open. Injecting at VCAPS_IN makes the test pass only through U804, R805 and U803; R801 open or C801 short is seen by the main/supervisor reading comparison as before.
+Side effects: during the test the supervisor's own ADC reads full scale (> 2,500 V) - firmware must expect that in T-6 and not log it as a disagreement; VCAP_S_TAP on 11 rises to about 0.8 V (well inside its 3.6 V clamp).
+OVP_TEST low: D801 is reverse biased by VCAPS_IN (<= 2.2 V); leakage <= 5 nA (BAS116LT1/D Rev. 14, 75 V 25 C) x 150 k = 0.75 mV = 0.75 V of reading (80 nA absolute bound at 150 C -> 12 V; at 70 C and 2 V far less [EST]).
+R813 100 kOhm = contract default resistor (OVP_TEST low).
 """
 
 # ================================================================== parts: tap buffer
@@ -324,12 +349,13 @@ between = ["VREF_S", "GND"]
 ref = "R807"
 group = "ovp"
 lib_id = "Device:R"
-value = "9.09k 0.1%"
+value = "21.5k 0.1%"
 footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "TNPW06039K09BEEA"
+mpn = "TNPW060321K5BEEA"
 manufacturer = "Vishay"
 datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
-description = "OVP threshold divider, top"
+description = "OVP threshold divider, top (rev 0.3: 9.09 k -> 21.5 k, OVP_REF 1.0512 V)"
+fields = { DocRef = "§B4.4 L2 reference divider", Verify = "TNPW0603 21K5 0.1 % 25 ppm/K ordering code (E192 value; not re-read)" }
 between = ["VREF_S", "OVP_REF"]
 
 [[part]]
@@ -341,7 +367,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "TNPW060315K6BEEA"
 manufacturer = "Vishay"
 datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
-description = "OVP threshold divider, bottom (1.5796 V)"
+description = "OVP threshold divider, bottom (unchanged; OVP_REF = 2.5 x 15.6/37.1 = 1.0512 V)"
 between = ["OVP_REF", "GND"]
 
 [[part]]
@@ -360,12 +386,12 @@ between = ["OVP_REF", "GND"]
 ref = "R805"
 group = "ovp"
 lib_id = "Device:R"
-value = "36.5k 0.1%"
+value = "100k 0.1%"
 footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "TNPW060336K5BEEA"
+mpn = "TNPW0603100KBEEA"
 manufacturer = "Vishay"
 datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
-description = "OVP input resistor (sets trip x 1.365 and hysteresis)"
+description = "OVP input resistor Rin (rev 0.3: 36.5 k -> 100 k = Rf: trip at 2 x OVP_REF, latching)"
 new_row = true
 between = ["VCAPS_BUF", "OVP_SENSE"]
 
@@ -378,7 +404,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "TNPW0603100KBEEA"
 manufacturer = "Vishay"
 datasheet = "https://www.vishay.com/docs/31006/tnpw_e3.pdf"
-description = "OVP positive feedback: release about 1,000 V"
+description = "OVP latch feedback Rf (unchanged value; with Rin = Rf the output holds IN+ above OVP_REF for any tap >= 0 V)"
 between = ["OVP_TRIP", "OVP_SENSE"]
 
 [[part]]
@@ -391,7 +417,7 @@ mpn = "TLV9031DBVR"
 manufacturer = "Texas Instruments"
 datasheet = "https://www.ti.com/lit/ds/symlink/tlv9031.pdf"
 description = "OVP comparator, push-pull on 3V3_SUP (contract U803)"
-fields = { DocRef = "§B4.4 over-voltage comparator; §B4.6", Verify = "source current into the two series opto LEDs on 11 (VOH 175 mV max at 4 mA): LED resistor on 11 must keep the load <= 4 mA or the release point moves" }
+fields = { DocRef = "§B4.4 L2 over-voltage comparator (latching); §B4.6", Verify = "output state during 3V3_SUP power-up: SNOSDA3H rev. H deleted the power-on-reset feature (firmware resets the latch at switch-on)" }
 pins = """
   3  IN+  OVP_SENSE
   4  IN-  OVP_REF
@@ -411,3 +437,118 @@ manufacturer = "KEMET"
 datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
 description = "U803 supply decoupling"
 between = ["3V3_SUP", "GND"]
+
+# ================================================================== parts: OVP reset (rev 0.3, C-3)
+[[part]]
+ref = "R811"
+group = "ovp_rst"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "OVP_RST default low (contract §5.4 default resistor, sheet 08)"
+fields = { DocRef = "§B4.4 OVP reset" }
+between = ["OVP_RST", "GND"]
+
+[[part]]
+ref = "C812"
+group = "ovp_rst"
+lib_id = "Device:C"
+value = "100nF X7R"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "C0603C104K5RACTU"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1002_X7R_SMD.pdf"
+description = "Reset coupling: only an OVP_RST edge reaches Q801 (10 ms with R809)"
+fields = { DocRef = "§B4.4 OVP reset (edge only)" }
+between = ["OVP_RST", "OVP_RG"]
+
+[[part]]
+ref = "R809"
+group = "ovp_rst"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Q801 gate discharge: default off; a stuck-high OVP_RST decays away in about 25 ms"
+fields = { DocRef = "§B4.4 OVP reset (edge only)" }
+between = ["OVP_RG", "GND"]
+
+[[part]]
+ref = "Q801"
+group = "ovp_rst"
+lib_id = "Transistor_FET:BSS138"
+value = "BSS138"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BSS138"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bss138-d.pdf"
+description = "Latch reset switch: pulls OVP_SENSE to GND through R810 while the reset pulse lasts (VGS(th) 0.8-1.5 V, VGS +-20 V, BSS138/D Rev. 7)"
+fields = { DocRef = "§B4.4 OVP reset", Verify = "off-state drain leakage at VDS 1-3 V and 70 C (datasheet gives 100 nA max at 30 V, 25 C; 5 uA at 50 V, 125 C): every 10 nA raises the trip 1 V" }
+pins = """
+  1   G   OVP_RG
+  2   S   GND
+  3   D   OVP_RSD
+"""
+
+[[part]]
+ref = "R810"
+group = "ovp_rst"
+lib_id = "Device:R"
+value = "1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW06031K00FKEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Reset pull-down series resistor (OVP_SENSE held at about 32 mV during reset)"
+fields = { DocRef = "§B4.4 OVP reset" }
+between = ["OVP_RSD", "OVP_SENSE"]
+
+# ================================================================== parts: OVP test injection (rev 0.3, C-4, moved)
+[[part]]
+ref = "R813"
+group = "ovp_test"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW0603100KFKEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "OVP_TEST default low (contract §5.4 default resistor, sheet 08)"
+fields = { DocRef = "§B14.5 T-6 T-OVP" }
+between = ["OVP_TEST", "GND"]
+
+[[part]]
+ref = "R812"
+group = "ovp_test"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "CRCW06034K70FKEA"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/20035/dcrcwe3.pdf"
+description = "Test injection resistor into VCAPS_IN (change order said 22 k into OVP_SENSE; see group note)"
+fields = { DocRef = "§B14.5 T-6 T-OVP" }
+between = ["OVP_TEST", "OVP_TI"]
+
+[[part]]
+ref = "D801"
+group = "ovp_test"
+lib_id = "aed_logic:BAS116LT1G"
+value = "BAS116LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAS116LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bas116lt1-d.pdf"
+description = "Low-leakage test-injection diode (IR <= 5 nA at 75 V 25 C; VF <= 0.90 V at 1 mA; BAS116LT1/D Rev. 14). Symbol from WP-D's library (aed_logic)"
+fields = { DocRef = "§B14.5 T-6 T-OVP", Verify = "reverse leakage at 2 V, 70 C (only 25 C and 150 C maxima published); VF at 15-20 uA, -20 C" }
+pins = """
+# pin  name  net        # datasheet pin (CASE 318 style 8)
+  1    A     OVP_TI     # anode
+  2    NC    NC         # not connected
+  3    K     VCAPS_IN   # cathode
+"""

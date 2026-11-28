@@ -63,9 +63,17 @@ impl Confirmer {
     pub fn step(&mut self, verdict: &WindowVerdict, s: &Settings) -> Confirmed {
         let shockable = verdict.decision == RhythmDecision::Shockable;
         self.history = (self.history << 1) | u8::from(shockable);
-        self.consecutive = if shockable { self.consecutive.saturating_add(1) } else { 0 };
+        self.consecutive = if shockable {
+            self.consecutive.saturating_add(1)
+        } else {
+            0
+        };
         let span = s.confirm_span.clamp(1, 8);
-        let mask = if span >= 8 { u8::MAX } else { (1_u8 << span) - 1 };
+        let mask = if span >= 8 {
+            u8::MAX
+        } else {
+            (1_u8 << span) - 1
+        };
         let recent = (self.history & mask).count_ones() as u8;
         let need = s.confirm_windows.max(1);
         let (decision, announced) = if shockable {
@@ -82,7 +90,12 @@ impl Confirmer {
         } else {
             (verdict.decision, Some(verdict.decision))
         };
-        Confirmed { decision, announced, consecutive: self.consecutive, recent }
+        Confirmed {
+            decision,
+            announced,
+            consecutive: self.consecutive,
+            recent,
+        }
     }
 }
 
@@ -129,7 +142,9 @@ impl Default for Analyzer {
 fn clipped_samples(samples: impl Iterator<Item = EcgSample> + Clone) -> u32 {
     let (lo, hi) = samples
         .clone()
-        .fold((EcgSample::MAX, EcgSample::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        .fold((EcgSample::MAX, EcgSample::MIN), |(lo, hi), v| {
+            (lo.min(v), hi.max(v))
+        });
     if i32::from(hi) - i32::from(lo) < CLIP_MIN_SPAN_UV {
         return 0;
     }
@@ -221,12 +236,16 @@ impl Analyzer {
         {
             *dst = *src;
         }
-        let (saturated, noise_energy) = self
-            .blocks
-            .iter()
-            .fold((0_u32, 0.0_f32), |(s, n), b| (s + b.saturated, n + b.noise_energy));
+        let (saturated, noise_energy) = self.blocks.iter().fold((0_u32, 0.0_f32), |(s, n), b| {
+            (s + b.saturated, n + b.noise_energy)
+        });
         let clipped = clipped_samples(
-            self.raw.iter().cycle().skip(self.write_pos).take(WINDOW_SAMPLES).copied(),
+            self.raw
+                .iter()
+                .cycle()
+                .skip(self.write_pos)
+                .take(WINDOW_SAMPLES)
+                .copied(),
         );
         let features = measure(&mut self.scratch, saturated, clipped, noise_energy);
         let verdict = classify_with(&features, &self.settings);
@@ -331,7 +350,12 @@ mod tests {
     use crate::synth::{Rhythm, Synth, Xorshift32};
 
     fn verdict(decision: RhythmDecision, reason: Reason) -> WindowVerdict {
-        WindowVerdict { decision, reason, time_domain_vote: false, frequency_domain_vote: false }
+        WindowVerdict {
+            decision,
+            reason,
+            time_domain_vote: false,
+            frequency_domain_vote: false,
+        }
     }
 
     #[test]
@@ -343,9 +367,15 @@ mod tests {
         assert_eq!(c.step(&shock, &s).announced, None);
         assert_eq!(c.step(&shock, &s).announced, None);
         // The doubtful window is announced as "not sure" (it never holds a shock back silently).
-        assert_eq!(c.step(&doubt, &s).announced, Some(RhythmDecision::Indeterminate));
+        assert_eq!(
+            c.step(&doubt, &s).announced,
+            Some(RhythmDecision::Indeterminate)
+        );
         // 3 of the last 4 now shockable, current one too: confirmed.
-        assert_eq!(c.step(&shock, &s).announced, Some(RhythmDecision::Shockable));
+        assert_eq!(
+            c.step(&shock, &s).announced,
+            Some(RhythmDecision::Shockable)
+        );
     }
 
     #[test]
@@ -357,10 +387,19 @@ mod tests {
             let _ = c.step(&shock, &s);
         }
         let none = verdict(RhythmDecision::NonShockable, Reason::NeitherMethodShockable);
-        assert_eq!(c.step(&none, &s).announced, Some(RhythmDecision::NonShockable));
+        assert_eq!(
+            c.step(&none, &s).announced,
+            Some(RhythmDecision::NonShockable)
+        );
         let doubt = verdict(RhythmDecision::Indeterminate, Reason::MethodsDisagree);
-        assert_eq!(c.step(&doubt, &s).announced, Some(RhythmDecision::Indeterminate));
-        assert_eq!(c.step(&none, &s).announced, Some(RhythmDecision::NonShockable));
+        assert_eq!(
+            c.step(&doubt, &s).announced,
+            Some(RhythmDecision::Indeterminate)
+        );
+        assert_eq!(
+            c.step(&none, &s).announced,
+            Some(RhythmDecision::NonShockable)
+        );
         // Only two shockable windows among the last five: not confirmed.
         assert_eq!(c.step(&shock, &s).announced, None);
     }
@@ -411,6 +450,9 @@ mod tests {
                 }
             }
         }
-        assert!(checked > 0, "no fine-VF window fell in the range the guard is for");
+        assert!(
+            checked > 0,
+            "no fine-VF window fell in the range the guard is for"
+        );
     }
 }

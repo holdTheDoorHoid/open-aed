@@ -40,7 +40,7 @@ struct SupBench {
 
 impl SupBench {
     fn new() -> Self {
-        let config = Config::default();
+        let config = super::cfg();
         SupBench {
             board: Board::new(Rc::new(Cell::new(None))),
             sup: Supervisor::new(config).unwrap(),
@@ -70,6 +70,7 @@ impl SupBench {
             temperature: self.claim_temp,
             test_request: self.test_request,
             emptying: self.emptying,
+            charger_on: false,
         });
     }
 
@@ -532,6 +533,9 @@ fn provoke(kind: SupervisorFault) -> SupBench {
             s.board.request = Some(test_plan());
             s.run_ms(100);
         }
+        // The over-voltage latch is not in this simple board model; its
+        // faults are provoked in the aed-sim plant tests (rev3.rs).
+        SupervisorFault::OvpTestFailed | SupervisorFault::OvpTripped => {}
     }
     s
 }
@@ -587,7 +591,10 @@ fn supervisor_sounds_its_alarm_if_the_main_controller_never_starts() {
     s.run_ms(s.config.self_test_link_wait_ms - 100);
     assert!(!s.board.sup_alarm, "too early");
     s.run_ms(200);
-    assert!(s.board.sup_alarm, "main controller silent since switch-on: alarm must sound");
+    assert!(
+        s.board.sup_alarm,
+        "main controller silent since switch-on: alarm must sound"
+    );
     // Not a latched fault: it never held anything (see
     // supervisor_does_not_hold_before_hearing_main).
     assert_eq!(s.sup.fault(), None);
@@ -611,7 +618,11 @@ fn supervisor_holds_and_accepts_a_charged_capacitor_during_analysis_without_a_pe
     assert!(s.board.cap_v > 1_750.0);
     assert!(s.board.sup_hold, "holds while analysing and charging");
     assert!(!s.board.permit);
-    assert_eq!(s.sup.fault(), None, "a charged capacitor during analysis is not a fault");
+    assert_eq!(
+        s.sup.fault(),
+        None,
+        "a charged capacitor during analysis is not a fault"
+    );
     assert!(s
         .sup
         .events()
@@ -688,7 +699,10 @@ fn supervisor_ignores_cancel_while_main_is_in_its_self_test() {
     s.run_ms(100);
     s.board.cancel = true;
     s.run_ms(500);
-    assert!(s.board.sup_hold, "a press during the self-test must not stop it");
+    assert!(
+        s.board.sup_hold,
+        "a press during the self-test must not stop it"
+    );
     assert!(s.board.cap_v > 350.0);
     assert_eq!(s.sup.fault(), None);
     // Outside the self-test, cancel lets go at once.
@@ -768,28 +782,47 @@ fn supervisor_keeps_its_permit_while_its_own_pad_reading_is_open_and_the_voltage
             break;
         }
     }
-    assert!(saw_open_with_permit, "the pads never read open while the permit was up");
+    assert!(
+        saw_open_with_permit,
+        "the pads never read open while the permit was up"
+    );
     assert!(s.board.latch.status.started(), "no sequence");
     s.run_ms(100);
     assert_eq!(s.board.fires.len(), 1);
     assert!(withdrawn(&s).is_empty(), "{:?}", withdrawn(&s));
-    assert_eq!(s.sup.shock_check(), Some(crate::link::ShockCheck::Delivered));
+    assert_eq!(
+        s.sup.shock_check(),
+        Some(crate::link::ShockCheck::Delivered)
+    );
     assert_eq!(s.sup.fault(), None);
 }
 
 #[test]
-fn before_the_start_the_permit_is_withdrawn_only_for_cancel_heat_overvoltage_a_fault_or_the_main_leaving() {
+fn before_the_start_the_permit_is_withdrawn_only_for_cancel_heat_overvoltage_a_fault_or_the_main_leaving(
+) {
     use crate::supervisor::PermitWithdrawal as W;
     type Setup = fn(&mut SupBench);
     let cases: [(&str, Setup, W); 4] = [
         ("cancel", |s| s.board.cancel = true, W::Cancel),
-        ("too hot", |s| {
-            s.board.sup_temp = Some(crate::heat::DeciC::from_c(70));
-            s.claim_temp = Some(crate::heat::DeciC::from_c(66));
-            s.claim(S::Delivering);
-        }, W::TooHot),
-        ("overvoltage (latched)", |s| s.board.cap_v = 2_300.0, W::Fault),
-        ("main left delivering", |s| s.claim(S::Cpr), W::MainNotDelivering),
+        (
+            "too hot",
+            |s| {
+                s.board.sup_temp = Some(crate::heat::DeciC::from_c(70));
+                s.claim_temp = Some(crate::heat::DeciC::from_c(66));
+                s.claim(S::Delivering);
+            },
+            W::TooHot,
+        ),
+        (
+            "overvoltage (latched)",
+            |s| s.board.cap_v = 2_300.0,
+            W::Fault,
+        ),
+        (
+            "main left delivering",
+            |s| s.claim(S::Cpr),
+            W::MainNotDelivering,
+        ),
     ];
     for (name, setup, expect) in cases {
         let mut s = SupBench::new();
@@ -801,11 +834,18 @@ fn before_the_start_the_permit_is_withdrawn_only_for_cancel_heat_overvoltage_a_f
         assert!(s.board.permit, "{name}");
         s.board.request = Some(test_plan());
         s.run_ms(10);
-        assert_eq!(s.board.latch.status, crate::hal::SequenceStatus::Armed, "{name}");
+        assert_eq!(
+            s.board.latch.status,
+            crate::hal::SequenceStatus::Armed,
+            "{name}"
+        );
         // The pads already read open, and the voltage may wander: neither
         // takes the permit back.
         assert!(s.board.front_ends_blind() || s.board.relay != crate::hal::RelayPosition::Bridge);
-        assert!(s.board.permit, "{name}: withdrawn for the readings the shock disturbs");
+        assert!(
+            s.board.permit,
+            "{name}: withdrawn for the readings the shock disturbs"
+        );
         setup(&mut s);
         s.run_ms(10);
         assert!(!s.board.permit, "{name}");
@@ -842,7 +882,10 @@ fn the_voltage_comparison_is_suspended_across_the_pulse_but_only_for_a_bounded_t
     s.claim_v = Some(PLANNED);
     s.board.main_hold = true;
     let c = s.config;
-    let suspend = c.permit_window_ms + c.sequence_end_timeout_ms + c.post_shock_settle_ms + c.heartbeat_timeout_ms;
+    let suspend = c.permit_window_ms
+        + c.sequence_end_timeout_ms
+        + c.post_shock_settle_ms
+        + c.heartbeat_timeout_ms;
     // deliver() already ran 200 ms of it.
     s.run_ms(suspend - 250);
     assert_eq!(s.sup.fault(), None, "disagreement fault during the pulse");
@@ -855,9 +898,15 @@ fn a_sequence_that_did_not_empty_the_capacitor_is_reported_not_delivered_without
     let mut s = SupBench::new();
     s.board.residual = 1.0;
     s.deliver();
-    assert_eq!(s.sup.shock_check(), Some(crate::link::ShockCheck::NotDelivered));
+    assert_eq!(
+        s.sup.shock_check(),
+        Some(crate::link::ShockCheck::NotDelivered)
+    );
     assert_eq!(s.sup.fault(), None);
-    assert_eq!(s.board.report_inbox.map(|r| r.shock_check), Some(Some(crate::link::ShockCheck::NotDelivered)));
+    assert_eq!(
+        s.board.report_inbox.map(|r| r.shock_check),
+        Some(Some(crate::link::ShockCheck::NotDelivered))
+    );
 }
 
 #[test]
@@ -888,7 +937,14 @@ fn the_test_permit_is_given_only_in_the_self_test_only_below_its_voltage_bounded
     // Outside the self-test: never.
     let mut s = SupBench::new();
     s.test_request = TestRequest::TestPermit;
-    for state in [S::AttachPads, S::Charging, S::Countdown, S::Delivering, S::Cpr, S::Fault] {
+    for state in [
+        S::AttachPads,
+        S::Charging,
+        S::Countdown,
+        S::Delivering,
+        S::Cpr,
+        S::Fault,
+    ] {
         s.claim(state);
         s.run_ms(60);
         assert!(!s.board.test_permit, "{state:?}");
@@ -902,7 +958,11 @@ fn the_test_permit_is_given_only_in_the_self_test_only_below_its_voltage_bounded
     assert!(s.sup.test_permit_active());
     s.run_ms(s.config.test_permit_window_ms + 10);
     assert!(!s.board.test_permit, "the test permit outlasted its window");
-    assert!(s.sup.events().iter().any(|e| e.event == Event::SupervisorTestPermitExpired));
+    assert!(s
+        .sup
+        .events()
+        .iter()
+        .any(|e| e.event == Event::SupervisorTestPermitExpired));
     // Not again until the main controller stops asking.
     s.run_ms(100);
     assert!(!s.board.test_permit);

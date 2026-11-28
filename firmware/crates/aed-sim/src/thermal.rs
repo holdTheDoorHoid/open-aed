@@ -103,7 +103,12 @@ impl Thermal {
     /// electronics on or off. Exact for constant surroundings and power.
     pub fn step(&mut self, dt_s: f64, heat_j: f64, electronics_on: bool) {
         let cfg = self.config;
-        let power = heat_j / dt_s.max(1e-9) + if electronics_on { cfg.electronics_w } else { 0.0 };
+        let power = heat_j / dt_s.max(1e-9)
+            + if electronics_on {
+                cfg.electronics_w
+            } else {
+                0.0
+            };
         let target = self.ambient_c + power / cfg.conductance_w_per_k;
         let k = (-dt_s / cfg.time_constant_s()).exp();
         self.interior_c = target + (self.interior_c - target) * k;

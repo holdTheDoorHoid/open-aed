@@ -242,8 +242,11 @@ impl Assessment {
     /// otherwise unknown.
     #[must_use]
     pub fn effective(&self, p: TempPoint, substitute: bool, margin: DeciC) -> Option<DeciC> {
-        self.valid_at(p)
-            .or_else(|| self.hottest().filter(|_| substitute).map(|t| t.plus(margin)))
+        self.valid_at(p).or_else(|| {
+            self.hottest()
+                .filter(|_| substitute)
+                .map(|t| t.plus(margin))
+        })
     }
 
     /// The capacitor's temperature: the hotter of its two sensors (the main
@@ -383,12 +386,18 @@ pub fn capacitor_charge_check(
         return Ok(());
     }
     let margin = cfg.failed_sensor_margin;
-    let hyst = if was_inhibited { cfg.charge_limit_hysteresis } else { DeciC(0) };
+    let hyst = if was_inhibited {
+        cfg.charge_limit_hysteresis
+    } else {
+        DeciC(0)
+    };
     let cap = a.capacitor(rescue, margin).ok_or(HeatInhibit::Unknown)?;
     if cap > cfg.capacitor_charge_max.minus(hyst) {
         return Err(HeatInhibit::CapacitorHot);
     }
-    let cells = a.cells_hottest(rescue, margin).ok_or(HeatInhibit::Unknown)?;
+    let cells = a
+        .cells_hottest(rescue, margin)
+        .ok_or(HeatInhibit::Unknown)?;
     if cells > cfg.cell_discharge_max.minus(hyst) {
         return Err(HeatInhibit::CellsHot);
     }
@@ -403,9 +412,19 @@ pub fn capacitor_charge_check(
 ///
 /// # Errors
 /// Why the battery must not be charged.
-pub fn battery_charge_check(cfg: &Config, a: &Assessment, was_allowed: bool) -> Result<(), HeatInhibit> {
-    let hyst = if was_allowed { DeciC(0) } else { cfg.charge_limit_hysteresis };
-    let hot = a.cells_hottest(false, DeciC(0)).ok_or(HeatInhibit::Unknown)?;
+pub fn battery_charge_check(
+    cfg: &Config,
+    a: &Assessment,
+    was_allowed: bool,
+) -> Result<(), HeatInhibit> {
+    let hyst = if was_allowed {
+        DeciC(0)
+    } else {
+        cfg.charge_limit_hysteresis
+    };
+    let hot = a
+        .cells_hottest(false, DeciC(0))
+        .ok_or(HeatInhibit::Unknown)?;
     let cold = a.cells_coolest().ok_or(HeatInhibit::Unknown)?;
     if hot > cfg.battery_charge_max.minus(hyst) {
         return Err(HeatInhibit::CellsHot);
@@ -425,7 +444,11 @@ pub fn battery_charge_check(cfg: &Config, a: &Assessment, was_allowed: bool) -> 
 /// (nothing trusted) allows it, as in a rescue.
 #[must_use]
 pub fn precharge_allowed(cfg: &Config, a: &Assessment, was_allowed: bool) -> bool {
-    let hyst = if was_allowed { DeciC(0) } else { cfg.charge_limit_hysteresis };
+    let hyst = if was_allowed {
+        DeciC(0)
+    } else {
+        cfg.charge_limit_hysteresis
+    };
     let limit = cfg.precharge_max.minus(hyst);
     let margin = cfg.failed_sensor_margin;
     if a.hottest().is_none() {
@@ -444,7 +467,12 @@ pub struct ChargeGate {
 
 impl ChargeGate {
     /// Re-evaluate. Returns the inhibit now in force, if any.
-    pub fn update(&mut self, cfg: &Config, a: &Assessment, ctx: ChargeContext) -> Option<HeatInhibit> {
+    pub fn update(
+        &mut self,
+        cfg: &Config,
+        a: &Assessment,
+        ctx: ChargeContext,
+    ) -> Option<HeatInhibit> {
         self.inhibit = capacitor_charge_check(cfg, a, ctx, self.inhibit.is_some()).err();
         self.inhibit
     }
@@ -906,7 +934,8 @@ impl<const N: usize> HeatMonitor<N> {
                 _ => *track = StuckTrack::default(),
             }
             let moved = i32::from(track.others_max) - i32::from(track.others_min);
-            *flag = track.wakes >= cfg.temp_stuck_wakes && moved >= i32::from(cfg.temp_stuck_min_change.0);
+            *flag = track.wakes >= cfg.temp_stuck_wakes
+                && moved >= i32::from(cfg.temp_stuck_min_change.0);
         }
         out
     }
@@ -935,17 +964,21 @@ impl<const N: usize> HeatMonitor<N> {
         match self.last_wake_s {
             None if self.restored => {
                 gap = true;
-                self.lifetime.gaps_unknown_length = self.lifetime.gaps_unknown_length.saturating_add(1);
+                self.lifetime.gaps_unknown_length =
+                    self.lifetime.gaps_unknown_length.saturating_add(1);
             }
             None => {}
             Some(last) if clock_restarted || now_s < last || self.restored => {
                 gap = true;
-                self.lifetime.gaps_unknown_length = self.lifetime.gaps_unknown_length.saturating_add(1);
+                self.lifetime.gaps_unknown_length =
+                    self.lifetime.gaps_unknown_length.saturating_add(1);
                 self.next_flags |= flags::CLOCK_RESTART;
             }
             Some(last) => {
                 let since = now_s - last;
-                let allowed = self.asked_interval_s.saturating_add(cfg.heat_gap_tolerance_s);
+                let allowed = self
+                    .asked_interval_s
+                    .saturating_add(cfg.heat_gap_tolerance_s);
                 if since > allowed {
                     gap = true;
                     self.lifetime.gap_s = self.lifetime.gap_s.saturating_add(since);
@@ -1020,7 +1053,9 @@ impl<const N: usize> HeatMonitor<N> {
                 }
                 self.band = HeatBand::TooHot;
                 self.cool_causes |= cool_causes::WAS_TOO_HOT;
-            } else if self.band == HeatBand::TooHot && t <= cfg.heat_too_hot_above.minus(cfg.heat_hysteresis) {
+            } else if self.band == HeatBand::TooHot
+                && t <= cfg.heat_too_hot_above.minus(cfg.heat_hysteresis)
+            {
                 self.band = HeatBand::Warm;
             }
             if self.band != HeatBand::TooHot {
@@ -1063,7 +1098,8 @@ impl<const N: usize> HeatMonitor<N> {
                 self.lifetime.above_normal_s = self.lifetime.above_normal_s.saturating_add(dt);
             }
             if t > cfg.heat_warm_spell_above {
-                self.lifetime.above_warm_spell_s = self.lifetime.above_warm_spell_s.saturating_add(dt);
+                self.lifetime.above_warm_spell_s =
+                    self.lifetime.above_warm_spell_s.saturating_add(dt);
             }
             if t > cfg.heat_too_hot_above {
                 self.lifetime.above_too_hot_s = self.lifetime.above_too_hot_s.saturating_add(dt);
@@ -1079,7 +1115,8 @@ impl<const N: usize> HeatMonitor<N> {
             let cooled = !self.faults_now && hottest.is_some_and(|t| t < cfg.heat_cooled_below);
             if cooled {
                 let since = *self.cool_below_since.get_or_insert(now_s);
-                if self.cooled_at.is_none() && now_s.saturating_sub(since) >= cfg.heat_cooled_for_s {
+                if self.cooled_at.is_none() && now_s.saturating_sub(since) >= cfg.heat_cooled_for_s
+                {
                     self.cooled_at = Some(now_s);
                     retest_now = true;
                 }
@@ -1090,9 +1127,9 @@ impl<const N: usize> HeatMonitor<N> {
         }
 
         // ---- the record ----
-        let period_over = self
-            .current
-            .is_some_and(|e| now_s < e.start_s || now_s.saturating_sub(e.start_s) >= cfg.heat_log_period_s);
+        let period_over = self.current.is_some_and(|e| {
+            now_s < e.start_s || now_s.saturating_sub(e.start_s) >= cfg.heat_log_period_s
+        });
         if period_over {
             self.close_period();
         }
@@ -1114,7 +1151,11 @@ impl<const N: usize> HeatMonitor<N> {
 
         // ---- next wake ----
         let warm = hottest.is_none_or(|t| t > cfg.heat_normal_max);
-        let next = if warm { cfg.heat_wake_warm_s } else { cfg.heat_wake_cool_s };
+        let next = if warm {
+            cfg.heat_wake_warm_s
+        } else {
+            cfg.heat_wake_cool_s
+        };
         self.asked_interval_s = next;
         self.last_wake_s = Some(now_s);
         HeatWake {
@@ -1158,7 +1199,11 @@ impl<const N: usize> HeatMonitor<N> {
     /// # Errors
     /// Refused unless the full-energy self-test and the battery health check
     /// passed and the device reads below 45 °C now.
-    pub fn service_cleared(&mut self, cfg: &Config, check: ServiceCheck) -> Result<(), ServiceRefusal> {
+    pub fn service_cleared(
+        &mut self,
+        cfg: &Config,
+        check: ServiceCheck,
+    ) -> Result<(), ServiceRefusal> {
         if !check.full_self_test_passed {
             return Err(ServiceRefusal::FullTestNotPassed);
         }

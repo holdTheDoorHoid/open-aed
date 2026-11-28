@@ -108,6 +108,84 @@ pub enum SequenceEnd {
     TimeCapTripped,
     /// The over-current trip cut the drive.
     OverCurrentTripped,
+    /// A per-phase hardware cap cut the drive (D-63): phase 1 or phase 2
+    /// ran longer than its own limit (for example a main controller that
+    /// froze with a low side commanded on).
+    PhaseCapTripped,
+    /// Another hardware fault latch ended it (v0.3): idle current (a
+    /// shorted low side), the bridge supply under-voltage, or the low-side
+    /// driver supply monitor (`LSD_OK`).
+    HardwareFault,
+}
+
+/// The four "held" sensors of the two discharge paths (design v0.3, change
+/// I-4): two per path, each on its own line, read back by the main
+/// controller (`HOLD_RB_A_N`, `HOLD_RB_A2_N`, `HOLD_RB_B_N`,
+/// `HOLD_RB_B2_N`). `true` means that sensor reads "held" (path open, not
+/// discharging). The hardware's `HOLD_OK` needs all four. The two sensors
+/// of one path can disagree (one has failed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HoldReadback {
+    /// Path A (the main controller's), first sensor.
+    pub a1: bool,
+    /// Path A, second sensor.
+    pub a2: bool,
+    /// Path B (the supervisor's), first sensor.
+    pub b1: bool,
+    /// Path B, second sensor.
+    pub b2: bool,
+}
+
+impl HoldReadback {
+    /// All four read "held".
+    #[must_use]
+    pub const fn all_held(self) -> bool {
+        self.a1 && self.a2 && self.b1 && self.b2
+    }
+    /// Both sensors of path A read "held".
+    #[must_use]
+    pub const fn a_held(self) -> bool {
+        self.a1 && self.a2
+    }
+    /// Both sensors of path A read "not held".
+    #[must_use]
+    pub const fn a_released(self) -> bool {
+        !self.a1 && !self.a2
+    }
+    /// Both sensors of path B read "held".
+    #[must_use]
+    pub const fn b_held(self) -> bool {
+        self.b1 && self.b2
+    }
+    /// Both sensors of path B read "not held".
+    #[must_use]
+    pub const fn b_released(self) -> bool {
+        !self.b1 && !self.b2
+    }
+    /// None of the four reads "held".
+    #[must_use]
+    pub const fn none_held(self) -> bool {
+        self.a_released() && self.b_released()
+    }
+}
+
+/// A self-test request that is not an ordinary sequence (D-62, HARDWARE_DESIGN
+/// §B14.5), run by the delivery sequencer under the REAL permit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Probe {
+    /// T-3: move the patient relay to the bridge and hold it there for
+    /// this many ms; command no switch.
+    RelayMove {
+        /// How long `RELAY_CMD` is held, ms.
+        hold_ms: u32,
+    },
+    /// T-4: move the relay, then command a low side WITHOUT its high-side
+    /// lead. The hardware must refuse the start.
+    StartWithoutLead,
+    /// T-5: a full shock-mode sequence (1 ms, 0.5 ms gap, 1 ms) with the
+    /// pads read open by both controllers, only while the main
+    /// controller's own reading counts as empty.
+    DryRun,
 }
 
 /// Where the patient relay's position sense says the pads are connected.
@@ -185,7 +263,35 @@ pub trait MainHardware {
     fn set_charger(&mut self, target: Option<Volts>);
     /// Hold the discharge path open (`true`, capacitor may stay charged) or
     /// release it (`false`, capacitor empties into the internal load).
+    ///
+    /// Board-layer rules from design v0.3 (change order FW-11, rev3
+    /// simulation notes §2): the hold clock `HOLD_M_CLK` runs at
+    /// **1.5 kHz ± 10 %** (outside about 1.35–1.65 kHz an aged sensor in the
+    /// cold reads "held" only on the ripple peaks) and is always stopped
+    /// **low** (stopped high, the path does not release for more than
+    /// 30 ms). "Held" may take up to 35 ms after the clock starts and "not
+    /// held" up to 25 ms after it stops; see [`MainHardware::hold_readback`].
     fn set_discharge_hold(&mut self, hold: bool);
+    /// `CHG_DONE_N` read back: the charger chip has ended a charge by
+    /// ITSELF. The firmware stops every normal charge on its own reading,
+    /// so this happens only when the charger's last-resort primary-side
+    /// over-voltage trip fired (2,116–2,316 V simulated, change E-1). The
+    /// firmware then empties the capacitor and never restarts the charger
+    /// (it would refill to that level, beyond the capacitor's short surge
+    /// rating, D-65).
+    fn charger_done(&mut self) -> bool;
+    /// The four "held" sensors (v0.3, I-4). See [`HoldReadback`].
+    fn hold_readback(&mut self) -> HoldReadback;
+    /// Raise (`true`) or lower (`false`) `K_SUPPLY_EN`, the patient-relay
+    /// coil supply and its reservoir (change order FW-12, I-15). It must be
+    /// up at least [`crate::Config::coil_supply_lead_ms`] before the relay
+    /// is commanded: without it the relay does not move, and with a
+    /// reservoir not yet full it moves slowly and loads the battery.
+    fn set_coil_supply(&mut self, on: bool);
+    /// Raise the request line for a self-test probe of the real-permit path
+    /// (D-62). The board layer's delivery sequencer runs it. Withdrawn
+    /// with [`MainHardware::withdraw_shock_request`].
+    fn request_probe(&mut self, probe: Probe);
     /// Raise the shock request line. With `Some(plan)` the plan's phase
     /// timings are loaded into the main controller's phase timer, which the
     /// hardware starts by itself once the interlock rail is up and the
@@ -261,6 +367,15 @@ pub trait SupervisorHardware {
     fn temperature(&mut self) -> Option<DeciC>;
     /// Raise (`true`) or lower (`false`) the shock permit line.
     fn set_permit(&mut self, permit: bool);
+    /// Raise (`true`) or lower (`false`) `OVP_TEST` (v0.3, I-22): injects a
+    /// trip into the hardware over-voltage latch at any capacitor voltage.
+    fn set_ovp_test(&mut self, on: bool);
+    /// Drive `OVP_RST`. The latch is released by a RISING EDGE only; a line
+    /// held high does not keep it clear.
+    fn set_ovp_reset(&mut self, high: bool);
+    /// `OVP_TRIP` read back: the hardware over-voltage latch is set (it
+    /// then forces both discharge paths to release).
+    fn ovp_tripped(&mut self) -> bool;
     /// Raise (`true`) or lower (`false`) the TEST permit line (D-61). It
     /// lets the interlock rail rise for the self-test only while the
     /// capacitor is below the hardware's own test-voltage limit, never

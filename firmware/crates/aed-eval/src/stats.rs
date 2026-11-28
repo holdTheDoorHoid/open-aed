@@ -138,7 +138,11 @@ pub fn wilson_lower(successes: u64, n: u64, level: f64) -> Option<f64> {
     if n == 0 || successes > n {
         return None;
     }
-    let z = if (level - 0.95).abs() < 1e-9 { 1.644_853_6 } else { 1.281_551_6 };
+    let z = if (level - 0.95).abs() < 1e-9 {
+        1.644_853_6
+    } else {
+        1.281_551_6
+    };
     let nf = n as f64;
     let p = successes as f64 / nf;
     let z2 = z * z;

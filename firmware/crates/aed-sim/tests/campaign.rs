@@ -10,7 +10,10 @@ fn random_campaign_breaks_no_invariant_outside_known_findings() {
     let s = run_campaign(300, 1);
     println!("{}", campaign_text(&s));
     assert_eq!(s.runs, 300);
-    assert!(s.with_fault > 100, "about half the runs should have a fault");
+    assert!(
+        s.with_fault > 100,
+        "about half the runs should have a fault"
+    );
     assert!(
         s.clean(),
         "unexplained invariant violations (replay with `cargo run -p aed-sim -- random <seed>`): {:?}",

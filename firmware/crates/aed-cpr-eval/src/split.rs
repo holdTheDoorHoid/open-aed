@@ -10,8 +10,7 @@ use crate::data::{read_list, DataError};
 pub const DEVELOPMENT_SHA256: &str =
     "29ddd4895ea404c60a4542b1ff26fdc11c3d616b5a43b8f1196b4f42726c39f8";
 /// SHA-256 of `splits/heldout.txt` when the split was fixed.
-pub const HELDOUT_SHA256: &str =
-    "e777784970ed3399c370420f296c89853c09556448fac44a025f2a26a129c98f";
+pub const HELDOUT_SHA256: &str = "e777784970ed3399c370420f296c89853c09556448fac44a025f2a26a129c98f";
 
 /// Which half.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +50,11 @@ impl Half {
         let bytes = std::fs::read(&path).map_err(|e| DataError::Io(path.clone(), e))?;
         let hash = hex(&sha256(&bytes));
         if hash != self.expected_sha256() {
-            return Err(DataError::Parse(path, 0, format!("split list changed: sha256 {hash}")));
+            return Err(DataError::Parse(
+                path,
+                0,
+                format!("split list changed: sha256 {hash}"),
+            ));
         }
         read_list(&path)
     }

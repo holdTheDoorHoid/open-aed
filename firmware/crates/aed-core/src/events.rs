@@ -5,8 +5,8 @@
 //! It never grows: when it is full, the oldest entry is overwritten and an
 //! overflow counter goes up, so a reviewer can see that entries were lost.
 
-use crate::heat::{DeciC, HeatInhibit, SensorFault, TempPoint};
 use crate::hal::{SequenceEnd, SequenceStatus};
+use crate::heat::{DeciC, HeatInhibit, SensorFault, TempPoint};
 use crate::link::{ShockCheck, SupervisorFault};
 use crate::readiness::ReasonSet;
 use crate::rescue::{AbortReason, FaultKind, RescueState, ShockOutcome};
@@ -242,6 +242,23 @@ pub enum Event {
     SupervisorTestPermitExpired,
     /// The supervisor refused a test permit.
     SupervisorTestPermitRefused(TestPermitRefusal),
+    /// FW-18: the charger stopped rising below the plan with no
+    /// `CHG_DONE_N`; it was switched off and on again (reading then).
+    ChargerRestarted(Volts),
+    /// The charger ended a charge by itself (`CHG_DONE_N`): its last-resort
+    /// over-voltage trip. Emptied, not restarted (reading then).
+    ChargerStoppedItself(Volts),
+    /// The supervisor gave the REAL permit for a self-test step (D-62).
+    SupervisorRealTestPermitted,
+    /// The supervisor refused or withdrew a real self-test permit (D-62):
+    /// a reading not empty, the charger on, or (dry run) its own pad
+    /// reading not open.
+    SupervisorRealTestPermitRefused,
+    /// The over-voltage latch test (D-62 T-6) passed.
+    SupervisorOvpTestPassed,
+    /// The hardware over-voltage latch was reset after a real trip, once
+    /// both readings were empty (FW-17).
+    SupervisorOvpReset,
 }
 
 /// How many compressions the compression record keeps (the newest).

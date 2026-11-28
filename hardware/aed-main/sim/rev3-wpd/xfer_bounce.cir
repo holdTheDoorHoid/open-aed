@@ -1,0 +1,69 @@
+* xfer_bounce.cir - XFER after relay aux-contact bounce with the revision 0.3 fix (change D-14), and the effect of
+* the discharge transistor's off-state leakage
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Circuit (specs/12_bridge_logic.toml, revision 0.3): K_REST_N -> R6224 10k -> K_REST_F, C1284 1n C0G -> U1210
+* (SN74LVC2G14: K_AT_REST, then K_LEFT). XF_SRC = K_LEFT AND K_EN_I AND K_WAS_REST (U1238, here K_EN and K_WAS_REST
+* high throughout) -> R1275 110k -> XF_RC, C1253 100n, D1212 BAS116, U1239 TLV7031 at 0.640. Q1201 2N7002LT1G: gate
+* K_AT_REST, source GND, drain XF_DIS -> R6225 10 ohm -> XF_RC.
+* Contact leaves rest at 1 ms; at 9 ms it re-touches for 'wb' (bounce) then leaves for good. Measured: XFER rise
+* after the LAST release (rule >= 10 ms; firmware waits 14 ms after the last low sample, design §F).
+* 2N7002 model: level 1, VTO swept 1.0 / 2.5 V (onsemi NDS7002A/D Rev. 11: VGS(th) 1.0-2.5 V at 250 uA, 25 C), KP 0.08
+* [EST, as ../rev3/carrier_loss.cir]; temperature drift of VTO not modelled (taken inside the swept range [EST]).
+* Off-state leakage 'ilk' is a current source drain->source: the datasheet gives IDSS <= 1 uA at 60 V, 25 C and
+* <= 0.5 mA at 60 V, 125 C, and nothing at VDS <= 3.3 V or 70 C, so it is swept 0 / 0.5 / 1 / 2 / 4 uA.
+* In the leakage runs the 1 us 'bounce' is below the filter, so the time is measured from the first release.
+* Corner parameters otherwise nominal (bands for XFER alone: ../logic-relay/timers.cir, 10.42-12.17 ms).
+.include ../logic-relay/models/behavioural.lib
+.param wb=50u vto=2.5 ilk=0
+.model n7002 nmos(level=1 vto={vto} kp=0.08 rd=1 rs=1 cgso=20p cgdo=4p lambda=0.02)
+V33 r33 0 3.3
+* contact: K_REST_N high = left rest (pull-up on 04 through 100 k seen as a source here), low = at rest
+Vx xi 0 PWL(0 0 1m 0 1.001m 3.3 9m 3.3 9.001m 0 {9m+wb} 0 {9.001m+wb} 3.3 60m 3.3)
+R6224 xi krf 10k
+C1284 krf 0 1n
+Xinv krf katr r33 0 schmitt params: ftp=0.56 ftm=0.38 inv=1
+R1232 katr 0 100k
+Xinv2 katr kleft r33 0 schmitt params: ftp=0.56 ftm=0.38 inv=1
+* U1238 output ~ K_LEFT (K_EN_I and K_WAS_REST high)
+Bsrc xsi 0 V = v(kleft)
+Rxd xsi xsrc 25
+R1274 xsrc 0 100k
+R1275 xsrc xrc 110k
+D1212 xrc xsrc bas116
+C1253 xrc 0 100n
+M1201 xdis katr 0 0 n7002 w=1 l=1
+Ilk xdis 0 {ilk}
+R6225 xdis xrc 10
+R1276 r33 xth 56.2k
+R1277 xth 0 100k
+Xxc xrc xth xfer r33 0 cmp params: vos=0 hyst=10m od=0
+R1278 xfer 0 100k
+
+.control
+set noaskquit
+foreach v 1.0 2.5
+alterparam vto=$v
+foreach w 5u 8u 10u 12u 15u 20u 200u
+  alterparam wb=$w
+  alterparam ilk=0
+  reset
+  tran 2u 40m 0 2u
+  meas tran tx when v(xfer)=1.65 rise=1
+  let dx = (tx - 9m - $w)*1000
+  echo "RESULT bounce vto= $v bounce_width= $w XFER_after_last_release_ms= $&dx"
+end
+end
+alterparam vto=2.5
+alterparam wb=1u
+foreach l 0 0.5u 1u 2u 4u
+  alterparam ilk=$l
+  reset
+  tran 5u 60m 0 5u
+  meas tran tx when v(xfer)=1.65 rise=1
+  let dx = (tx - 1m)*1000
+  echo "RESULT leakage ilk= $l XFER_after_first_release_ms= $&dx (no bounce: the 1 us blip is filtered; nominal parts 11.3 ms; firmware waits 14 ms)"
+end
+.endc
+.end

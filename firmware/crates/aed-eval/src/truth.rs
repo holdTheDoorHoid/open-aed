@@ -239,7 +239,10 @@ impl TruthClass {
     /// True if a shock is the right answer (scored by sensitivity).
     #[must_use]
     pub const fn should_shock(self) -> bool {
-        matches!(self, TruthClass::CoarseVf | TruthClass::Vfl | TruthClass::RapidVt)
+        matches!(
+            self,
+            TruthClass::CoarseVf | TruthClass::Vfl | TruthClass::RapidVt
+        )
     }
 
     /// True if no shock is the right answer (scored by specificity).
@@ -562,7 +565,9 @@ pub fn amplitude_uv(samples: &[i16], fs: usize) -> Option<f64> {
     let pps: Vec<f64> = detrended
         .chunks_exact(fs)
         .map(|c| {
-            let (lo, hi) = c.iter().fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+            let (lo, hi) = c
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
             hi - lo
         })
         .collect();
@@ -591,7 +596,12 @@ pub fn estimated_rate_bpm(samples: &[i16], fs: usize) -> Option<f64> {
     let hi = fs;
     let mut best: Option<(usize, f64)> = None;
     for lag in lo..=hi {
-        let r: f64 = x.iter().zip(x.iter().skip(lag)).map(|(a, b)| a * b).sum::<f64>() / r0;
+        let r: f64 = x
+            .iter()
+            .zip(x.iter().skip(lag))
+            .map(|(a, b)| a * b)
+            .sum::<f64>()
+            / r0;
         if best.is_none_or(|(_, br)| r > br) {
             best = Some((lag, r));
         }
@@ -603,7 +613,11 @@ pub fn estimated_rate_bpm(samples: &[i16], fs: usize) -> Option<f64> {
 /// The class of a stretch with label `label`, measured amplitude and beat rate.
 /// `None` for labels that are not scored.
 #[must_use]
-pub fn classify_truth(label: &Label, amplitude: Option<f64>, rate_bpm: Option<f64>) -> Option<TruthClass> {
+pub fn classify_truth(
+    label: &Label,
+    amplitude: Option<f64>,
+    rate_bpm: Option<f64>,
+) -> Option<TruthClass> {
     Some(match label {
         Label::Vf => match amplitude {
             Some(a) if a >= FINE_VF_UV => TruthClass::CoarseVf,
@@ -662,7 +676,11 @@ mod tests {
             ]
         );
         assert_eq!(tl.spans[2].start, 4.0);
-        assert_eq!(tl.noise[1], vec![(8.0, 10.0)], "vfdb NOISE spans apply to every channel");
+        assert_eq!(
+            tl.noise[1],
+            vec![(8.0, 10.0)],
+            "vfdb NOISE spans apply to every channel"
+        );
         assert_eq!(tl.unknown_labels, vec!["XYZ".to_string()]);
     }
 
@@ -676,7 +694,11 @@ mod tests {
             ann(7500, code::RHYTHM, 0, "(N"),
         ];
         let tl = build_timeline(Db::Cudb, &a, 250.0, 10_000, 1);
-        let labels: Vec<_> = tl.spans.iter().map(|s| (s.start, s.label.clone())).collect();
+        let labels: Vec<_> = tl
+            .spans
+            .iter()
+            .map(|s| (s.start, s.label.clone()))
+            .collect();
         assert_eq!(
             labels,
             vec![
@@ -706,8 +728,16 @@ mod tests {
     fn clean_runs_apply_guards_and_holes() {
         let tl = Timeline {
             spans: vec![
-                Span { start: 0.0, end: 30.0, label: Label::Nsr },
-                Span { start: 30.0, end: 40.0, label: Label::Vf },
+                Span {
+                    start: 0.0,
+                    end: 30.0,
+                    label: Label::Nsr,
+                },
+                Span {
+                    start: 30.0,
+                    end: 40.0,
+                    label: Label::Vf,
+                },
             ],
             noise: vec![vec![(10.0, 12.0)]],
             artifacts: vec![20.0],
@@ -718,7 +748,10 @@ mod tests {
         };
         let runs = clean_runs(&tl, 0);
         let r: Vec<_> = runs.iter().map(|r| (r.start, r.end)).collect();
-        assert_eq!(r, vec![(3.0, 9.0), (13.0, 19.0), (21.0, 27.0), (33.0, 37.0)]);
+        assert_eq!(
+            r,
+            vec![(3.0, 9.0), (13.0, 19.0), (21.0, 27.0), (33.0, 37.0)]
+        );
     }
 
     #[test]
@@ -740,10 +773,22 @@ mod tests {
             .collect();
         let a = amplitude_uv(&s, 250).unwrap();
         assert!((a - 600.0).abs() < 18.0, "{a}");
-        assert_eq!(classify_truth(&Label::Vf, Some(150.0), None), Some(TruthClass::FineVf));
-        assert_eq!(classify_truth(&Label::Vf, Some(250.0), None), Some(TruthClass::CoarseVf));
-        assert_eq!(classify_truth(&Label::Vt, None, None), Some(TruthClass::VtRateUnknown));
-        assert_eq!(classify_truth(&Label::Vt, None, Some(149.0)), Some(TruthClass::SlowVt));
+        assert_eq!(
+            classify_truth(&Label::Vf, Some(150.0), None),
+            Some(TruthClass::FineVf)
+        );
+        assert_eq!(
+            classify_truth(&Label::Vf, Some(250.0), None),
+            Some(TruthClass::CoarseVf)
+        );
+        assert_eq!(
+            classify_truth(&Label::Vt, None, None),
+            Some(TruthClass::VtRateUnknown)
+        );
+        assert_eq!(
+            classify_truth(&Label::Vt, None, Some(149.0)),
+            Some(TruthClass::SlowVt)
+        );
         assert_eq!(classify_truth(&Label::Noise, None, None), None);
         assert!(TruthClass::CoarseVf.should_shock());
         assert!(TruthClass::FineVf.report_only());
@@ -765,7 +810,10 @@ mod tests {
 
     #[test]
     fn subtract_intervals() {
-        assert_eq!(subtract(&[(0.0, 10.0)], &[(2.0, 3.0), (5.0, 20.0)]), vec![(0.0, 2.0), (3.0, 5.0)]);
+        assert_eq!(
+            subtract(&[(0.0, 10.0)], &[(2.0, 3.0), (5.0, 20.0)]),
+            vec![(0.0, 2.0), (3.0, 5.0)]
+        );
         assert_eq!(subtract(&[(0.0, 1.0)], &[(-1.0, 2.0)]), vec![]);
     }
 }

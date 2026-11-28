@@ -1,0 +1,135 @@
+* imp_ecg_noise_wph.cir - sheet 15 revision 0.3: impedance-channel noise with R1528/R1529, ECG-channel noise and gain
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Small-signal model of specs/15_frontend_main.toml (groups drive, sense, rld), charger OFF (no injection).
+* Same method as ../logic-relay/imp_noise.cir (LR §6), with the drawn revision-0.3 topology and these additions:
+*   - rev=0: issue-2 topology (R1509/R1510 share the clamp nodes PT_MSA_CL/PT_MSB_CL with R1511/R1512) - reference.
+*   - rev=1: as drawn now: R1528/R1529 51 k DPCR from PT_FE_A/B to PT_ESA_CL/PT_ESB_CL; R1509/R1510 from there.
+*   - Every tap TVS (CDSOD323-T03C, 3 pF typ, Bourns REV 04/23) as 3 pF to GND on its clamp node: D1501-D1504 and
+*     the new D1506/D1507. DPCR body capacitance 0.2 pF across each 2512 [EST]. ADS1292R input 5 pF [EST].
+*   - Supervisor loading across the pads: 4.2 k (design §B3.4 R-17, conservative) or 60 k (WP-H §3.3 [CALC]).
+* Impedance noise = sqrt(2 x resistor noise^2 + chip 0.13 uV/rtHz^2) x sqrt(9.5 Hz) / (V per ohm at Iexc), as LR §6.
+* Chip noise 0.13 uV/rtHz is the WP-H estimate (scaled from SBAS502C's 32 kHz figure) [EST]; run also at 2x.
+* ECG: thermal noise of the resistor network at IN2P-IN2N integrated 0.5-40 Hz (chip 0.7 uV RMS added in notes),
+*   gain pad-difference -> IN2 difference at 10 Hz and 40 Hz, and the 64 kHz carrier amplitude at IN2.
+
+.param rp=175 dz=0 rev=1 rsup=4.2k
+Vmp mp 0 DC 0 AC 0.5
+Vmn mn 0 DC 0 AC 0.5 180
+* ---- drive taps
+R1505 mp ma1 2.0k
+Ctvs1 ma1 0 3p
+R1501 ma1 ma2 12k
+C1501 ma2 pada 2.35n
+R1506 mn mb1 2.0k
+Ctvs2 mb1 0 3p
+R1503 mb1 mb2 12k
+C1503 mb2 padb 2.35n
+* ---- patient (+1 ohm step for sensitivity) and the supervisor's taps
+Rp pada pmid {rp+dz}
+* ECG source in series with the patient (zero for the impedance runs)
+Vecg pmid padb DC 0 AC 0
+Rsup pada padb {rsup}
+* ---- sense tap A (impedance branch)
+R1507 pada sa 51k
+Cp1507 pada sa 0.2p
+Ctvs3 sa 0 3p
+R1511 sa rsa 10k
+C1506 rsa in1p 2.2n
+R1516 in1p 0 10Meg
+R1515 in1p 0 10Meg
+Cinp in1p 0 5p
+* ---- ECG branch A: rev 0 shares node sa; rev 1 has its own R1528 + D1506 from the pad
+Rlinka sa sae {rev ? 1e12 : 1m}
+R1528 pada sae {rev ? 51k : 1e12}
+Cp1528 pada sae {rev ? 0.2p : 1f}
+Ctvs6 sae 0 {rev ? 3p : 1f}
+R1509 sae ecga 10k
+* ---- sense tap B
+R1508 padb sb 51k
+Cp1508 padb sb 0.2p
+Ctvs4 sb 0 3p
+R1512 sb rsb 10k
+C1519 rsb in1n 2.2n
+R1518 in1n 0 10Meg
+R1517 in1n 0 10Meg
+Cinn in1n 0 5p
+Rlinkb sb sbe {rev ? 1e12 : 1m}
+R1529 padb sbe {rev ? 51k : 1e12}
+Cp1529 padb sbe {rev ? 0.2p : 1f}
+Ctvs7 sbe 0 {rev ? 3p : 1f}
+R1510 sbe ecgb 10k
+C1505 ecga ecgb 470p
+Ciea ecga 0 5p
+Cieb ecgb 0 5p
+R1513 ecga 0 10Meg
+R1514 ecgb 0 10Meg
+
+.control
+set noaskquit
+foreach rv 0 1
+ alterparam rev=$rv
+ foreach rs 4.2k 60k
+  alterparam rsup=$rs
+  foreach r 25 175
+   alterparam rp=$r
+   alterparam dz=0
+   reset
+   ac lin 1 64k 64k
+   let vd1 = mag(v(in1p)-v(in1n))
+   let iexc = mag(i(Vmp))
+   let vecg64 = mag(v(ecga)-v(ecgb))/mag(v(pada)-v(padb))
+   let frac = vd1/mag(v(pada)-v(padb))
+   set vecgs = "$&vecg64"
+   set fracs = "$&frac"
+   set vd1s = "$&vd1"
+   set iexs = "$&iexc"
+   alterparam dz=1
+   reset
+   ac lin 1 64k 64k
+   let vd2 = mag(v(in1p)-v(in1n))
+   let sens = abs(vd2 - $vd1s)/$iexs
+   set senss = "$&sens"
+   alterparam dz=0
+   reset
+   noise v(in1p,in1n) vmp lin 2 64000 64001
+   let en = onoise_total
+   set ens = "$&en"
+   foreach cn 0.13u 0.26u
+    foreach iex 80u 100u
+     let att = $senss * $iex
+     let etot = sqrt(2*$ens^2 + ($cn)^2) * sqrt(9.5)
+     let zn = etot / att * 1000
+     let enn = $ens*1e9
+     echo "RESULT impedance rev= $rv Rsup= $rs rp= $r chip_noise= $cn Iexc= $iex volts_per_ohm= $&att in1_over_pad_at_64k= $fracs resistor_noise_nV_rtHz= $&enn noise_mohm_rms= $&zn IN2_over_pad_at_64k= $vecgs"
+    end
+   end
+  end
+ end
+ * ---- ECG channel: gain and noise (patient 75 ohm, supervisor 60 k), drive sources off
+ alterparam rsup=60k
+ alterparam rp=75
+ reset
+ alter vmp ac = 0
+ alter vmn ac = 0
+ alter vecg ac = 1
+ ac lin 1 10 10
+ let g10 = mag(v(ecga)-v(ecgb))
+ set g10s = "$&g10"
+ ac lin 1 40 40
+ let g40 = mag(v(ecga)-v(ecgb))
+ set g40s = "$&g40"
+ ac lin 1 2.8k 2.8k
+ let g2k8 = mag(v(ecga)-v(ecgb))
+ set g2k8s = "$&g2k8"
+ noise v(ecga,ecgb) vecg dec 20 0.5 40
+
+ let ecguv = onoise_total*1e6
+ echo "RESULT ecg rev= $rv gain_10Hz= $g10s gain_40Hz= $g40s gain_2k8Hz= $g2k8s resistor_noise_uV_rms_0.5to40Hz= $&ecguv"
+ alter vmp ac = 0.5
+ alter vmn ac = 0.5
+ alter vecg ac = 0
+end
+.endc
+.end

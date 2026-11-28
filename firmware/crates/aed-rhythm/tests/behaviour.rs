@@ -48,7 +48,10 @@ fn sinus_cases() -> Vec<Synth> {
         for amp in [300.0, 1000.0, 2500.0] {
             for seed in SEEDS {
                 v.push(Synth::new(
-                    Rhythm::Sinus { bpm: bpm as f32, amplitude_uv: amp },
+                    Rhythm::Sinus {
+                        bpm: bpm as f32,
+                        amplitude_uv: amp,
+                    },
                     seed,
                 ));
             }
@@ -61,7 +64,10 @@ fn coarse_vf_cases() -> Vec<Synth> {
     let mut v = Vec::new();
     for amp in [300.0, 500.0, 800.0, 1500.0, 3000.0] {
         for seed in 1..=10 {
-            v.push(Synth::new(Rhythm::VentricularFibrillation { amplitude_uv: amp }, seed));
+            v.push(Synth::new(
+                Rhythm::VentricularFibrillation { amplitude_uv: amp },
+                seed,
+            ));
         }
     }
     v
@@ -72,7 +78,10 @@ fn vt_cases() -> Vec<Synth> {
     for bpm in (150..=250).step_by(10) {
         for amp in [600.0, 1200.0, 2500.0] {
             v.push(Synth::new(
-                Rhythm::VentricularTachycardia { bpm: bpm as f32, amplitude_uv: amp },
+                Rhythm::VentricularTachycardia {
+                    bpm: bpm as f32,
+                    amplitude_uv: amp,
+                },
                 bpm,
             ));
         }
@@ -105,9 +114,20 @@ fn noisy_cases() -> Vec<Synth> {
 fn saturated_cases() -> Vec<Synth> {
     let mut v = Vec::new();
     for seed in SEEDS {
-        v.push(Synth::new(Rhythm::Sinus { bpm: 70.0, amplitude_uv: 60_000.0 }, seed));
+        v.push(Synth::new(
+            Rhythm::Sinus {
+                bpm: 70.0,
+                amplitude_uv: 60_000.0,
+            },
+            seed,
+        ));
         v.push(Synth::new(Rhythm::coarse_vf(), seed).with_offset(40_000.0));
-        v.push(Synth::new(Rhythm::VentricularFibrillation { amplitude_uv: 90_000.0 }, seed));
+        v.push(Synth::new(
+            Rhythm::VentricularFibrillation {
+                amplitude_uv: 90_000.0,
+            },
+            seed,
+        ));
     }
     v
 }
@@ -198,8 +218,15 @@ fn synthetic_confusion_table() {
             // Every case must reach Shockable at some point, and at least 90 %
             // must end on it. The 90 % mirrors the AHA coarse-VF goal only in
             // shape; on synthetic data it is a smoke test, not a claim.
-            assert_eq!(row.ever_shock, row.total(), "{name}: a case never became shockable");
-            assert!(row.shock * 10 >= row.total() * 9, "{name}: under 90 % ended shockable");
+            assert_eq!(
+                row.ever_shock,
+                row.total(),
+                "{name}: a case never became shockable"
+            );
+            assert!(
+                row.shock * 10 >= row.total() * 9,
+                "{name}: under 90 % ended shockable"
+            );
         } else {
             assert_eq!(row.ever_shock, 0, "{name}: a Shockable decision appeared");
         }
@@ -250,7 +277,10 @@ fn coarse_vf_becomes_shockable_within_bounded_time() {
             }
         }
         let first = first.unwrap_or(usize::MAX);
-        assert!(first <= limit, "seed {seed}: first shockable at {first} s, limit {limit} s");
+        assert!(
+            first <= limit,
+            "seed {seed}: first shockable at {first} s, limit {limit} s"
+        );
     }
 }
 
@@ -262,7 +292,10 @@ fn vf_with_moderate_interference_still_shockable() {
             .with_baseline_wander(400.0)
             .with_mains(300.0, 60.0)
             .with_offset(-5_000.0);
-        assert_eq!(final_decision(&run(s, ANALYSIS_SECONDS)), Some(RhythmDecision::Shockable));
+        assert_eq!(
+            final_decision(&run(s, ANALYSIS_SECONDS)),
+            Some(RhythmDecision::Shockable)
+        );
     }
 }
 
@@ -272,7 +305,10 @@ fn heavy_noise_and_saturation_never_shock() {
         assert!(!ever_shockable(&run(s, ANALYSIS_SECONDS)));
     }
     for s in saturated_cases() {
-        assert_eq!(final_decision(&run(s, ANALYSIS_SECONDS)), Some(RhythmDecision::Indeterminate));
+        assert_eq!(
+            final_decision(&run(s, ANALYSIS_SECONDS)),
+            Some(RhythmDecision::Indeterminate)
+        );
     }
 }
 
@@ -304,7 +340,10 @@ fn vf_to_sinus_stops_shockable_quickly() {
             .iter()
             .take_while(|r| r.decision == RhythmDecision::Shockable)
             .count();
-        assert!(still <= WINDOW_SECONDS, "seed {seed}: {still} shockable windows after switch");
+        assert!(
+            still <= WINDOW_SECONDS,
+            "seed {seed}: {still} shockable windows after switch"
+        );
         assert!(
             after
                 .iter()
@@ -335,7 +374,11 @@ fn reset_clears_state() {
     let mut a = Analyzer::new();
     feed(&mut a, &mut Synth::new(Rhythm::coarse_vf(), 3), 12);
     a.reset();
-    let r = feed(&mut a, &mut Synth::new(Rhythm::coarse_vf(), 3), 1 + WINDOW_SECONDS);
+    let r = feed(
+        &mut a,
+        &mut Synth::new(Rhythm::coarse_vf(), 3),
+        1 + WINDOW_SECONDS,
+    );
     assert_eq!(r.len(), 1);
     assert_eq!(r.first().map(|x| x.window_number), Some(1));
     assert_eq!(r.first().map(|x| x.consecutive_shockable), Some(1));

@@ -79,7 +79,10 @@ impl fmt::Display for HeaderError {
             HeaderError::MultiSegment => write!(f, "multi-segment records are not supported"),
             HeaderError::BadSignalCount(n) => write!(f, "unsupported number of signals: {n}"),
             HeaderError::MissingSignalLines { expected, found } => {
-                write!(f, "header promises {expected} signals but has {found} signal lines")
+                write!(
+                    f,
+                    "header promises {expected} signals but has {found} signal lines"
+                )
             }
         }
     }
@@ -222,9 +225,10 @@ pub fn parse_header(bytes: &[u8]) -> Result<Header, HeaderError> {
 
 fn parse_record_line(line: usize, text: &str) -> Result<RecordLine, HeaderError> {
     let mut fields = text.split_whitespace();
-    let name_field = fields
-        .next()
-        .ok_or(HeaderError::MissingField { line, field: "record name" })?;
+    let name_field = fields.next().ok_or(HeaderError::MissingField {
+        line,
+        field: "record name",
+    })?;
     if name_field.contains('/') {
         return Err(HeaderError::MultiSegment);
     }
@@ -235,9 +239,10 @@ fn parse_record_line(line: usize, text: &str) -> Result<RecordLine, HeaderError>
     {
         return Err(bad(line, "record name", name_field));
     }
-    let nsig_text = fields
-        .next()
-        .ok_or(HeaderError::MissingField { line, field: "number of signals" })?;
+    let nsig_text = fields.next().ok_or(HeaderError::MissingField {
+        line,
+        field: "number of signals",
+    })?;
     let signal_count = usize::try_from(parse_u64(line, "number of signals", nsig_text)?)
         .map_err(|_| bad(line, "number of signals", nsig_text))?;
     if signal_count == 0 || signal_count > MAX_SIGNALS {
@@ -295,9 +300,10 @@ fn parse_format(line: usize, text: &str) -> Result<(u16, u32, i64, u64), HeaderE
 
 fn parse_signal_line(line: usize, text: &str) -> Result<SignalSpec, HeaderError> {
     let mut fields = text.split_whitespace();
-    let file_name = fields
-        .next()
-        .ok_or(HeaderError::MissingField { line, field: "file name" })?;
+    let file_name = fields.next().ok_or(HeaderError::MissingField {
+        line,
+        field: "file name",
+    })?;
     if file_name.len() > 128
         || file_name.contains('/')
         || file_name.contains('\\')
@@ -306,9 +312,10 @@ fn parse_signal_line(line: usize, text: &str) -> Result<SignalSpec, HeaderError>
         // Refuse anything that could point outside the record's directory.
         return Err(bad(line, "file name", file_name));
     }
-    let fmt_text = fields
-        .next()
-        .ok_or(HeaderError::MissingField { line, field: "format" })?;
+    let fmt_text = fields.next().ok_or(HeaderError::MissingField {
+        line,
+        field: "format",
+    })?;
     let (format, samples_per_frame, skew, byte_offset) = parse_format(line, fmt_text)?;
 
     let mut spec = SignalSpec {
@@ -414,8 +421,9 @@ mod tests {
 
     #[test]
     fn parses_baseline_units_and_format_suffixes() {
-        let h = parse_header(b"r 1 250/1000(0) 10\nr.dat 212x2:3+512 400(-5)/uV 12 7 1 2 0 lead I\n")
-            .unwrap();
+        let h =
+            parse_header(b"r 1 250/1000(0) 10\nr.dat 212x2:3+512 400(-5)/uV 12 7 1 2 0 lead I\n")
+                .unwrap();
         let s = &h.signals[0];
         assert_eq!(h.record.sampling_hz, 250.0);
         assert_eq!(s.samples_per_frame, 2);
@@ -458,7 +466,11 @@ mod tests {
             b"r 1 250 -10\nr.dat 212\n",
         ];
         for c in cases {
-            assert!(parse_header(c).is_err(), "accepted {:?}", String::from_utf8_lossy(c));
+            assert!(
+                parse_header(c).is_err(),
+                "accepted {:?}",
+                String::from_utf8_lossy(c)
+            );
         }
         assert!(matches!(
             parse_header(&vec![b'#'; MAX_HEADER_BYTES + 1]),

@@ -123,7 +123,18 @@ pub fn render(title: &str, scores: &[CaseScore]) -> String {
     let _ = writeln!(
         out,
         "{:<18} {:>7} {:>8} {:>7} {:>7} {:>7} {:>8} {:>7} {:>7} {:>6} {:>6} {:>7}",
-        "case", "scored", "ref-comp", "MISSED", "unk", "longest", "ref-off", "off:cmp", "off:unk", "sens", "ppv", "rateErr"
+        "case",
+        "scored",
+        "ref-comp",
+        "MISSED",
+        "unk",
+        "longest",
+        "ref-off",
+        "off:cmp",
+        "off:unk",
+        "sens",
+        "ppv",
+        "rateErr"
     );
     for c in scores {
         let abs: Vec<f64> = c.rate_errors.iter().map(|e| e.abs()).collect();
@@ -145,7 +156,12 @@ pub fn render(title: &str, scores: &[CaseScore]) -> String {
         );
     }
     let t = totals(scores);
-    let _ = writeln!(out, "\nTotals over {} cases ({:.1} h scored):", t.cases, t.valid_s / 3600.0);
+    let _ = writeln!(
+        out,
+        "\nTotals over {} cases ({:.1} h scored):",
+        t.cases,
+        t.valid_s / 3600.0
+    );
     let _ = writeln!(
         out,
         "  Reference compressions: {:.0} s. Detector said HANDS OFF (missed): {:.0} s = {:.3}%; compressing {:.2}%; unknown {:.2}%",
@@ -155,7 +171,11 @@ pub fn render(title: &str, scores: &[CaseScore]) -> String {
         pct(t.comp_s, t.ref_comp_s),
         pct(t.comp_unknown_s, t.ref_comp_s)
     );
-    let _ = writeln!(out, "  Longest single miss: {:.2} s ({})", t.longest_miss.0, t.longest_miss.1);
+    let _ = writeln!(
+        out,
+        "  Longest single miss: {:.2} s ({})",
+        t.longest_miss.0, t.longest_miss.1
+    );
     let _ = writeln!(
         out,
         "  Reference hands off: {:.0} s. Detector said compressing {:.2}%, unknown {:.2}%",
@@ -185,7 +205,11 @@ pub fn render(title: &str, scores: &[CaseScore]) -> String {
     let abs: Vec<f64> = t.rate_errors.iter().map(|e| e.abs()).collect();
     dist("rate error |detector - reference| /min", &abs, &mut out);
     dist("onset: run start -> not hands off (s)", &t.onset, &mut out);
-    dist("onset: run start -> compressing (s)", &t.onset_comp, &mut out);
+    dist(
+        "onset: run start -> compressing (s)",
+        &t.onset_comp,
+        &mut out,
+    );
     dist("offset: run end -> hands off (s)", &t.offset, &mut out);
     dist("reference pauses between runs (s)", &t.pauses, &mut out);
     let over15 = t.pauses.iter().filter(|&&p| p >= 15.0).count();

@@ -1,0 +1,95 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+* S-2 (rev3-changes.md second-round list): low-side turn-off at the over-current trip with sheet 13 AS DRAWN in
+* revision 0.3 — trip band 74 / 80 / 86 A (R1351 196 k), local film string C1347 + C1348 = 2 x 0.15 uF in
+* series (75 nF; wpg_common.inc 'hbridge3'), cable to the off-board capacitor lcap 0.5-1 uH.
+* Phase 1 starts normally into a short (0.01 ohm) at the pads (lpat 1.5 uH) or the board connector (lpat 0),
+* capacitor at 2,200 V (top of the OVP band). OC path as ../bridge/q2: 100 ohm / 1 nF, threshold octhr,
+* sheet-12 logic tdl, UCC5350 td 65-100 ns, 33 ohm turn-off.
+* cfail: 0 healthy, 1 = C1347 shorted (C1348 alone, 0.15 uF, carries the whole voltage), 2 = string open.
+.include wpg_common.inc
+.param v0=2200 rp=0.01 lpat=1.5u octhr=80.1 tdl=65n tdrv=100n lst=50n lcap=500n csn=3n rsn=10 tc=55
+.param cf1=0.15u cf2=0.15u lfl=10n cfail=0 lsh=0.3n
+.param ths=200u
+Vgnd0 rtn 0 0
+Cmain capi rtn 100u
+Vchg vchg 0 {v0*1.0005}
+Rchg vchg capi 10k
+XB capi rtn oa ob gha ghb gla glb lss kn tjha tjla tjhb tjlb bus isn capp fm hbridge3
++ params: lst={lst} lcap={lcap} csn={csn} rsn={rsn} tc={tc} cf1={cf1} cf2={cf2} lfl={lfl} cfail={cfail} lsh={lsh}
+XP oa ob patient params: rp={rp} lpat={lpat}
+Vpos vp lss 20.7
+Vneg vn lss -5
+Vb5 b5v 0 5
+Vcha cha0 0 PWL(0 0 {ths+2u} 0 {ths+2u+20n} 1)
+Vclb clb0 0 PWL(0 0 {ths+100u} 0 {ths+100u+20n} 1)
+Roc isn oc1 100
+Coc oc1 0 1n
+Bset 0 fl I = 2m*0.5*(1+tanh(2*(abs(V(oc1))-octhr))) + 5m*0.5*(1+tanh(50*(V(fl)-0.2)))
+Cfl fl 0 10p
+.ic v(fl)=0
+Rfl fl 0 1e9
+Dfl fl one dclamp
+Vone one 0 1
+.model dclamp d (is=1e-12 n=1)
+Bfl fla 0 V = min(max(V(fl),0),1)
+Tl1 fla 0 fld 0 Z0=50 TD={tdl}
+Rl1 fld 0 50
+* rev 0.3: the high-side kill latch also removes G_HA ~60 ns after the latch (its gate then falls in us)
+Efb fldb 0 fld 0 1
+Tl2 fldb 0 flh 0 Z0=50 TD=60n
+Rl2 flh 0 50
+Bcha cha 0 V = min(max(V(cha0),0),1) * (1 - min(max(V(flh),0),1))
+Bclb clb 0 V = min(max(V(clb0),0),1) * (1 - min(max(V(fld),0),1))
+Vcla cla 0 0
+Vchb chb 0 0
+XDLA cla vp vn gla lss lsdrv params: td={tdrv}
+XDLB clb vp vn glb lss lsdrv params: td={tdrv}
+XDHA cha b5v gha oa hsdrv
+XDHB chb b5v ghb ob hsdrv
+.options method=trap reltol=1e-3 abstol=1e-6 vntol=1e-4 itl4=100
+.control
+set noaskquit
+let tstop_req = 340e-6
+tran 2n 340u 290u 20n
+let idl = v.xb.vmlb#branch
+let vdl = v(xb.dlb)-v(lss)
+let vdhb = v(xb.dhb)-v(xb.obi)
+let pl = vdl*idl
+meas tran ioff find idl when vdl=100 rise=1
+meas tran toff when vdl=100 rise=1
+meas tran ipk max idl
+meas tran vmax max vdl
+meas tran vhb max vdhb
+meas tran eoff integ pl from=300u to=340u
+meas tran tj max tjlb
+let icf = v.xb.vcf#branch
+meas tran icfmax max icf
+meas tran icfmin min icf
+let vc1 = v(capp)-v(fm)
+let vc2 = v(fm)
+meas tran vc1max max vc1
+meas tran vc2max max vc2
+* dielectric dv/dt = film current / capacitance (v(fm) itself includes the ESL drop)
+let icfa = abs(icf)
+meas tran icfpk max icfa
+* ringing of the local capacitor against the cable: excursion of HV_CAP_P (board) from 2,200 V in windows
+let dcap = v(capp)-2200
+let t1 = toff+2e-6
+let t2 = toff+6e-6
+let t3 = toff+12e-6
+let t4 = toff+25e-6
+meas tran r1 max dcap from=toff to=t1
+meas tran r1n min dcap from=toff to=t1
+meas tran r2 max dcap from=t2 to=t3
+meas tran r3 max dcap from=t3 to=t4
+meas tran tpk1 when dcap=0 cross=1 td=toff
+meas tran tpk3 when dcap=0 cross=3 td=toff
+let fring = 1/(tpk3-tpk1)/1e3
+let em = eoff*1000
+let dvp = icfpk/0.15e-6/1e6
+let n = length(time)-1
+let te = time[n]
+echo "RESULT CASE_LABEL | Ipk=$&ipk A | I_off=$&ioff A | VDS_QLB_max=$&vmax V | VDS_QHB_max=$&vhb V | E_off=$&em mJ | Tj_QLB=$&tj C | I_film_min=$&icfmin I_film_max=$&icfmax A | V_C1347max=$&vc1max V | V_C1348max=$&vc2max V | dv/dt_film=$&dvp V/us (rating 1440) | ring HV_CAP_P: 0-2us +$&r1/$&r1n V, 6-12us +$&r2 V, 12-25us +$&r3 V, f=$&fring kHz | t_end=$&te of $&tstop_req"
+.endc
+.end

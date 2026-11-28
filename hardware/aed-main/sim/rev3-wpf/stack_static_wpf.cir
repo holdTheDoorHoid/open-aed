@@ -1,0 +1,133 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* stack_static_wpf.cir — static (DC) voltage sharing of discharge stack A AS DRAWN on 11_hv_storage after design
+* revision 0.3 (stack B is identical with its own references). Written from the pin table
+* (hardware/aed-main/specs/11_hv_storage.toml), not from the change order:
+*   R1101-R1103 1.5 k dump resistors in series with the stack top (HV_CAP_P -> HV_A_TOP)
+*   Q1101 (bottom, gate STKA_G) ... Q1104 (top): IXTT2N170D2
+*   R1107-R1110 || R6115-R6118: sharing string of 4 elements, each 2 x 10 M in parallel (5.0 M; the change order's
+*   single 4.7 M is kept as option pstr = 1), HV_RTN -> T1 -> T2 -> T3 -> HV_A_TOP, C1101-C1104 3.3 nF across each element
+*   upper device k = 2..4: tap T(k-1) -> R1115..R1117 100 k -> HV_A_GFk -> D1127..D1129 GP02-40 (A at GFk, K at gate)
+*                          || R6101..R6103 22 M -> HV_A_Gk; R1121..R1123 100 M gate-source; D1102..D1104 SMF15CA
+*   R6107-R6110 10 M and C1137-C1140 3.3 nF drain-source across Q1101..Q1104
+*   bottom gate: pump output -> R1194 470 ohm -> STKA_G; R1127 + R1128 1.01 M to HV_RTN; D1101 SMF15CA; held at the
+*   cold-corner hold level (-5.9 V, sim/rev3 §2) through the 470 ohm (static sharing barely depends on it).
+* Every part has a fault switch f<part> = 0 nominal, 1 short (0.1 ohm across), 2 open (1e15 ohm in series / value).
+* Models: ../charger-storage/models/datasheet_models.lib (DEPMOS 2N170D2 set, SMF15CA) and models/wpf_models.lib
+* (GP02-40 with leakage, Fig. 12 temperature factors). Breakdown is not modelled: the result is the voltage each
+* device is ASKED to block, compared with its rating.
+.include ../charger-storage/models/datasheet_models.lib
+.include models/wpf_models.lib
+.param vcap=2200 vhold=5.9 tf=1.0 leakt=68meg ilk=5u
+* tolerance / spread parameters (Monte Carlo alters these)
+.param ts1=1 ts2=1 ts3=1 ts4=1 tp1=1 tp2=1 tp3=1 tp4=1 tr1=1 tr2=1 tr3=1 tr4=1 tg2=1 tg3=1 tg4=1 tb2=1 tb3=1 tb4=1
+.param vo1=-3 vo2=-3 vo3=-3 vo4=-3 lk1=0.3 lk2=0.3 lk3=0.3 lk4=0.3 dl2=1 dl3=1 dl4=1
+* fault switches
+.param fq1=0 fq2=0 fq3=0 fq4=0 fs1=0 fs2=0 fs3=0 fs4=0 fr1=0 fr2=0 fr3=0 fr4=0 fc1=0 fc2=0 fc3=0 fc4=0
+.param fsc1=0 fsc2=0 fsc3=0 fsc4=0 fg2=0 fg3=0 fg4=0 fd2=0 fd3=0 fd4=0 fb2=0 fb3=0 fb4=0
+.param fgs2=0 fgs3=0 fgs4=0 ft1=0 ft2=0 ft3=0 ft4=0 fh=0
+.param kp=0.6 rdv=6.0 cgs=3.57n cgd0=485p cds0=760p
+
+VCAP hvp 0 {vcap}
+R1101 hvp d1 1.5k
+R1102 d1 d2 1.5k
+R1103 d2 top 1.5k
+* ---- bottom device Q1101 and its gate
+VH ph 0 {-vhold}
+R1194 ph g1 470
+R1127 g1 gtp 680k
+R1128 gtp 0 330k
+XQ1101 m1x g1 0 DEPMOS params: voff={vo1*tf} rleak={leakt/lk1} kp={kp} rd={rdv} cgs={cgs} cgd0={cgd0} cds0={cds0}
+RQ1O m1 m1x {fq1==2 ? 1e15 : 1m}
+RQ1S m1 0 {fq1==1 ? 0.1 : 1e15}
+XD1101 t1a 0 SMF15CA
+RT1O g1 t1a {ft1==2 ? 1e15 : 1m}
+RT1S g1 0 {ft1==1 ? 0.1 : 1e15}
+R6107 m1 0 {fr1==1 ? 0.1 : (fr1==2 ? 1e15 : 10meg*tr1)}
+C1137 m1 0 {fc1==2 ? 1f : 3.3n}
+RC1S m1 0 {fc1==1 ? 0.1 : 1e15}
+* ---- device 2: Q1102 (drain m2, source m1), tap T1
+R1115 t1 gf2 {fg2==1 ? 0.1 : (fg2==2 ? 1e15 : 100k)}
+XD1127 gf2x g2 GPL params: ilk={ilk*dl2}
+RD2O gf2 gf2x {fd2==2 ? 1e15 : 1m}
+RD2S gf2 g2 {fd2==1 ? 0.1 : 1e15}
+R6101 gf2 g2 {fb2==1 ? 0.1 : (fb2==2 ? 1e15 : 22meg*tb2)}
+R1121 g2 m1 {fgs2==1 ? 0.1 : (fgs2==2 ? 1e15 : 100meg*tg2)}
+XD1102 t2a m1 SMF15CA
+RT2O g2 t2a {ft2==2 ? 1e15 : 1m}
+RT2S g2 m1 {ft2==1 ? 0.1 : 1e15}
+XQ1102 m2x g2 m1 DEPMOS params: voff={vo2*tf} rleak={leakt/lk2} kp={kp} rd={rdv} cgs={cgs} cgd0={cgd0} cds0={cds0}
+RQ2O m2 m2x {fq2==2 ? 1e15 : 1m}
+RQ2S m2 m1 {fq2==1 ? 0.1 : 1e15}
+R6108 m2 m1 {fr2==1 ? 0.1 : (fr2==2 ? 1e15 : 10meg*tr2)}
+C1138 m2 m1 {fc2==2 ? 1f : 3.3n}
+RC2S m2 m1 {fc2==1 ? 0.1 : 1e15}
+* ---- device 3: Q1103 (drain m3, source m2), tap T2
+R1116 t2 gf3 {fg3==1 ? 0.1 : (fg3==2 ? 1e15 : 100k)}
+XD1128 gf3x g3 GPL params: ilk={ilk*dl3}
+RD3O gf3 gf3x {fd3==2 ? 1e15 : 1m}
+RD3S gf3 g3 {fd3==1 ? 0.1 : 1e15}
+R6102 gf3 g3 {fb3==1 ? 0.1 : (fb3==2 ? 1e15 : 22meg*tb3)}
+R1122 g3 m2 {fgs3==1 ? 0.1 : (fgs3==2 ? 1e15 : 100meg*tg3)}
+XD1103 t3a m2 SMF15CA
+RT3O g3 t3a {ft3==2 ? 1e15 : 1m}
+RT3S g3 m2 {ft3==1 ? 0.1 : 1e15}
+XQ1103 m3x g3 m2 DEPMOS params: voff={vo3*tf} rleak={leakt/lk3} kp={kp} rd={rdv} cgs={cgs} cgd0={cgd0} cds0={cds0}
+RQ3O m3 m3x {fq3==2 ? 1e15 : 1m}
+RQ3S m3 m2 {fq3==1 ? 0.1 : 1e15}
+R6109 m3 m2 {fr3==1 ? 0.1 : (fr3==2 ? 1e15 : 10meg*tr3)}
+C1139 m3 m2 {fc3==2 ? 1f : 3.3n}
+RC3S m3 m2 {fc3==1 ? 0.1 : 1e15}
+* ---- device 4: Q1104 (drain HV_A_TOP, source m3), tap T3
+R1117 t3 gf4 {fg4==1 ? 0.1 : (fg4==2 ? 1e15 : 100k)}
+XD1129 gf4x g4 GPL params: ilk={ilk*dl4}
+RD4O gf4 gf4x {fd4==2 ? 1e15 : 1m}
+RD4S gf4 g4 {fd4==1 ? 0.1 : 1e15}
+R6103 gf4 g4 {fb4==1 ? 0.1 : (fb4==2 ? 1e15 : 22meg*tb4)}
+R1123 g4 m3 {fgs4==1 ? 0.1 : (fgs4==2 ? 1e15 : 100meg*tg4)}
+XD1104 t4a m3 SMF15CA
+RT4O g4 t4a {ft4==2 ? 1e15 : 1m}
+RT4S g4 m3 {ft4==1 ? 0.1 : 1e15}
+XQ1104 topx g4 m3 DEPMOS params: voff={vo4*tf} rleak={leakt/lk4} kp={kp} rd={rdv} cgs={cgs} cgd0={cgd0} cds0={cds0}
+RQ4O top topx {fq4==2 ? 1e15 : 1m}
+RQ4S top m3 {fq4==1 ? 0.1 : 1e15}
+R6110 top m3 {fr4==1 ? 0.1 : (fr4==2 ? 1e15 : 10meg*tr4)}
+C1140 top m3 {fc4==2 ? 1f : 3.3n}
+RC4S top m3 {fc4==1 ? 0.1 : 1e15}
+* ---- sharing string R1107..R1110 with C1101..C1104
+* string element k = R110x || R611x (two 10 M in parallel, 5.0 M; WP-F change W-1, see notes). Fault fs<k>: 1 = the
+* element shorted, 2 = ONE resistor of the pair open (the other remains). pstr = 1 restores the change order's single
+* 4.7 M element (fs = 2 then opens the whole element) for comparison.
+.param pstr=0
+R1107 t1 0 {fs1==1 ? 0.1 : (fs1==2 ? 1e15 : (pstr ? 4.7meg : 10meg)*ts1)}
+R6115 t1 0 {pstr ? 1e15 : 10meg*tp1}
+R1108 t2 t1 {fs2==1 ? 0.1 : (fs2==2 ? 1e15 : (pstr ? 4.7meg : 10meg)*ts2)}
+R6116 t2 t1 {pstr ? 1e15 : 10meg*tp2}
+R1109 t3 t2 {fs3==1 ? 0.1 : (fs3==2 ? 1e15 : (pstr ? 4.7meg : 10meg)*ts3)}
+R6117 t3 t2 {pstr ? 1e15 : 10meg*tp3}
+R1110 top t3 {fs4==1 ? 0.1 : (fs4==2 ? 1e15 : (pstr ? 4.7meg : 10meg)*ts4)}
+R6118 top t3 {pstr ? 1e15 : 10meg*tp4}
+C1101 t1 0 3.3n
+C1102 t2 t1 3.3n
+C1103 t3 t2 3.3n
+C1104 top t3 3.3n
+RSC1 t1 0 {fsc1==1 ? 0.1 : 1e15}
+RSC2 t2 t1 {fsc2==1 ? 0.1 : 1e15}
+RSC3 t3 t2 {fsc3==1 ? 0.1 : 1e15}
+RSC4 top t3 {fsc4==1 ? 0.1 : 1e15}
+* ---- observed quantities
+BV1 vds1 0 V=v(m1)
+BV2 vds2 0 V=v(m2)-v(m1)
+BV3 vds3 0 V=v(m3)-v(m2)
+BV4 vds4 0 V=v(top)-v(m3)
+BMX vdsmax 0 V=max(max(v(vds1),v(vds2)),max(v(vds3),v(vds4)))
+* steering diode reverse voltage (= voltage on its 22 M bypass), worst of the three
+BDR vdrmax 0 V=max(max(v(g2)-v(gf2),v(g3)-v(gf3)),v(g4)-v(gf4))
+BDF vdfmax 0 V=max(max(abs(v(t1)-v(gf2)),abs(v(t2)-v(gf3))),abs(v(t3)-v(gf4)))
+* sharing-string element voltage, worst
+BSX vsmax 0 V=max(max(v(t1),v(t2)-v(t1)),max(v(t3)-v(t2),v(top)-v(t3)))
+* upper gate-source magnitude, worst (100 M resistors, TVS)
+BGS vgsmax 0 V=max(max(abs(v(g2)-v(m1)),abs(v(g3)-v(m2))),abs(v(g4)-v(m3)))
+.include stack_static_wpf.ctl
+.end

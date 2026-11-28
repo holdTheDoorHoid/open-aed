@@ -404,7 +404,9 @@ impl TestSchedule {
         for test in [PeriodicTest::Daily, PeriodicTest::Full] {
             let deadline = self.deadline(test);
             let (counted, missed) = match test {
-                PeriodicTest::Daily => (&mut self.daily_missed_for, &mut self.counters.missed_daily),
+                PeriodicTest::Daily => {
+                    (&mut self.daily_missed_for, &mut self.counters.missed_daily)
+                }
                 PeriodicTest::Full => (&mut self.full_missed_for, &mut self.counters.missed_full),
             };
             if now > deadline && *counted != Some(deadline) {
@@ -421,8 +423,8 @@ impl TestSchedule {
     /// instead, with the heat limits of D-41 and D-48.
     pub fn on_wake(&mut self, w: &WakeInputs) -> WakeDecision {
         let cfg = &self.config;
-        let full_allowed =
-            w.temperature_c >= cfg.full_test_min_temp_c && w.temperature_c <= cfg.full_test_max_temp_c;
+        let full_allowed = w.temperature_c >= cfg.full_test_min_temp_c
+            && w.temperature_c <= cfg.full_test_max_temp_c;
         self.on_wake_gated(
             w,
             TestGate {
@@ -451,7 +453,8 @@ impl TestSchedule {
         if self.full_failure.is_some() || self.daily_failure.is_some() {
             r.insert(Reason::SelfTestFailed);
         }
-        if self.started_at.is_none() || self.last_full_ok.is_none() || self.last_daily_ok.is_none() {
+        if self.started_at.is_none() || self.last_full_ok.is_none() || self.last_daily_ok.is_none()
+        {
             r.insert(Reason::SelfTestNotYetRun);
         }
         if self.started_at.is_some()
@@ -601,7 +604,8 @@ impl TestSchedule {
                 // The full-energy test includes everything the daily check does.
                 self.daily_failure = None;
                 self.last_daily_ok = Some(now_s);
-                self.daily_due = next_due(self.daily_due.min(now_s), now_s, c.daily_test_interval_s);
+                self.daily_due =
+                    next_due(self.daily_due.min(now_s), now_s, c.daily_test_interval_s);
             }
             (PeriodicTest::Full, false) => {
                 self.counters.full_failed = self.counters.full_failed.saturating_add(1);
@@ -876,7 +880,11 @@ impl PeriodicTestRun {
             sequence: self.sequence,
             state: RescueState::SelfTest,
             capacitor_voltage,
-            planned_voltage: if charging { self.self_test.test_voltage() } else { Volts(0) },
+            planned_voltage: if charging {
+                self.self_test.test_voltage()
+            } else {
+                Volts(0)
+            },
             armed_for_ms: 0,
             // The standby gate has already checked the temperature before
             // handing out this test; the supervisor judges its own reading
@@ -884,6 +892,7 @@ impl PeriodicTestRun {
             temperature: None,
             test_request,
             emptying: matches!(self.phase, Phase::Emptying { .. }),
+            charger_on: charging,
         });
     }
 }

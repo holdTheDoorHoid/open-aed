@@ -29,8 +29,7 @@
 use crate::settings::{Settings, SettingsError};
 use crate::{MAX_ROLLING_SECONDS, SAMPLE_MS};
 use aed_types::{
-    ChestEvent, ChestSensor, ChestState, ImpedanceSample, ImpedanceSignal,
-    IMPEDANCE_SAMPLE_RATE_HZ,
+    ChestEvent, ChestSensor, ChestState, ImpedanceSample, ImpedanceSignal, IMPEDANCE_SAMPLE_RATE_HZ,
 };
 use core::f32::consts::PI;
 
@@ -64,7 +63,11 @@ impl Biquad {
         let k = libm::tanf(PI * hz / fs);
         let kk = k * k;
         let denom = 1.0 + k / q + kk;
-        let norm = if denom.abs() > 1e-12 { 1.0 / denom } else { 0.0 };
+        let norm = if denom.abs() > 1e-12 {
+            1.0 / denom
+        } else {
+            0.0
+        };
         let (b0, b1, b2) = if high {
             (norm, -2.0 * norm, norm)
         } else {
@@ -417,9 +420,8 @@ impl CompressionDetector {
             (Some(a), Some(b)) => a.wrapping_sub(b).saturating_mul(SAMPLE_MS),
             _ => u32::MAX,
         };
-        let fast = rise_ms >= s.min_rise_ms
-            && rise_ms <= s.max_rise_ms
-            && steep_ms <= s.max_steep_ms;
+        let fast =
+            rise_ms >= s.min_rise_ms && rise_ms <= s.max_rise_ms && steep_ms <= s.max_steep_ms;
         (swing >= threshold && fast).then_some(swing)
     }
 

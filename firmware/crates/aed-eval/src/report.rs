@@ -7,7 +7,9 @@ use std::fmt::Write as _;
 use aed_rhythm::{reason_label, Features, Reason, Settings, WindowReport};
 use aed_types::RhythmDecision;
 
-use crate::eval::{Outcome, RecordOutput, ScoredWindow, SegmentResult, COUNTDOWN_S, DEVICE_VARIANT_S, VARIANTS_S};
+use crate::eval::{
+    Outcome, RecordOutput, ScoredWindow, SegmentResult, COUNTDOWN_S, DEVICE_VARIANT_S, VARIANTS_S,
+};
 use crate::stats::{clopper_pearson_lower, median, percentile, wilson_lower};
 use crate::truth::{
     Db, Label, TruthClass, ARTIFACT_GUARD_S, FINE_VF_UV, NOISE_GUARD_S, RAPID_VT_BPM,
@@ -107,7 +109,11 @@ fn verdict(class: TruthClass, t: &Tally) -> String {
     let p = x as f64 / t.n as f64;
     let lcl = clopper_pearson_lower(x, t.n, LEVEL).unwrap_or(0.0);
     let ok = p >= goal && lcl >= lcl_goal;
-    let mut s = if ok { "meets".to_string() } else { "**FAILS**".to_string() };
+    let mut s = if ok {
+        "meets".to_string()
+    } else {
+        "**FAILS**".to_string()
+    };
     if t.n < min_n {
         let _ = write!(s, " (n<{min_n})");
     }
@@ -127,7 +133,13 @@ fn class_table(out: &mut String, g: &Group<'_>) {
         by.entry(s.class).or_default().add(s);
         total.add(s);
     }
-    let _ = writeln!(out, "**{}** ({} segments from {} records)\n", g.title, total.n, total.records.len());
+    let _ = writeln!(
+        out,
+        "**{}** ({} segments from {} records)\n",
+        g.title,
+        total.n,
+        total.records.len()
+    );
     let _ = writeln!(
         out,
         "| Class | Metric | n | records | shock | no shock | inconcl. | result | 90% LCL exact | 90% LCL Wilson | AHA goal (LCL) | AHA min n* | verdict |"
@@ -179,10 +191,18 @@ fn class_table(out: &mut String, g: &Group<'_>) {
     }
     // VF regardless of amplitude, and VT regardless of rate.
     for (name, classes, shock_metric) in [
-        ("All VF, any amplitude", &[TruthClass::CoarseVf, TruthClass::FineVf][..], true),
+        (
+            "All VF, any amplitude",
+            &[TruthClass::CoarseVf, TruthClass::FineVf][..],
+            true,
+        ),
         (
             "All VT, no rate criterion",
-            &[TruthClass::RapidVt, TruthClass::SlowVt, TruthClass::VtRateUnknown][..],
+            &[
+                TruthClass::RapidVt,
+                TruthClass::SlowVt,
+                TruthClass::VtRateUnknown,
+            ][..],
             true,
         ),
     ] {
@@ -286,7 +306,8 @@ pub fn conditions(st: &Settings) -> Vec<Condition> {
             ),
             passes: Box::new(move |f, k| {
                 f.peak_to_peak_uv >= s.asystole_max_uv * (1.0 + k)
-                    && !(f.rms_uv < s.asystole_max_rms_uv * (1.0 + k) && f.vf_leakage > s.asystole_min_leakage)
+                    && !(f.rms_uv < s.asystole_max_rms_uv * (1.0 + k)
+                        && f.vf_leakage > s.asystole_min_leakage)
             }),
         },
         Condition {
@@ -297,7 +318,9 @@ pub fn conditions(st: &Settings) -> Vec<Condition> {
         Condition {
             key: "not low-band (compression)",
             rule: format!("low-band fraction ≤ {}", s.max_low_band_fraction),
-            passes: Box::new(move |f, k| f.low_band_fraction <= s.max_low_band_fraction * (1.0 - k)),
+            passes: Box::new(move |f, k| {
+                f.low_band_fraction <= s.max_low_band_fraction * (1.0 - k)
+            }),
         },
         Condition {
             key: "TCSC",
@@ -317,17 +340,23 @@ pub fn conditions(st: &Settings) -> Vec<Condition> {
         Condition {
             key: "dominant freq. low limit",
             rule: format!("dominant frequency > {} Hz", s.dominant_vf_min_hz),
-            passes: Box::new(move |f, k| f.dominant_frequency_hz > s.dominant_vf_min_hz * (1.0 + k)),
+            passes: Box::new(move |f, k| {
+                f.dominant_frequency_hz > s.dominant_vf_min_hz * (1.0 + k)
+            }),
         },
         Condition {
             key: "dominant freq. high limit",
             rule: format!("dominant frequency < {} Hz", s.dominant_vf_max_hz),
-            passes: Box::new(move |f, k| f.dominant_frequency_hz < s.dominant_vf_max_hz * (1.0 - k)),
+            passes: Box::new(move |f, k| {
+                f.dominant_frequency_hz < s.dominant_vf_max_hz * (1.0 - k)
+            }),
         },
         Condition {
             key: "spectral concentration",
             rule: format!("concentration > {}", s.concentration_vf_min),
-            passes: Box::new(move |f, k| f.spectral_concentration > s.concentration_vf_min * (1.0 + k)),
+            passes: Box::new(move |f, k| {
+                f.spectral_concentration > s.concentration_vf_min * (1.0 + k)
+            }),
         },
         Condition {
             key: "not fine VF",
@@ -360,13 +389,19 @@ fn feature_cols(st: &Settings) -> Vec<FeatureCol> {
         FeatureCol {
             name: "peak-to-peak (µV, after the analyser's filter)",
             get: |f| f.peak_to_peak_uv,
-            rule: format!("≥ {} for shock, < {} = flatline, > {} = implausible", s.fine_vf_max_pp_uv, s.asystole_max_uv, s.max_plausible_pp_uv),
+            rule: format!(
+                "≥ {} for shock, < {} = flatline, > {} = implausible",
+                s.fine_vf_max_pp_uv, s.asystole_max_uv, s.max_plausible_pp_uv
+            ),
             vf_side: Box::new(move |v| (s.fine_vf_max_pp_uv..=s.max_plausible_pp_uv).contains(&v)),
         },
         FeatureCol {
             name: "root-mean-square (µV, after the analyser's filter)",
             get: |f| f.rms_uv,
-            rule: format!("≥ {} (or leakage ≤ {}) to escape the flatline rule", s.asystole_max_rms_uv, s.asystole_min_leakage),
+            rule: format!(
+                "≥ {} (or leakage ≤ {}) to escape the flatline rule",
+                s.asystole_max_rms_uv, s.asystole_min_leakage
+            ),
             vf_side: Box::new(move |v| v >= s.asystole_max_rms_uv),
         },
         FeatureCol {
@@ -473,10 +508,18 @@ pub struct Meta {
     pub settings: Settings,
 }
 
-fn seg_group<'a>(all: &'a [SegmentResult], variant: u32, title: String, pick: impl Fn(&SegmentResult) -> bool) -> Group<'a> {
+fn seg_group<'a>(
+    all: &'a [SegmentResult],
+    variant: u32,
+    title: String,
+    pick: impl Fn(&SegmentResult) -> bool,
+) -> Group<'a> {
     Group {
         title,
-        segs: all.iter().filter(|s| s.variant_s == variant && pick(s)).collect(),
+        segs: all
+            .iter()
+            .filter(|s| s.variant_s == variant && pick(s))
+            .collect(),
     }
 }
 
@@ -512,14 +555,24 @@ fn headline_cell(segs: &[&SegmentResult], class: TruthClass) -> String {
         Some(_) => " ✗",
         None => "",
     };
-    format!("{} (LCL {}, n={}, {} rec){}", pct(x, t.n), pctf(lcl), t.n, t.records.len(), mark)
+    format!(
+        "{} (LCL {}, n={}, {} rec){}",
+        pct(x, t.n),
+        pctf(lcl),
+        t.n,
+        t.records.len(),
+        mark
+    )
 }
 
 /// Build the whole Markdown report.
 #[must_use]
 pub fn build_report(outputs: &[RecordOutput], meta: &Meta) -> String {
     let mut out = String::new();
-    let segs: Vec<SegmentResult> = outputs.iter().flat_map(|o| o.segments.iter().cloned()).collect();
+    let segs: Vec<SegmentResult> = outputs
+        .iter()
+        .flat_map(|o| o.segments.iter().cloned())
+        .collect();
     header(&mut out, meta, outputs);
     data_checks(&mut out, outputs, meta);
     headline(&mut out, outputs, &segs);
@@ -536,7 +589,11 @@ pub fn build_report(outputs: &[RecordOutput], meta: &Meta) -> String {
 fn header(out: &mut String, meta: &Meta, outputs: &[RecordOutput]) {
     let _ = writeln!(out, "# Rhythm analyser on recorded heart rhythms\n");
     let _ = writeln!(out, "- **Date (UTC):** {}", meta.date);
-    let _ = writeln!(out, "- **Analyser evaluated:** `aed-rhythm` at git commit {}", meta.commit);
+    let _ = writeln!(
+        out,
+        "- **Analyser evaluated:** `aed-rhythm` at git commit {}",
+        meta.commit
+    );
     let _ = writeln!(out, "- **Data:** PhysioNet cudb, vfdb, mitdb (public Holter / monitoring recordings), read from `{}`", meta.data_dir);
     let _ = writeln!(out, "- **Records evaluated:** {}", outputs.len());
     if let Some(r) = &meta.records {
@@ -546,7 +603,10 @@ fn header(out: &mut String, meta: &Meta, outputs: &[RecordOutput]) {
     let _ = writeln!(out, "**What these numbers are not.** They are not a claim about a real device. The recordings are:\n");
     let _ = writeln!(out, "- few patients (35 + 22 + 47), so thousands of segments are really a few dozen independent people; the confidence limits below treat segments as independent and are therefore too optimistic;");
     let _ = writeln!(out, "- in-hospital monitoring and ambulatory (Holter) recordings from the 1970s-80s, not out-of-hospital cardiac arrest recorded through defibrillator pads;");
-    let _ = writeln!(out, "- free of CPR artefact; no children; with recorder bandwidths and leads unlike pad ECG;");
+    let _ = writeln!(
+        out,
+        "- free of CPR artefact; no children; with recorder bandwidths and leads unlike pad ECG;"
+    );
     let _ = writeln!(out, "- of uncertain amplitude calibration (cudb's gain is \"nominal\" only; see the amplitude section), which matters because the analyser has absolute microvolt rules;");
     let _ = writeln!(out, "- annotated with varying care: mitdb by two cardiologists beat by beat; vfdb with rhythm labels only; cudb with \"preliminary\" labels, approximate VF onsets, and every beat labelled normal even when it is not.");
     let _ = writeln!(out, "\nPublic-database results are known to overstate field performance (research notes, section 2). Nothing here is safe or ready for use on a person. See SAFETY.md.\n");
@@ -566,16 +626,38 @@ fn data_checks(out: &mut String, outputs: &[RecordOutput], meta: &Meta) {
     for db in dbs_present(outputs) {
         let recs: Vec<&RecordOutput> = outputs.iter().filter(|o| o.db == db).collect();
         let checks: Vec<_> = recs.iter().flat_map(|o| o.checks.iter()).collect();
-        let ck_ok = checks.iter().filter(|c| c.checksum_ok == Some(true)).count();
-        let iv_ok = checks.iter().filter(|c| c.initial_value_ok == Some(true)).count();
-        let total: u64 = recs.iter().map(|o| o.n_original * o.channel_info.len() as u64).sum();
-        let rail: u64 = recs.iter().flat_map(|o| o.channel_info.iter().map(|c| c.4)).sum();
-        let clip: u64 = recs.iter().flat_map(|o| o.channel_info.iter().map(|c| c.3)).sum();
+        let ck_ok = checks
+            .iter()
+            .filter(|c| c.checksum_ok == Some(true))
+            .count();
+        let iv_ok = checks
+            .iter()
+            .filter(|c| c.initial_value_ok == Some(true))
+            .count();
+        let total: u64 = recs
+            .iter()
+            .map(|o| o.n_original * o.channel_info.len() as u64)
+            .sum();
+        let rail: u64 = recs
+            .iter()
+            .flat_map(|o| o.channel_info.iter().map(|c| c.4))
+            .sum();
+        let clip: u64 = recs
+            .iter()
+            .flat_map(|o| o.channel_info.iter().map(|c| c.3))
+            .sum();
         let gains: BTreeSet<String> = recs
             .iter()
-            .flat_map(|o| o.channel_info.iter().map(|c| format!("{}{}", c.1, if c.2 { " (default)" } else { "" })))
+            .flat_map(|o| {
+                o.channel_info
+                    .iter()
+                    .map(|c| format!("{}{}", c.1, if c.2 { " (default)" } else { "" }))
+            })
             .collect();
-        let unknown: BTreeSet<String> = recs.iter().flat_map(|o| o.timeline.unknown_labels.iter().cloned()).collect();
+        let unknown: BTreeSet<String> = recs
+            .iter()
+            .flat_map(|o| o.timeline.unknown_labels.iter().cloned())
+            .collect();
         let fs: BTreeSet<String> = recs.iter().map(|o| format!("{}", o.fs_original)).collect();
         let _ = writeln!(
             out,
@@ -592,20 +674,33 @@ fn data_checks(out: &mut String, outputs: &[RecordOutput], meta: &Meta) {
             pct(rail, total),
             clip,
             gains.into_iter().collect::<Vec<_>>().join(", "),
-            if unknown.is_empty() { "none".to_string() } else { unknown.into_iter().collect::<Vec<_>>().join(", ") }
+            if unknown.is_empty() {
+                "none".to_string()
+            } else {
+                unknown.into_iter().collect::<Vec<_>>().join(", ")
+            }
         );
     }
     let _ = writeln!(out);
     if meta.failed.is_empty() {
-        let _ = writeln!(out, "Every record listed in each database's RECORDS file loaded without error.\n");
+        let _ = writeln!(
+            out,
+            "Every record listed in each database's RECORDS file loaded without error.\n"
+        );
     } else {
-        let _ = writeln!(out, "Records that could not be loaded (left out of every table):\n");
+        let _ = writeln!(
+            out,
+            "Records that could not be loaded (left out of every table):\n"
+        );
         for (db, r, e) in &meta.failed {
             let _ = writeln!(out, "- {}/{}: {}", db.name(), r, e);
         }
         let _ = writeln!(out);
     }
-    let marks: usize = outputs.iter().map(|o| o.timeline.noise_marks_with_text).sum();
+    let marks: usize = outputs
+        .iter()
+        .map(|o| o.timeline.noise_marks_with_text)
+        .sum();
     let _ = writeln!(out, "\"Samples at recorder limit\" are values at the very end of the original recorder's range: the recording itself was clipped there (the original analogue chain saturated). The analyser cannot see this: its own saturation rule looks for values beyond ±32 000 µV, which these recordings (range about ±5 mV for cudb and mitdb, ±10 mV for vfdb) can never reach. No sample needed clipping to fit the analyser's 16-bit input.\n");
     if marks > 0 {
         let _ = writeln!(out, "{marks} signal-quality (`~`) marks in cudb carry the text `(N`; the text is ignored and only the quality change is used.\n");
@@ -613,7 +708,10 @@ fn data_checks(out: &mut String, outputs: &[RecordOutput], meta: &Meta) {
 }
 
 fn headline(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult]) {
-    let _ = writeln!(out, "## Headline: device-realistic analysis ({DEVICE_VARIANT_S} s limit)\n");
+    let _ = writeln!(
+        out,
+        "## Headline: device-realistic analysis ({DEVICE_VARIANT_S} s limit)\n"
+    );
     let _ = writeln!(out, "Each cell: result (exact 90 % lower limit, segments, records); ✗ = misses the AHA goal or its lower limit. Inconclusive = share of all scored segments ending \"unable to analyse\".\n");
     let _ = writeln!(out, "| Group | Coarse VF sensitivity (AHA ≥90%, LCL 87%) | Rapid VT sensitivity (≥75%, 67%) | NSR specificity (≥99%, 97%) | Other non-shockable specificity (≥95%, 88%) | Asystole specificity (≥95%, 92%) | Inconclusive |");
     let _ = writeln!(out, "|---|---|---|---|---|---|---|");
@@ -621,30 +719,41 @@ fn headline(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult]) 
     for db in dbs_present(outputs) {
         rows.push((
             format!("{} channel 0", db.name()),
-            segs.iter().filter(|s| s.variant_s == DEVICE_VARIANT_S && s.db == db && s.channel == 0).collect(),
+            segs.iter()
+                .filter(|s| s.variant_s == DEVICE_VARIANT_S && s.db == db && s.channel == 0)
+                .collect(),
         ));
     }
     rows.push((
         "**pooled, channel 0**".into(),
-        segs.iter().filter(|s| s.variant_s == DEVICE_VARIANT_S && s.channel == 0).collect(),
+        segs.iter()
+            .filter(|s| s.variant_s == DEVICE_VARIANT_S && s.channel == 0)
+            .collect(),
     ));
     for db in dbs_present(outputs) {
         if max_channels(outputs, db) > 1 {
             rows.push((
                 format!("{} channel 1", db.name()),
-                segs.iter().filter(|s| s.variant_s == DEVICE_VARIANT_S && s.db == db && s.channel == 1).collect(),
+                segs.iter()
+                    .filter(|s| s.variant_s == DEVICE_VARIANT_S && s.db == db && s.channel == 1)
+                    .collect(),
             ));
         }
     }
     rows.push((
         "**pooled, channel 1**".into(),
-        segs.iter().filter(|s| s.variant_s == DEVICE_VARIANT_S && s.channel == 1).collect(),
+        segs.iter()
+            .filter(|s| s.variant_s == DEVICE_VARIANT_S && s.channel == 1)
+            .collect(),
     ));
     for (name, rs) in rows {
         if rs.is_empty() {
             continue;
         }
-        let inc = rs.iter().filter(|s| s.run.outcome == Outcome::Inconclusive).count() as u64;
+        let inc = rs
+            .iter()
+            .filter(|s| s.run.outcome == Outcome::Inconclusive)
+            .count() as u64;
         let _ = writeln!(
             out,
             "| {} | {} | {} | {} | {} | {} | {} (n={}) |",
@@ -663,12 +772,22 @@ fn headline(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult]) 
 
 /// Time to decision and shocks lost in the stand-clear countdown.
 fn timing_section(out: &mut String, segs: &[SegmentResult]) {
-    let _ = writeln!(out, "## Time to decision, and shocks lost in the countdown ({DEVICE_VARIANT_S} s analysis)\n");
+    let _ = writeln!(
+        out,
+        "## Time to decision, and shocks lost in the countdown ({DEVICE_VARIANT_S} s analysis)\n"
+    );
     let _ = writeln!(out, "Every second of analysis is hands-off time. \"Decided by\" = share of segments with a final answer (shock or no shock) by that time after the analysis started; the rest are still analysing. After \"shock advised\" the rescue sequence counts down for {COUNTDOWN_S} s and abandons the shock on any answer other than `Shockable` (aed-core); \"cancelled in countdown\" counts shocks the analyser itself would have called off that way, measured by carrying on into the signal that follows (where the same rhythm continues). \"Delivered\" = shocks not cancelled, over all segments; a shock whose countdown could not be checked counts as delivered.\n");
     let _ = writeln!(out, "| Group | Class | n | decided by 7 s | 8 s | 10 s | 12 s | median time to answer (s) | 90th pct (s) | shocks | cancelled in countdown | countdown not checkable | delivered |");
     let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     for ch in [0_usize, 1] {
-        for class in [TruthClass::CoarseVf, TruthClass::Vfl, TruthClass::VtRateUnknown, TruthClass::Nsr, TruthClass::OtherNonShockable, TruthClass::Asystole] {
+        for class in [
+            TruthClass::CoarseVf,
+            TruthClass::Vfl,
+            TruthClass::VtRateUnknown,
+            TruthClass::Nsr,
+            TruthClass::OtherNonShockable,
+            TruthClass::Asystole,
+        ] {
             let v: Vec<&SegmentResult> = segs
                 .iter()
                 .filter(|s| s.variant_s == DEVICE_VARIANT_S && s.channel == ch && s.class == class)
@@ -677,11 +796,24 @@ fn timing_section(out: &mut String, segs: &[SegmentResult]) {
                 continue;
             }
             let n = v.len() as u64;
-            let by = |t: f64| v.iter().filter(|s| s.run.decided_at_s.is_some_and(|d| d <= t + 1e-9)).count() as u64;
+            let by = |t: f64| {
+                v.iter()
+                    .filter(|s| s.run.decided_at_s.is_some_and(|d| d <= t + 1e-9))
+                    .count() as u64
+            };
             let times: Vec<f64> = v.iter().filter_map(|s| s.run.decided_at_s).collect();
-            let shocks: Vec<&&SegmentResult> = v.iter().filter(|s| s.run.outcome == Outcome::Shock).collect();
-            let cancelled = shocks.iter().filter(|s| s.run.cancelled_in_countdown == Some(true)).count() as u64;
-            let unknown = shocks.iter().filter(|s| s.run.cancelled_in_countdown.is_none()).count() as u64;
+            let shocks: Vec<&&SegmentResult> = v
+                .iter()
+                .filter(|s| s.run.outcome == Outcome::Shock)
+                .collect();
+            let cancelled = shocks
+                .iter()
+                .filter(|s| s.run.cancelled_in_countdown == Some(true))
+                .count() as u64;
+            let unknown = shocks
+                .iter()
+                .filter(|s| s.run.cancelled_in_countdown.is_none())
+                .count() as u64;
             let _ = writeln!(
                 out,
                 "| channel {ch} | {} | {n} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
@@ -716,11 +848,23 @@ fn segment_tables(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentRes
                 if variant != DEVICE_VARIANT_S && ch > 0 {
                     continue;
                 }
-                groups.push(seg_group(segs, variant, format!("{} channel {}", db.name(), ch), |s| s.db == db && s.channel == ch));
+                groups.push(seg_group(
+                    segs,
+                    variant,
+                    format!("{} channel {}", db.name(), ch),
+                    |s| s.db == db && s.channel == ch,
+                ));
             }
         }
-        groups.push(seg_group(segs, variant, "Pooled, channel 0".into(), |s| s.channel == 0));
-        groups.push(seg_group(segs, variant, "Pooled, channel 1 (vfdb + mitdb)".into(), |s| s.channel == 1));
+        groups.push(seg_group(segs, variant, "Pooled, channel 0".into(), |s| {
+            s.channel == 0
+        }));
+        groups.push(seg_group(
+            segs,
+            variant,
+            "Pooled, channel 1 (vfdb + mitdb)".into(),
+            |s| s.channel == 1,
+        ));
         for g in &groups {
             if !g.segs.is_empty() {
                 class_table(out, g);
@@ -728,11 +872,17 @@ fn segment_tables(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentRes
         }
         if variant == DEVICE_VARIANT_S {
             for ch in 0..2 {
-                let g: Vec<&SegmentResult> = segs.iter().filter(|s| s.variant_s == variant && s.channel == ch).collect();
+                let g: Vec<&SegmentResult> = segs
+                    .iter()
+                    .filter(|s| s.variant_s == variant && s.channel == ch)
+                    .collect();
                 if g.is_empty() {
                     continue;
                 }
-                let _ = writeln!(out, "**Non-shockable rhythms by label, pooled channel {ch}, {variant} s**\n");
+                let _ = writeln!(
+                    out,
+                    "**Non-shockable rhythms by label, pooled channel {ch}, {variant} s**\n"
+                );
                 other_breakdown(out, &g);
             }
         }
@@ -740,7 +890,10 @@ fn segment_tables(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentRes
 }
 
 fn per_record(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult]) {
-    let _ = writeln!(out, "## Per record ({DEVICE_VARIANT_S} s analysis, every channel)\n");
+    let _ = writeln!(
+        out,
+        "## Per record ({DEVICE_VARIANT_S} s analysis, every channel)\n"
+    );
     let _ = writeln!(out, "So that one bad patient is visible. VF = coarse VF; \"VT/VFL shock\" = shocks / segments over VT of any rate and flutter; FP = false shocks on NSR or other non-shockable rhythms. Flags: **VF<50%** (≥5 coarse-VF segments and under half shocked), **FP** (any false shock on an AHA non-shockable class), **INC>50%** (over half of all segments inconclusive).\n");
     let _ = writeln!(out, "| Record | ch | lead | coarse VF n | VF Se | VT/VFL shock | NSR n | NSR Sp | other n | other Sp | FP | inconcl. | flags |");
     let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|---|");
@@ -748,20 +901,53 @@ fn per_record(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult]
         for (ch, info) in o.channel_info.iter().enumerate() {
             let rs: Vec<&SegmentResult> = segs
                 .iter()
-                .filter(|s| s.variant_s == DEVICE_VARIANT_S && s.db == o.db && s.record == o.name && s.channel == ch)
+                .filter(|s| {
+                    s.variant_s == DEVICE_VARIANT_S
+                        && s.db == o.db
+                        && s.record == o.name
+                        && s.channel == ch
+                })
                 .collect();
             if rs.is_empty() {
                 continue;
             }
-            let count = |f: &dyn Fn(&SegmentResult) -> bool| rs.iter().filter(|s| f(s)).count() as u64;
+            let count =
+                |f: &dyn Fn(&SegmentResult) -> bool| rs.iter().filter(|s| f(s)).count() as u64;
             let vf_n = count(&|s| s.class == TruthClass::CoarseVf);
-            let vf_s = count(&|s| s.class == TruthClass::CoarseVf && s.run.outcome == Outcome::Shock);
-            let vt_n = count(&|s| matches!(s.class, TruthClass::RapidVt | TruthClass::SlowVt | TruthClass::VtRateUnknown | TruthClass::Vfl));
-            let vt_s = count(&|s| matches!(s.class, TruthClass::RapidVt | TruthClass::SlowVt | TruthClass::VtRateUnknown | TruthClass::Vfl) && s.run.outcome == Outcome::Shock);
+            let vf_s =
+                count(&|s| s.class == TruthClass::CoarseVf && s.run.outcome == Outcome::Shock);
+            let vt_n = count(&|s| {
+                matches!(
+                    s.class,
+                    TruthClass::RapidVt
+                        | TruthClass::SlowVt
+                        | TruthClass::VtRateUnknown
+                        | TruthClass::Vfl
+                )
+            });
+            let vt_s = count(&|s| {
+                matches!(
+                    s.class,
+                    TruthClass::RapidVt
+                        | TruthClass::SlowVt
+                        | TruthClass::VtRateUnknown
+                        | TruthClass::Vfl
+                ) && s.run.outcome == Outcome::Shock
+            });
             let nsr_n = count(&|s| s.class == TruthClass::Nsr);
             let nsr_fp = count(&|s| s.class == TruthClass::Nsr && s.run.outcome == Outcome::Shock);
-            let oth_n = count(&|s| matches!(s.class, TruthClass::OtherNonShockable | TruthClass::Asystole));
-            let oth_fp = count(&|s| matches!(s.class, TruthClass::OtherNonShockable | TruthClass::Asystole) && s.run.outcome == Outcome::Shock);
+            let oth_n = count(&|s| {
+                matches!(
+                    s.class,
+                    TruthClass::OtherNonShockable | TruthClass::Asystole
+                )
+            });
+            let oth_fp = count(&|s| {
+                matches!(
+                    s.class,
+                    TruthClass::OtherNonShockable | TruthClass::Asystole
+                ) && s.run.outcome == Outcome::Shock
+            });
             let inc = count(&|s| s.run.outcome == Outcome::Inconclusive);
             let mut flags = Vec::new();
             if vf_n >= 5 && vf_s * 2 < vf_n {
@@ -782,7 +968,11 @@ fn per_record(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult]
                 info.0,
                 vf_n,
                 pct(vf_s, vf_n),
-                if vt_n == 0 { "–".to_string() } else { format!("{vt_s}/{vt_n}") },
+                if vt_n == 0 {
+                    "–".to_string()
+                } else {
+                    format!("{vt_s}/{vt_n}")
+                },
                 nsr_n,
                 pct(nsr_n - nsr_fp, nsr_n),
                 oth_n,
@@ -847,17 +1037,27 @@ pub fn episodes(outputs: &[RecordOutput]) -> Vec<Episode> {
                 let next = spans.get(i + 1);
                 let delay = stream
                     .iter()
-                    .find(|w| w.t_end >= sp.start && w.t_end <= sp.end + 1e-9 && w.report.decision == RhythmDecision::Shockable)
+                    .find(|w| {
+                        w.t_end >= sp.start
+                            && w.t_end <= sp.end + 1e-9
+                            && w.report.decision == RhythmDecision::Shockable
+                    })
                     .map(|w| w.t_end - sp.start);
                 let at_onset = decision_at(stream, sp.start) == Some(RhythmDecision::Shockable);
                 let next_nonshock = next.is_some_and(|n| {
-                    matches!(n.label, Label::Nsr | Label::Other(_) | Label::Asystole | Label::CudbUnlabelled)
-                        && n.end - n.start >= 10.0
+                    matches!(
+                        n.label,
+                        Label::Nsr | Label::Other(_) | Label::Asystole | Label::CudbUnlabelled
+                    ) && n.end - n.start >= 10.0
                 });
-                let persistence = if next_nonshock && decision_at(stream, sp.end) == Some(RhythmDecision::Shockable) {
+                let persistence = if next_nonshock
+                    && decision_at(stream, sp.end) == Some(RhythmDecision::Shockable)
+                {
                     stream
                         .iter()
-                        .find(|w| w.t_end > sp.end && w.report.decision != RhythmDecision::Shockable)
+                        .find(|w| {
+                            w.t_end > sp.end && w.report.decision != RhythmDecision::Shockable
+                        })
                         .map(|w| w.t_end - sp.end)
                 } else if next_nonshock {
                     Some(0.0)
@@ -898,7 +1098,10 @@ fn dist(v: &[f64]) -> String {
 fn streaming(out: &mut String, outputs: &[RecordOutput]) {
     let _ = writeln!(out, "## Continuous (streaming) run\n");
     let _ = writeln!(out, "One analyser runs over each whole record and channel without resets, deciding once a second. Each per-second decision is scored against the truth when its last {} s (the 4 s window plus the two earlier windows needed for confirmation) lie inside one clean run (same guard margins as above). The decision scored is what the analyser reported for that window (`Shockable` only once confirmed; an unconfirmed shockable window counts as \"not sure\").\n", crate::eval::STREAM_TRUTH_SPAN_S);
-    let _ = writeln!(out, "| Database | ch | Class | seconds | Shockable | NonShockable | Not sure |");
+    let _ = writeln!(
+        out,
+        "| Database | ch | Class | seconds | Shockable | NonShockable | Not sure |"
+    );
     let _ = writeln!(out, "|---|---|---|---|---|---|---|");
     for db in dbs_present(outputs) {
         for ch in 0..max_channels(outputs, db) {
@@ -920,7 +1123,17 @@ fn streaming(out: &mut String, outputs: &[RecordOutput]) {
             }
             for (c, [s, n, i]) in by {
                 let tot = s + n + i;
-                let _ = writeln!(out, "| {} | {} | {} | {} | {} | {} | {} |", db.name(), ch, c.name(), tot, pct(s, tot), pct(n, tot), pct(i, tot));
+                let _ = writeln!(
+                    out,
+                    "| {} | {} | {} | {} | {} | {} | {} |",
+                    db.name(),
+                    ch,
+                    c.name(),
+                    tot,
+                    pct(s, tot),
+                    pct(n, tot),
+                    pct(i, tot)
+                );
             }
         }
     }
@@ -934,12 +1147,19 @@ fn streaming(out: &mut String, outputs: &[RecordOutput]) {
     for db in dbs_present(outputs) {
         for ch in 0..max_channels(outputs, db) {
             for label in [Label::Vf, Label::Vfl] {
-                let e: Vec<&Episode> = eps.iter().filter(|e| e.db == db && e.channel == ch && e.label == label).collect();
+                let e: Vec<&Episode> = eps
+                    .iter()
+                    .filter(|e| e.db == db && e.channel == ch && e.label == label)
+                    .collect();
                 if e.is_empty() {
                     continue;
                 }
                 let long: Vec<&&Episode> = e.iter().filter(|e| e.end - e.onset >= 7.0).collect();
-                let det: Vec<f64> = long.iter().filter(|e| !e.shockable_at_onset).filter_map(|e| e.delay).collect();
+                let det: Vec<f64> = long
+                    .iter()
+                    .filter(|e| !e.shockable_at_onset)
+                    .filter_map(|e| e.delay)
+                    .collect();
                 let not_det = long.iter().filter(|e| e.delay.is_none()).count();
                 let at_on = long.iter().filter(|e| e.shockable_at_onset).count();
                 let fast = det.iter().filter(|d| **d < 6.0).count();
@@ -961,29 +1181,59 @@ fn streaming(out: &mut String, outputs: &[RecordOutput]) {
         }
     }
     let _ = writeln!(out);
-    let _ = writeln!(out, "### How long \"shock\" persists after a shockable rhythm ends\n");
+    let _ = writeln!(
+        out,
+        "### How long \"shock\" persists after a shockable rhythm ends\n"
+    );
     let _ = writeln!(out, "For VF, flutter and VT episodes followed by at least 10 s of a non-shockable (or cudb unlabelled) rhythm: the time from the annotated end to the first decision that is not `Shockable`. Zero means the analyser was not saying `Shockable` at the end. In cudb the end of VF is often a defibrillation shock, so the following seconds are shock artefact.\n");
     let _ = writeln!(out, "| Database | ch | episodes | shockable at end | persistence (those) | false shock 6–16 s after the end |");
     let _ = writeln!(out, "|---|---|---|---|---|---|");
     for db in dbs_present(outputs) {
         for ch in 0..max_channels(outputs, db) {
-            let e: Vec<&Episode> = eps.iter().filter(|e| e.db == db && e.channel == ch && e.persistence.is_some()).collect();
+            let e: Vec<&Episode> = eps
+                .iter()
+                .filter(|e| e.db == db && e.channel == ch && e.persistence.is_some())
+                .collect();
             if e.is_empty() {
                 continue;
             }
-            let p: Vec<f64> = e.iter().filter_map(|e| e.persistence).filter(|p| *p > 0.0).collect();
+            let p: Vec<f64> = e
+                .iter()
+                .filter_map(|e| e.persistence)
+                .filter(|p| *p > 0.0)
+                .collect();
             // Shockable again once the decision no longer depends on any signal
             // from before the end (6 s on), up to 16 s, within the following span.
             let relapse = e
                 .iter()
                 .filter(|ep| {
-                    let Some(o) = outputs.iter().find(|o| o.db == ep.db && o.name == ep.record) else { return false };
-                    let Some(stream) = o.streams.get(ep.channel) else { return false };
+                    let Some(o) = outputs
+                        .iter()
+                        .find(|o| o.db == ep.db && o.name == ep.record)
+                    else {
+                        return false;
+                    };
+                    let Some(stream) = o.streams.get(ep.channel) else {
+                        return false;
+                    };
                     let limit = (ep.end + 16.0).min(ep.next_end.unwrap_or(ep.end));
-                    stream.iter().any(|w| w.t_end >= ep.end + 6.0 && w.t_end <= limit && w.report.decision == RhythmDecision::Shockable)
+                    stream.iter().any(|w| {
+                        w.t_end >= ep.end + 6.0
+                            && w.t_end <= limit
+                            && w.report.decision == RhythmDecision::Shockable
+                    })
                 })
                 .count();
-            let _ = writeln!(out, "| {} | {} | {} | {} | {} | {} |", db.name(), ch, e.len(), p.len(), dist(&p), relapse);
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {} | {} | {} |",
+                db.name(),
+                ch,
+                e.len(),
+                p.len(),
+                dist(&p),
+                relapse
+            );
         }
     }
     let _ = writeln!(out);
@@ -1003,7 +1253,12 @@ fn streaming(out: &mut String, outputs: &[RecordOutput]) {
     for db in dbs_present(outputs) {
         let e: Vec<&Episode> = eps
             .iter()
-            .filter(|e| e.db == db && e.channel == 0 && matches!(e.label, Label::Vf | Label::Vfl) && e.end - e.onset >= 20.0)
+            .filter(|e| {
+                e.db == db
+                    && e.channel == 0
+                    && matches!(e.label, Label::Vf | Label::Vfl)
+                    && e.end - e.onset >= 20.0
+            })
             .collect();
         if e.is_empty() {
             continue;
@@ -1028,7 +1283,12 @@ fn streaming(out: &mut String, outputs: &[RecordOutput]) {
     let _ = writeln!(out);
 }
 
-fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentResult], st: &Settings) {
+fn failure_analysis(
+    out: &mut String,
+    outputs: &[RecordOutput],
+    segs: &[SegmentResult],
+    st: &Settings,
+) {
     let conds = conditions(st);
     let _ = writeln!(out, "## Failure analysis\n");
     let _ = writeln!(out, "Nothing below was used to change the analyser. Where a threshold is \"moved\", it is a what-if count only.\n");
@@ -1045,7 +1305,10 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
         let _ = write!(out, "---|");
     }
     let _ = writeln!(out);
-    let windows: Vec<&ScoredWindow> = outputs.iter().flat_map(|o| o.streams.iter().flatten()).collect();
+    let windows: Vec<&ScoredWindow> = outputs
+        .iter()
+        .flat_map(|o| o.streams.iter().flatten())
+        .collect();
     for class in TruthClass::ALL {
         let ws: Vec<&&ScoredWindow> = windows.iter().filter(|w| w.class == Some(class)).collect();
         if ws.is_empty() {
@@ -1059,12 +1322,25 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
         let _ = writeln!(out);
     }
     let _ = writeln!(out);
-    let _ = writeln!(out, "Exclusion rules by database (share of all scored streaming windows, any class):\n");
+    let _ = writeln!(
+        out,
+        "Exclusion rules by database (share of all scored streaming windows, any class):\n"
+    );
     let _ = writeln!(out, "| Database | windows | saturated | implausible size | flatline | noisy | low-band (compression) | fine VF |");
     let _ = writeln!(out, "|---|---|---|---|---|---|---|---|");
     for db in dbs_present(outputs) {
-        let ws: Vec<&ScoredWindow> = outputs.iter().filter(|o| o.db == db).flat_map(|o| o.streams.iter().flatten()).filter(|w| w.class.is_some()).collect();
-        let f = |r: Reason| pct(ws.iter().filter(|w| w.report.verdict.reason == r).count() as u64, ws.len() as u64);
+        let ws: Vec<&ScoredWindow> = outputs
+            .iter()
+            .filter(|o| o.db == db)
+            .flat_map(|o| o.streams.iter().flatten())
+            .filter(|w| w.class.is_some())
+            .collect();
+        let f = |r: Reason| {
+            pct(
+                ws.iter().filter(|w| w.report.verdict.reason == r).count() as u64,
+                ws.len() as u64,
+            )
+        };
         let _ = writeln!(
             out,
             "| {} | {} | {} | {} | {} | {} | {} | {} |",
@@ -1081,29 +1357,66 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
     let _ = writeln!(out);
 
     // 2. Feature distributions.
-    let _ = writeln!(out, "### Feature distributions on real data versus the thresholds\n");
+    let _ = writeln!(
+        out,
+        "### Feature distributions on real data versus the thresholds\n"
+    );
     let _ = writeln!(out, "Streaming windows, all databases and channels, by true class. \"VF side\" = share of windows on the shockable side of that feature's threshold(s). A feature only helps if VF windows are mostly on the VF side and non-shockable windows mostly are not.\n");
     for col in feature_cols(st) {
         let _ = writeln!(out, "**{}** (shockable side: {})\n", col.name, col.rule);
-        let _ = writeln!(out, "| Class | windows | 5% | 25% | median | 75% | 95% | VF side |");
+        let _ = writeln!(
+            out,
+            "| Class | windows | 5% | 25% | median | 75% | 95% | VF side |"
+        );
         let _ = writeln!(out, "|---|---|---|---|---|---|---|---|");
         for class in TruthClass::ALL {
-            let vals: Vec<f64> = windows.iter().filter(|w| w.class == Some(class)).map(|w| f64::from((col.get)(&w.report.features))).collect();
+            let vals: Vec<f64> = windows
+                .iter()
+                .filter(|w| w.class == Some(class))
+                .map(|w| f64::from((col.get)(&w.report.features)))
+                .collect();
             if vals.is_empty() {
                 continue;
             }
-            let side = windows.iter().filter(|w| w.class == Some(class)).filter(|w| (col.vf_side)((col.get)(&w.report.features))).count();
+            let side = windows
+                .iter()
+                .filter(|w| w.class == Some(class))
+                .filter(|w| (col.vf_side)((col.get)(&w.report.features)))
+                .count();
             let p = |q| percentile(&vals, q).map_or_else(|| "–".to_string(), |v| format!("{v:.3}"));
-            let _ = writeln!(out, "| {} | {} | {} | {} | {} | {} | {} | {} |", class.name(), vals.len(), p(5.0), p(25.0), p(50.0), p(75.0), p(95.0), pct(side as u64, vals.len() as u64));
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {} | {} | {} | {} | {} |",
+                class.name(),
+                vals.len(),
+                p(5.0),
+                p(25.0),
+                p(50.0),
+                p(75.0),
+                p(95.0),
+                pct(side as u64, vals.len() as u64)
+            );
         }
         let _ = writeln!(out);
     }
 
     // 3. Missed coarse VF.
-    let dev: Vec<&SegmentResult> = segs.iter().filter(|s| s.variant_s == DEVICE_VARIANT_S).collect();
-    let missed: Vec<&&SegmentResult> = dev.iter().filter(|s| s.class == TruthClass::CoarseVf && s.run.outcome != Outcome::Shock).collect();
-    let vf_all: Vec<&&SegmentResult> = dev.iter().filter(|s| s.class == TruthClass::CoarseVf).collect();
-    let _ = writeln!(out, "### Missed coarse VF ({DEVICE_VARIANT_S} s analyses, all channels)\n");
+    let dev: Vec<&SegmentResult> = segs
+        .iter()
+        .filter(|s| s.variant_s == DEVICE_VARIANT_S)
+        .collect();
+    let missed: Vec<&&SegmentResult> = dev
+        .iter()
+        .filter(|s| s.class == TruthClass::CoarseVf && s.run.outcome != Outcome::Shock)
+        .collect();
+    let vf_all: Vec<&&SegmentResult> = dev
+        .iter()
+        .filter(|s| s.class == TruthClass::CoarseVf)
+        .collect();
+    let _ = writeln!(
+        out,
+        "### Missed coarse VF ({DEVICE_VARIANT_S} s analyses, all channels)\n"
+    );
     let _ = writeln!(out, "{} of {} coarse-VF segments did not end in a shock: {} ended \"no shock\", {} inconclusive.\n",
         missed.len(), vf_all.len(),
         missed.iter().filter(|s| s.run.outcome == Outcome::NoShock).count(),
@@ -1118,7 +1431,9 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
                 for w in &s.run.windows {
                     *c.entry(reason_label(w.verdict.reason)).or_default() += 1;
                 }
-                c.into_iter().max_by_key(|(_, n)| *n).map_or("no window", |(k, _)| k)
+                c.into_iter()
+                    .max_by_key(|(_, n)| *n)
+                    .map_or("no window", |(k, _)| k)
             }
         };
         *end_reason.entry(r).or_default() += 1;
@@ -1129,13 +1444,31 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
         let _ = writeln!(out, "| {r} | {n} |");
     }
     let _ = writeln!(out);
-    blocker_table(out, &conds, &missed.iter().flat_map(|s| s.run.windows.iter()).collect::<Vec<_>>(), "windows of missed coarse-VF segments");
-    let vf_windows: Vec<&WindowReport> = windows.iter().filter(|w| w.class == Some(TruthClass::CoarseVf)).map(|w| &w.report).collect();
+    blocker_table(
+        out,
+        &conds,
+        &missed
+            .iter()
+            .flat_map(|s| s.run.windows.iter())
+            .collect::<Vec<_>>(),
+        "windows of missed coarse-VF segments",
+    );
+    let vf_windows: Vec<&WindowReport> = windows
+        .iter()
+        .filter(|w| w.class == Some(TruthClass::CoarseVf))
+        .map(|w| &w.report)
+        .collect();
     blocker_table(out, &conds, &vf_windows, "all coarse-VF streaming windows");
 
     // 4. False positives.
-    let fps: Vec<&&SegmentResult> = dev.iter().filter(|s| (s.class.should_not_shock()) && s.run.outcome == Outcome::Shock).collect();
-    let _ = writeln!(out, "### False shocks on non-shockable rhythms ({DEVICE_VARIANT_S} s analyses, all channels)\n");
+    let fps: Vec<&&SegmentResult> = dev
+        .iter()
+        .filter(|s| (s.class.should_not_shock()) && s.run.outcome == Outcome::Shock)
+        .collect();
+    let _ = writeln!(
+        out,
+        "### False shocks on non-shockable rhythms ({DEVICE_VARIANT_S} s analyses, all channels)\n"
+    );
     let mut by_label: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     for s in dev.iter().filter(|s| s.class.should_not_shock()) {
         let e = by_label.entry(s.label.text()).or_default();
@@ -1145,7 +1478,9 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
         }
     }
     let mut ranked: Vec<(String, (u64, u64))> = by_label.into_iter().collect();
-    ranked.sort_by(|a, b| (b.1 .0 as f64 / b.1 .1.max(1) as f64).total_cmp(&(a.1 .0 as f64 / a.1 .1.max(1) as f64)));
+    ranked.sort_by(|a, b| {
+        (b.1 .0 as f64 / b.1 .1.max(1) as f64).total_cmp(&(a.1 .0 as f64 / a.1 .1.max(1) as f64))
+    });
     let _ = writeln!(out, "Worst rhythm classes by false-shock rate:\n");
     let _ = writeln!(out, "| Rhythm | false shocks | segments | rate |");
     let _ = writeln!(out, "|---|---|---|---|");
@@ -1164,7 +1499,9 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
     let _ = writeln!(out, "| Condition | rule | false-shock windows stopped at 10% / 20% stricter (of {}) | coarse-VF windows also stopped at 10% / 20% (of {}) |", fp_windows.len(), tp_windows.len());
     let _ = writeln!(out, "|---|---|---|---|");
     for c in &conds {
-        let stop = |ws: &[&WindowReport], k: f32| ws.iter().filter(|w| !(c.passes)(&w.features, k)).count() as u64;
+        let stop = |ws: &[&WindowReport], k: f32| {
+            ws.iter().filter(|w| !(c.passes)(&w.features, k)).count() as u64
+        };
         let _ = writeln!(
             out,
             "| {} | {} | {} / {} | {} / {} |",
@@ -1177,50 +1514,107 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
         );
     }
     let _ = writeln!(out);
-    let nsr_windows: Vec<&WindowReport> = windows.iter().filter(|w| matches!(w.class, Some(TruthClass::Nsr | TruthClass::OtherNonShockable))).map(|w| &w.report).collect();
+    let nsr_windows: Vec<&WindowReport> = windows
+        .iter()
+        .filter(|w| {
+            matches!(
+                w.class,
+                Some(TruthClass::Nsr | TruthClass::OtherNonShockable)
+            )
+        })
+        .map(|w| &w.report)
+        .collect();
     let _ = writeln!(out, "How often each condition already lets a non-shockable window through (streaming NSR + other non-shockable windows, n = {}): a condition passed by nearly every non-shockable window does no work.\n", nsr_windows.len());
-    let _ = writeln!(out, "| Condition | non-shockable windows on the VF side | coarse-VF windows on the VF side |");
+    let _ = writeln!(
+        out,
+        "| Condition | non-shockable windows on the VF side | coarse-VF windows on the VF side |"
+    );
     let _ = writeln!(out, "|---|---|---|");
     for c in &conds {
-        let a = nsr_windows.iter().filter(|w| (c.passes)(&w.features, 0.0)).count() as u64;
-        let b = vf_windows.iter().filter(|w| (c.passes)(&w.features, 0.0)).count() as u64;
-        let _ = writeln!(out, "| {} | {} | {} |", c.key, pct(a, nsr_windows.len() as u64), pct(b, vf_windows.len() as u64));
+        let a = nsr_windows
+            .iter()
+            .filter(|w| (c.passes)(&w.features, 0.0))
+            .count() as u64;
+        let b = vf_windows
+            .iter()
+            .filter(|w| (c.passes)(&w.features, 0.0))
+            .count() as u64;
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} |",
+            c.key,
+            pct(a, nsr_windows.len() as u64),
+            pct(b, vf_windows.len() as u64)
+        );
     }
     let _ = writeln!(out);
 
     let mut fp_rec: BTreeMap<String, (u64, BTreeSet<String>)> = BTreeMap::new();
     for s in &fps {
-        let e = fp_rec.entry(format!("{}/{} ch{}", s.db.name(), s.record, s.channel)).or_default();
+        let e = fp_rec
+            .entry(format!("{}/{} ch{}", s.db.name(), s.record, s.channel))
+            .or_default();
         e.0 += 1;
         e.1.insert(s.label.text());
     }
     let mut fp_rec: Vec<_> = fp_rec.into_iter().collect();
     fp_rec.sort_by_key(|x| std::cmp::Reverse(x.1 .0));
-    let _ = writeln!(out, "False shocks by record and channel ({} in all):\n", fps.len());
+    let _ = writeln!(
+        out,
+        "False shocks by record and channel ({} in all):\n",
+        fps.len()
+    );
     let _ = writeln!(out, "| Record | false shocks | on rhythm(s) |");
     let _ = writeln!(out, "|---|---|---|");
     for (r, (n, labels)) in &fp_rec {
-        let _ = writeln!(out, "| {r} | {n} | {} |", labels.iter().cloned().collect::<Vec<_>>().join(", "));
+        let _ = writeln!(
+            out,
+            "| {r} | {n} | {} |",
+            labels.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
     }
     let _ = writeln!(out);
 
     // VT split by an estimated rate.
-    let vt: Vec<&&SegmentResult> = dev.iter().filter(|s| s.class == TruthClass::VtRateUnknown).collect();
+    let vt: Vec<&&SegmentResult> = dev
+        .iter()
+        .filter(|s| s.class == TruthClass::VtRateUnknown)
+        .collect();
     if !vt.is_empty() {
-        let _ = writeln!(out, "### VT without beat annotations, split by a rough rate estimated from the signal\n");
+        let _ = writeln!(
+            out,
+            "### VT without beat annotations, split by a rough rate estimated from the signal\n"
+        );
         let _ = writeln!(out, "vfdb gives VT episodes but no beats, so the AHA rate criterion cannot be applied from the annotations. As a rough guide only, each segment's rate was estimated from the signal's strongest repetition (autocorrelation, 60–300/min). This helper is UNVERIFIED and can be off by a factor of two; it is not used for any AHA row above. 12 s analyses, both channels counted.\n");
-        let _ = writeln!(out, "| Estimated rate | segments | records | shock | no shock | inconcl. | shock rate |");
+        let _ = writeln!(
+            out,
+            "| Estimated rate | segments | records | shock | no shock | inconcl. | shock rate |"
+        );
         let _ = writeln!(out, "|---|---|---|---|---|---|---|");
         for (name, pick) in [
-            ("≥ 150/min (would be rapid VT)", (|r: Option<f64>| r.is_some_and(|r| r >= RAPID_VT_BPM)) as fn(Option<f64>) -> bool),
-            ("< 150/min (would be slow VT)", |r| r.is_some_and(|r| r < RAPID_VT_BPM)),
+            (
+                "≥ 150/min (would be rapid VT)",
+                (|r: Option<f64>| r.is_some_and(|r| r >= RAPID_VT_BPM)) as fn(Option<f64>) -> bool,
+            ),
+            ("< 150/min (would be slow VT)", |r| {
+                r.is_some_and(|r| r < RAPID_VT_BPM)
+            }),
             ("no clear rate", |r: Option<f64>| r.is_none()),
         ] {
             let mut t = Tally::default();
             for s in vt.iter().filter(|s| pick(s.est_rate_bpm)) {
                 t.add(s);
             }
-            let _ = writeln!(out, "| {name} | {} | {} | {} | {} | {} | {} |", t.n, t.records.len(), t.shock, t.no_shock, t.inconclusive, pct(t.shock, t.n));
+            let _ = writeln!(
+                out,
+                "| {name} | {} | {} | {} | {} | {} | {} |",
+                t.n,
+                t.records.len(),
+                t.shock,
+                t.no_shock,
+                t.inconclusive,
+                pct(t.shock, t.n)
+            );
         }
         let _ = writeln!(out);
     }
@@ -1233,9 +1627,18 @@ fn failure_analysis(out: &mut String, outputs: &[RecordOutput], segs: &[SegmentR
             TruthClass::Asystole => 1,
             _ => 2,
         };
-        pri(a).cmp(&pri(b)).then(a.run.decided_at_s.unwrap_or(99.0).total_cmp(&b.run.decided_at_s.unwrap_or(99.0)))
+        pri(a).cmp(&pri(b)).then(
+            a.run
+                .decided_at_s
+                .unwrap_or(99.0)
+                .total_cmp(&b.run.decided_at_s.unwrap_or(99.0)),
+        )
     });
-    let _ = writeln!(out, "### Every false shock ({} in all, both channels)\n", worst_fp.len());
+    let _ = writeln!(
+        out,
+        "### Every false shock ({} in all, both channels)\n",
+        worst_fp.len()
+    );
     let _ = writeln!(out, "Normal rhythm first, then asystole, then by how fast the shock came. Features are those of the window that confirmed the shock.\n");
     worst_table(out, &worst_fp.into_iter().take(200).collect::<Vec<_>>());
     let mut worst_miss: Vec<&&SegmentResult> = missed.clone();
@@ -1306,7 +1709,11 @@ fn worst_table(out: &mut String, rows: &[&&SegmentResult]) {
     let _ = writeln!(out, "| Record | ch | start (s) | true rhythm | amplitude (µV) | rate | outcome | at (s) | window verdict | features |");
     let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|---|");
     for s in rows {
-        let w = s.run.decisive.and_then(|i| s.run.windows.get(i)).or_else(|| s.run.windows.last());
+        let w = s
+            .run
+            .decisive
+            .and_then(|i| s.run.windows.get(i))
+            .or_else(|| s.run.windows.last());
         let _ = writeln!(
             out,
             "| {}/{} | {} | {:.1} | {} | {:.0} | {} | {} | {} | {} | {} |",
@@ -1316,9 +1723,12 @@ fn worst_table(out: &mut String, rows: &[&&SegmentResult]) {
             s.start_s,
             s.label.text(),
             s.amplitude_uv,
-            s.rate_bpm.map_or_else(|| "–".to_string(), |r| format!("{r:.0}/min")),
+            s.rate_bpm
+                .map_or_else(|| "–".to_string(), |r| format!("{r:.0}/min")),
             s.run.outcome.text(),
-            s.run.decided_at_s.map_or_else(|| "–".to_string(), |t| format!("{t:.0}")),
+            s.run
+                .decided_at_s
+                .map_or_else(|| "–".to_string(), |t| format!("{t:.0}")),
             w.map_or("–", |w| reason_label(w.verdict.reason)),
             w.map_or_else(|| "–".to_string(), |w| features_short(&w.features))
         );
@@ -1327,7 +1737,11 @@ fn worst_table(out: &mut String, rows: &[&&SegmentResult]) {
 }
 
 fn amplitude_section(out: &mut String, outputs: &[RecordOutput], st: &Settings) {
-    let (fine_max, flat_max, implausible) = (st.fine_vf_max_pp_uv, st.asystole_max_uv, st.max_plausible_pp_uv);
+    let (fine_max, flat_max, implausible) = (
+        st.fine_vf_max_pp_uv,
+        st.asystole_max_uv,
+        st.max_plausible_pp_uv,
+    );
     let _ = writeln!(out, "## Amplitude calibration and the microvolt rules\n");
     let _ = writeln!(out, "The analyser has three absolute-size rules: under {flat_max} µV peak to peak is flatline (no shock); under {fine_max} µV VF is \"fine\" (not shocked); over {implausible} µV is implausible (not sure). They only mean something if the recording's microvolts are right. cudb's gain of 400 ADC units/mV is described by PhysioNet as nominal (10 mV full scale \"nominal\"; cu01 was replayed from a Holter tape). Nothing here was rescaled.\n");
     let _ = writeln!(out, "Per database, channel 0: the median over records of each record's median ground-truth amplitude (1-s peak to peak, drift removed) in clean streaming windows, and how VF windows fall against the analyser's own size rules (its peak-to-peak is measured after its 1–30 Hz filter, so it reads lower than the ground-truth figure).\n");
@@ -1338,44 +1752,102 @@ fn amplitude_section(out: &mut String, outputs: &[RecordOutput], st: &Settings) 
         let mut vf = Vec::new();
         let (mut n_vf, mut fine, mut flat, mut gt_fine) = (0_u64, 0_u64, 0_u64, 0_u64);
         for o in outputs.iter().filter(|o| o.db == db) {
-            let Some(stream) = o.streams.first() else { continue };
+            let Some(stream) = o.streams.first() else {
+                continue;
+            };
             let a: Vec<f64> = stream
                 .iter()
-                .filter(|w| matches!(w.class, Some(TruthClass::Nsr | TruthClass::OtherNonShockable | TruthClass::CudbUnlabelled)))
+                .filter(|w| {
+                    matches!(
+                        w.class,
+                        Some(
+                            TruthClass::Nsr
+                                | TruthClass::OtherNonShockable
+                                | TruthClass::CudbUnlabelled
+                        )
+                    )
+                })
                 .map(|w| w.amplitude_uv)
                 .collect();
             if let Some(m) = median(&a) {
                 nonvf.push(m);
             }
-            let v: Vec<&ScoredWindow> = stream.iter().filter(|w| matches!(w.class, Some(TruthClass::CoarseVf | TruthClass::FineVf))).collect();
+            let v: Vec<&ScoredWindow> = stream
+                .iter()
+                .filter(|w| matches!(w.class, Some(TruthClass::CoarseVf | TruthClass::FineVf)))
+                .collect();
             if let Some(m) = median(&v.iter().map(|w| w.amplitude_uv).collect::<Vec<_>>()) {
                 vf.push(m);
             }
             n_vf += v.len() as u64;
-            fine += v.iter().filter(|w| w.report.features.peak_to_peak_uv < fine_max).count() as u64;
-            flat += v.iter().filter(|w| w.report.features.peak_to_peak_uv < flat_max).count() as u64;
+            fine += v
+                .iter()
+                .filter(|w| w.report.features.peak_to_peak_uv < fine_max)
+                .count() as u64;
+            flat += v
+                .iter()
+                .filter(|w| w.report.features.peak_to_peak_uv < flat_max)
+                .count() as u64;
             gt_fine += v.iter().filter(|w| w.amplitude_uv < FINE_VF_UV).count() as u64;
         }
-        let f = |v: &[f64]| median(v).map_or_else(|| "–".to_string(), |m| format!("{m:.0} µV ({} records)", v.len()));
-        let _ = writeln!(out, "| {} | {} | {} | {} | {} | {} | {} |", db.name(), f(&nonvf), f(&vf), n_vf, pct(fine, n_vf), pct(flat, n_vf), pct(gt_fine, n_vf));
+        let f = |v: &[f64]| {
+            median(v).map_or_else(
+                || "–".to_string(),
+                |m| format!("{m:.0} µV ({} records)", v.len()),
+            )
+        };
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | {} | {} | {} | {} |",
+            db.name(),
+            f(&nonvf),
+            f(&vf),
+            n_vf,
+            pct(fine, n_vf),
+            pct(flat, n_vf),
+            pct(gt_fine, n_vf)
+        );
     }
     let _ = writeln!(out);
     let _ = writeln!(out, "Per cudb record, channel 0 (to show whether the nominal calibration is consistent between records):\n");
     let _ = writeln!(out, "| Record | non-VF amplitude (median, µV) | VF amplitude (median, µV) | VF windows called fine VF | VF windows called flatline |");
     let _ = writeln!(out, "|---|---|---|---|---|");
     for o in outputs.iter().filter(|o| o.db == Db::Cudb) {
-        let Some(stream) = o.streams.first() else { continue };
-        let a: Vec<f64> = stream.iter().filter(|w| w.class == Some(TruthClass::CudbUnlabelled) || matches!(w.class, Some(TruthClass::Nsr | TruthClass::OtherNonShockable))).map(|w| w.amplitude_uv).collect();
-        let v: Vec<&ScoredWindow> = stream.iter().filter(|w| matches!(w.class, Some(TruthClass::CoarseVf | TruthClass::FineVf))).collect();
-        let fine = v.iter().filter(|w| w.report.verdict.reason == Reason::FineVf).count() as u64;
-        let flat = v.iter().filter(|w| w.report.verdict.reason == Reason::Asystole).count() as u64;
+        let Some(stream) = o.streams.first() else {
+            continue;
+        };
+        let a: Vec<f64> = stream
+            .iter()
+            .filter(|w| {
+                w.class == Some(TruthClass::CudbUnlabelled)
+                    || matches!(
+                        w.class,
+                        Some(TruthClass::Nsr | TruthClass::OtherNonShockable)
+                    )
+            })
+            .map(|w| w.amplitude_uv)
+            .collect();
+        let v: Vec<&ScoredWindow> = stream
+            .iter()
+            .filter(|w| matches!(w.class, Some(TruthClass::CoarseVf | TruthClass::FineVf)))
+            .collect();
+        let fine = v
+            .iter()
+            .filter(|w| w.report.verdict.reason == Reason::FineVf)
+            .count() as u64;
+        let flat = v
+            .iter()
+            .filter(|w| w.report.verdict.reason == Reason::Asystole)
+            .count() as u64;
         let m = |x: Option<f64>| x.map_or_else(|| "–".to_string(), |v| format!("{v:.0}"));
         let _ = writeln!(
             out,
             "| {} | {} | {} | {} | {} |",
             o.name,
             m(median(&a)),
-            m(median(&v.iter().map(|w| w.amplitude_uv).collect::<Vec<_>>())),
+            m(median(
+                &v.iter().map(|w| w.amplitude_uv).collect::<Vec<_>>()
+            )),
             pct(fine, v.len() as u64),
             pct(flat, v.len() as u64)
         );
@@ -1395,7 +1867,11 @@ pub fn segments_csv(outputs: &[RecordOutput]) -> String {
     let mut s = String::from("db,record,channel,variant_s,start_s,label,class,amplitude_uv,rate_bpm,est_rate_bpm,railed_fraction,outcome,decided_at_s,windows,decisive_reason,pp_uv,noise_ratio,low_band,tcsc,count,leakage,dominant_hz,concentration\n");
     for o in outputs {
         for seg in &o.segments {
-            let w = seg.run.decisive.and_then(|i| seg.run.windows.get(i)).or_else(|| seg.run.windows.last());
+            let w = seg
+                .run
+                .decisive
+                .and_then(|i| seg.run.windows.get(i))
+                .or_else(|| seg.run.windows.last());
             let f = w.map(|w| w.features).unwrap_or_default();
             let _ = writeln!(
                 s,
@@ -1445,7 +1921,8 @@ pub fn episodes_csv(outputs: &[RecordOutput]) -> String {
             e.end,
             e.delay.map_or_else(String::new, |d| format!("{d:.2}")),
             e.shockable_at_onset,
-            e.persistence.map_or_else(String::new, |p| format!("{p:.2}")),
+            e.persistence
+                .map_or_else(String::new, |p| format!("{p:.2}")),
             e.next_label.map_or_else(String::new, |l| l.text())
         );
     }

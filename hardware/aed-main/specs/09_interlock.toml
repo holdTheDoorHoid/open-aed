@@ -1,7 +1,9 @@
 # 09_interlock - hardware interlock (WP-D shock logic). NOT FOR CONSTRUCTION — unreviewed design.
 # Consent detectors (permit, test permit), hold-drive buffers, 'held' logic, 150 ms window with latched start and
 # 50 ms re-arm, test mode, charger gates, the series load switches SW1-SW4 and the sequence hold SW5 that make BRIDGE_5V.
-# Sources: docs/HARDWARE_DESIGN.md §B8, §B14, §13, §F-1/F-8; hardware/aed-main/contract.md issue 2; decisions D-25,
+# Revision 0.3 (contract issue 3, capture-notes/rev3-changes.md WP-D D-1...D-6): bleeds 64.9 k, four-line HOLD_OK,
+# 47 k held pull-ups, second-sensor readbacks, 100 us window-start clock delay. See capture-notes/WP-D.md 'Revision 0.3'.
+# Sources: docs/HARDWARE_DESIGN.md v0.3 §B8, §B14, §13, §F-1/F-8; hardware/aed-main/contract.md issue 3; decisions D-25,
 # D-59, D-60, D-61; firmware/crates/aed-core/src/interlock.rs. Arithmetic, truth tables, failure table and every
 # assumption: hardware/aed-main/capture-notes/WP-D.md.
 # Datasheets were fetched 2026-11-27 from the manufacturer's site (TI, onsemi); URLs on each part.
@@ -10,7 +12,7 @@
 [sheet]
 name = "09_interlock"
 title = "Hardware interlock: consent detectors, hold drives, held logic, 150 ms window, test mode, charger gates, SW1-SW5"
-source = "docs/HARDWARE_DESIGN.md §B8, §B14; contract.md issue 2 §5.4-5.5"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B8, §B14; contract.md issue 3 §5.4-5.5"
 date = "2026-11-27"
 comments = ["Implements interlock.rs (discharge_path_active, bridge_may_fire at the START, charger_may_run) in discrete logic", "Every consent input and every internal 'allow' node has a pull toward 'not allowed'. Capture notes: capture-notes/WP-D.md"]
 
@@ -35,8 +37,12 @@ global = [
   "HOLD_B_DRV",
   "HOLD_A_HELD_N",
   "HOLD_B_HELD_N",
+  "HOLD_A_HELD2_N",
+  "HOLD_B_HELD2_N",
   "HOLD_RB_A_N",
   "HOLD_RB_B_N",
+  "HOLD_RB_A2_N",
+  "HOLD_RB_B2_N",
   "LOWV_OK",
   "BRIDGE_ARMED_N",
   "WIN_OPEN",
@@ -56,7 +62,7 @@ reason = "5V0_SYS, 3V3_MAIN and 3V3_SUP are made on 03_power_rails (WP-A, captur
 
 [[erc_accepted]]
 type = "isolated_pin_label"
-match = "Global Label '(BRIDGE_ARMED_N|HOLD_RB_A_N|HOLD_RB_B_N)'"
+match = "Global Label '(BRIDGE_ARMED_N|HOLD_RB_A_N|HOLD_RB_B_N|HOLD_RB_A2_N|HOLD_RB_B2_N)'"
 until_sheet = "04_main_mcu"
 reason = "Contract §5.4 readback outputs; their pull-ups and the reader are on 04_main_mcu (WP-B, captured in parallel)."
 
@@ -111,9 +117,9 @@ id = "det_pd"
 title = "Dynamic consent detector PERMIT_CLK -> PERMIT_OK on 3V3_SUP"
 note = """
 Band-limited pump detector (§B8.1, R-11). PERMIT_CLK: 100 k pull-down, two-pole low-pass (as the hold drives), 1 M pull-down, SN74LVC2G14 on 3V3_SUP: gate 1 squares and inverts, gate 2 re-inverts, so every clock edge (rising or falling) is a rising edge on one of the two pump phases.
-Each phase: 470 ohm, TWO 220 nF C0G in series (one shorted capacitor still blocks DC), BAV99 series pair (pin 1 anode to GND, pin 3 common = pump node, pin 2 cathode to the hold node). Hold node PD_H: 100 nF C0G with 2 x 71.5 k in parallel (35.75 k; one open resistor only doubles the time constant). Comparator TLV7031 (push-pull; held LOW by its power-on reset below 1.6 V supply, SLVSE13J §6.3): IN+ = hold node, IN- = 0.30 x 3V3_SUP from 2 x 464 k in parallel over 100 k (one open top resistor lowers the threshold to 0.18 x 3V3_SUP, never to zero).
-Behaviour [CALC, behavioural model, capture notes §3.2]: valid <= 0.1 ms after the first edges at 1 kHz; stays valid >= 3.35 ms after the last edge (firmware gap <= 1 ms: margin 3.3x); invalid <= 7.4 ms after the last edge from 5 kHz; DC gives nothing; >= 100 kHz never reaches the pump (static Schmitt). Supply is the supervisor's rail: supervisor off = no output (pull-down on PERMIT_OK).
-One single transition of PERMIT_CLK (one edge) DOES give a valid output for about 3-7 ms; documented in the capture notes (bounded by the 20 ms rail-ready delay on sheet 12 and the window).
+Each phase: 470 ohm, TWO 220 nF C0G in series (one shorted capacitor still blocks DC), BAV99 series pair (pin 1 anode to GND, pin 3 common = pump node, pin 2 cathode to the hold node). Hold node PD_H: 100 nF C0G with 2 x 64.9 k in parallel (32.45 k; one open resistor only doubles the time constant; rev 0.3 D-1, was 71.5 k). Comparator TLV7031 (push-pull; held LOW by its power-on reset below 1.6 V supply, SLVSE13J §6.3): IN+ = hold node, IN- = 0.30 x 3V3_SUP from 2 x 464 k in parallel over 100 k (one open top resistor lowers the threshold to 0.18 x 3V3_SUP, never to zero).
+Behaviour [SIM, sim/logic-relay §1.2, with 64.9 k bleeds]: valid <= 0.1 ms after the first edges at 1 kHz; stays valid >= 4.07 ms after the last edge (firmware gap <= 1 ms); invalid <= 7.50 ms after the last edge from 5 kHz (need <= 8 ms); DC gives nothing; >= 100 kHz never reaches the pump (static Schmitt). Supply is the supervisor's rail: supervisor off = no output (pull-down on PERMIT_OK).
+One single transition of PERMIT_CLK (one edge), a pulse > 50 us or the supervisor powering up DOES give a valid output for up to 7.5 ms [SIM LR §1.2]; documented in the capture notes (bounded by the 20 ms rail-ready delay on sheet 12 and the window).
 """
 
 [[group]]
@@ -121,18 +127,19 @@ id = "det_td"
 title = "Dynamic consent detector TEST_PERMIT_CLK -> TEST_OK on 3V3_SUP"
 note = """
 Band-limited pump detector (§B8.1, R-11). TEST_PERMIT_CLK: 100 k pull-down, two-pole low-pass (as the hold drives), 1 M pull-down, SN74LVC2G14 on 3V3_SUP: gate 1 squares and inverts, gate 2 re-inverts, so every clock edge (rising or falling) is a rising edge on one of the two pump phases.
-Each phase: 470 ohm, TWO 220 nF C0G in series (one shorted capacitor still blocks DC), BAV99 series pair (pin 1 anode to GND, pin 3 common = pump node, pin 2 cathode to the hold node). Hold node TD_H: 100 nF C0G with 2 x 71.5 k in parallel (35.75 k; one open resistor only doubles the time constant). Comparator TLV7031 (push-pull; held LOW by its power-on reset below 1.6 V supply, SLVSE13J §6.3): IN+ = hold node, IN- = 0.30 x 3V3_SUP from 2 x 464 k in parallel over 100 k (one open top resistor lowers the threshold to 0.18 x 3V3_SUP, never to zero).
-Behaviour [CALC, behavioural model, capture notes §3.2]: valid <= 0.1 ms after the first edges at 1 kHz; stays valid >= 3.35 ms after the last edge (firmware gap <= 1 ms: margin 3.3x); invalid <= 7.4 ms after the last edge from 5 kHz; DC gives nothing; >= 100 kHz never reaches the pump (static Schmitt). Supply is the supervisor's rail: supervisor off = no output (pull-down on TEST_OK).
-One single transition of TEST_PERMIT_CLK (one edge) DOES give a valid output for about 3-7 ms; documented in the capture notes (bounded by the 20 ms rail-ready delay on sheet 12 and the window).
+Each phase: 470 ohm, TWO 220 nF C0G in series (one shorted capacitor still blocks DC), BAV99 series pair (pin 1 anode to GND, pin 3 common = pump node, pin 2 cathode to the hold node). Hold node TD_H: 100 nF C0G with 2 x 64.9 k in parallel (32.45 k; one open resistor only doubles the time constant; rev 0.3 D-1, was 71.5 k). Comparator TLV7031 (push-pull; held LOW by its power-on reset below 1.6 V supply, SLVSE13J §6.3): IN+ = hold node, IN- = 0.30 x 3V3_SUP from 2 x 464 k in parallel over 100 k (one open top resistor lowers the threshold to 0.18 x 3V3_SUP, never to zero).
+Behaviour [SIM, sim/logic-relay §1.2, with 64.9 k bleeds]: valid <= 0.1 ms after the first edges at 1 kHz; stays valid >= 4.07 ms after the last edge (firmware gap <= 1 ms); invalid <= 7.50 ms after the last edge from 5 kHz (need <= 8 ms); DC gives nothing; >= 100 kHz never reaches the pump (static Schmitt). Supply is the supervisor's rail: supervisor off = no output (pull-down on TEST_OK).
+One single transition of TEST_PERMIT_CLK (one edge), a pulse > 50 us or the supervisor powering up DOES give a valid output for up to 7.5 ms [SIM LR §1.2]; documented in the capture notes (bounded by the 20 ms rail-ready delay on sheet 12 and the window).
 """
 
 [[group]]
 id = "held"
-title = "'Held' logic: HOLD_OK = both optos lit (R-6); open-drain readbacks to the main controller"
+title = "'Held' logic (rev 0.3): HOLD_OK = all FOUR opto sensors lit (two per discharge path, I-4); open-drain readback of each sensor"
 note = """
-HOLD_A_HELD_N / HOLD_B_HELD_N: 10 k pull-ups to 5V0_SYS (contract §5.4) plus a 1 M backup each, because the opto is open-collector and 'dark' is a normal state: with only one resistor, that resistor opening would leave a CMOS input floating, which could read 'held'. Low only when the stack's opto LED is lit by the real negative hold bias. HOLD_OK = NOR (SN74LVC1G02 on 5V0_SYS): high only when both are actively pulled low. Open opto, open wire, unpowered sheet 11: the pull-up reads 'not held'. Unpowered or open NOR output: the 100 k pull-down on HOLD_OK (SW3 ON) reads 'not held'.
-One HOLD_OK feeds SW3, the charger gates and the window-start AND: a stuck-high NOR is therefore seen by the daily blocking tests F-8 (c)/(d), which release one hold and expect BRIDGE_ARMED_N high.
-HOLD_RB_A_N / HOLD_RB_B_N: SN74LVC2G07 open-drain copies (low = held), pull-ups on sheet 04; 5V0_SYS off = released = 'not held'.
+Four sensor lines from sheet 11 (two independent optos per stack, contract issue 3 §5.4): HOLD_A_HELD_N, HOLD_A_HELD2_N (path A), HOLD_B_HELD_N, HOLD_B_HELD2_N (path B). Each has a 47 k pull-up to 5V0_SYS (rev 0.3 D-2/D-3, was 10 k: the aged Darlington then needs only 0.10 mA to pull it low) plus a 1 M backup, because 'dark' is a normal state and one open resistor must not float a CMOS input. Low only when that opto's LED is lit by the real negative hold bias; low level <= 1.0 V (contract) against LVC VIL 0.3 x VCC = 1.35 V at 4.5 V (SCES213Y). Not-held level with the worst dark current [CO: 20 uA at 85 C] plus two LVC inputs (2 x 5 uA, SCES213Y II) through 44.9 k: >= 4.90 - 1.35 = 3.55 V against VIH 0.7 x VCC = 3.43 V (thin; at the 70 C device limit about 0.5 V margin; capture notes Rev 0.3 §R3.4).
+HOLDA_OK = NOR(HOLD_A_HELD_N, HOLD_A_HELD2_N) (U914), HOLDB_OK = NOR(HOLD_B_HELD_N, HOLD_B_HELD2_N) (U933), HOLD_OK = HOLDA_OK AND HOLDB_OK (U934), all SN74LVC1G on 5V0_SYS. A shorted zener or Darlington in ONE sensor makes that line read 'held' at about 1 V; the other sensor of the same path, on its own line and its own gate input, still requires the real bias (sim/rev3 §1). Unpowered or open gate outputs: 100 k pull-downs on HOLDA_OK, HOLDB_OK (R977, R978) and on HOLD_OK (R904, SW3 ON) read 'not held'.
+One HOLD_OK feeds SW3, both charger chains and the window-start AND: a stuck-high gate is seen by the blocking tests (F-8 (c)/(d)) and by T-7 (each sensor's own readback).
+HOLD_RB_A_N, HOLD_RB_B_N (U915, sensor 1) and HOLD_RB_A2_N, HOLD_RB_B2_N (U935, sensor 2): SN74LVC2G07 open-drain copies (low = held), pull-ups on sheet 04; 5V0_SYS off = released = 'not held'. Self-test T-7 releases each hold in turn and expects both lines of that path high within 25 ms while the other pair stays low.
 """
 
 [[group]]
@@ -163,7 +170,7 @@ SEQ_HOLD from sheet 12 (BRIDGE_3V3 logic): 100 k pull-down here (contract §5.4)
 id = "window"
 title = "150 ms permit window (R-4, R-11): started by the consent chain, latched start, 50 ms absent-consent re-arm"
 note = """
-CHAIN = REQ_B AND HOLD_OK AND (PERMIT_OK OR TEST_MODE) - the logical 'SW1-SW3 all on' (capture notes DEP-3: logic, not the SW_N3 voltage, so a rail held by SW5 cannot fake or mask the start). Its rising edge clocks WSTART (SN74LVC2G74, D = 1): the start is latched, so a toggling consent cannot restart the window. WSTART charges 1.47 M / 100 nF C0G; TLV7031 compares with 0.640 x 5V0_SYS (56.2 k / 100 k): WIN_OPEN_I high while below = 138-163 ms [CALC]. Ratiometric: supply variation cancels.
+CHAIN = REQ_B AND HOLD_OK AND (PERMIT_OK OR TEST_MODE) - the logical 'SW1-SW3 all on' (capture notes DEP-3: logic, not the SW_N3 voltage, so a rail held by SW5 cannot fake or mask the start). Rev 0.3 (D-6, LR §1.4 race B): CHAIN reaches the WSTART clock through 10 k / 10 nF C0G and an SN74LVC1G17 (CHAIN_D, 60-104 us later [SIM rev3-wpd]), because REARM_N releases the WSTART clear only some microseconds after the first consent returns (15.7 us simulated, LR) and an edge inside that time was lost. The rising edge of CHAIN_D clocks WSTART (SN74LVC2G74, D = 1): the start is latched, so a toggling consent cannot restart the window. WSTART charges 1.47 M / 100 nF C0G; TLV7031 compares with 0.640 x 5V0_SYS (56.2 k / 100 k): WIN_OPEN_I high while below = 131.8-161.5 ms [SIM LR §1.3]. Ratiometric: supply variation cancels.
 Re-arm: ANY_N = NOR(REQ_B, PERMIT_OK OR TEST_OK) high only with every consent absent. It charges 549 k / 100 nF; TLV7041 (open drain) pulls REARM_N low after 51-60 ms [CALC] and clears WSTART; any consent returning discharges the RC at once through the BAS116. Open-drain + 100 k pull-up: a dead re-arm comparator never re-arms (window stays closed after use).
 BAS116 diodes empty each RC quickly when its driver goes low (low leakage, 5 nA at 75 V: negligible against 1.47 M).
 Power-up: WSTART is undefined (SCES203Q states no power-up state); either state is safe: open until the first chain edge, or open 150 ms then closed until re-arm (capture notes §5).
@@ -1093,24 +1100,24 @@ between = ["PD_H", "GND"]
 ref = "R928"
 group = "det_pd"
 lib_id = "Device:R"
-value = "71.5k"
+value = "64.9k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
 manufacturer = "Panasonic"
 datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
-description = "71.5k 0.1 %, 25 ppm/K thin film: hold bleed, half 1 of 35.75 k"
+description = "64.9k 0.1 %, 25 ppm/K thin film: hold bleed, half 1 of 32.45 k (rev 0.3 D-1, was 71.5 k: drop-out <= 7.50 ms, LR §1.2)"
 between = ["PD_H", "GND"]
 
 [[part]]
 ref = "R929"
 group = "det_pd"
 lib_id = "Device:R"
-value = "71.5k"
+value = "64.9k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
 manufacturer = "Panasonic"
 datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
-description = "71.5k 0.1 %, 25 ppm/K thin film: hold bleed, half 2 of 35.75 k"
+description = "64.9k 0.1 %, 25 ppm/K thin film: hold bleed, half 2 of 32.45 k (rev 0.3 D-1, was 71.5 k: drop-out <= 7.50 ms, LR §1.2)"
 between = ["PD_H", "GND"]
 
 [[part]]
@@ -1407,24 +1414,24 @@ between = ["TD_H", "GND"]
 ref = "R939"
 group = "det_td"
 lib_id = "Device:R"
-value = "71.5k"
+value = "64.9k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
 manufacturer = "Panasonic"
 datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
-description = "71.5k 0.1 %, 25 ppm/K thin film: hold bleed, half 1 of 35.75 k"
+description = "64.9k 0.1 %, 25 ppm/K thin film: hold bleed, half 1 of 32.45 k (rev 0.3 D-1, was 71.5 k: drop-out <= 7.50 ms, LR §1.2)"
 between = ["TD_H", "GND"]
 
 [[part]]
 ref = "R940"
 group = "det_td"
 lib_id = "Device:R"
-value = "71.5k"
+value = "64.9k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
 manufacturer = "Panasonic"
 datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
-description = "71.5k 0.1 %, 25 ppm/K thin film: hold bleed, half 2 of 35.75 k"
+description = "64.9k 0.1 %, 25 ppm/K thin film: hold bleed, half 2 of 32.45 k (rev 0.3 D-1, was 71.5 k: drop-out <= 7.50 ms, LR §1.2)"
 between = ["TD_H", "GND"]
 
 [[part]]
@@ -1510,26 +1517,26 @@ between = ["TEST_OK", "GND"]
 ref = "R945"
 group = "held"
 lib_id = "Device:R"
-value = "10k"
+value = "47k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
 manufacturer = "any"
 datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
-description = "10k 1 %, 100 ppm/K: HOLD_A_HELD_N default (contract §5.4: 09, 10 k to 5V0_SYS) = not held"
-fields = { DocRef = "contract §5.4" }
+description = "47k 1 %, 100 ppm/K: HOLD_A_HELD_N default (contract issue 3 §5.4: 09, 47 k to 5V0_SYS) = not held (rev 0.3 D-2, was 10 k)"
+fields = { DocRef = "contract issue 3 §5.4; rev3-changes D-2" }
 between = ["HOLD_A_HELD_N", "5V0_SYS"]
 
 [[part]]
 ref = "R946"
 group = "held"
 lib_id = "Device:R"
-value = "10k"
+value = "47k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
 manufacturer = "any"
 datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
-description = "10k 1 %, 100 ppm/K: HOLD_B_HELD_N default (contract §5.4: 09, 10 k to 5V0_SYS) = not held"
-fields = { DocRef = "contract §5.4" }
+description = "47k 1 %, 100 ppm/K: HOLD_B_HELD_N default (contract issue 3 §5.4: 09, 47 k to 5V0_SYS) = not held (rev 0.3 D-2, was 10 k)"
+fields = { DocRef = "contract issue 3 §5.4; rev3-changes D-2" }
 between = ["HOLD_B_HELD_N", "5V0_SYS"]
 
 [[part]]
@@ -1541,7 +1548,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
 manufacturer = "any"
 datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
-description = "1M 1 %, 100 ppm/K: backup pull-up: if the 10 k opens, a dark opto still reads 'not held' (5 uA; capture notes DEP-9)"
+description = "1M 1 %, 100 ppm/K: backup pull-up: if the 47 k opens, a dark opto still reads 'not held' (5 uA; capture notes DEP-9)"
 between = ["HOLD_A_HELD_N", "5V0_SYS"]
 
 [[part]]
@@ -1553,7 +1560,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
 manufacturer = "any"
 datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
-description = "1M 1 %, 100 ppm/K: backup pull-up: if the 10 k opens, a dark opto still reads 'not held' (5 uA; capture notes DEP-9)"
+description = "1M 1 %, 100 ppm/K: backup pull-up: if the 47 k opens, a dark opto still reads 'not held' (5 uA; capture notes DEP-9)"
 between = ["HOLD_B_HELD_N", "5V0_SYS"]
 
 [[part]]
@@ -1565,13 +1572,13 @@ footprint = "Package_TO_SOT_SMD:SOT-23-5"
 mpn = "SN74LVC1G02DBVR"
 manufacturer = "Texas Instruments"
 datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g02.pdf"
-description = "HOLD_OK = both held (NOR of the active-low inputs) (datasheet SCES213Y)"
+description = "HOLDA_OK = both path-A sensors held (NOR of the active-low inputs; rev 0.3 D-4) (datasheet SCES213Y)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
   1    ~          HOLD_A_HELD_N      # A
-  2    ~          HOLD_B_HELD_N      # B
+  2    ~          HOLD_A_HELD2_N     # B
   3    GND        GND                # GND
-  4    ~          HOLD_OK            # Y
+  4    ~          HOLDA_OK           # Y
   5    VCC        5V0_SYS            # VCC
 """
 
@@ -1617,6 +1624,174 @@ mpn = "generic X7R MLCC 100nF 16 V 0603"
 manufacturer = "any"
 datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
 description = "100nF X7R 16 V 0603: decoupling of U915"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R973"
+group = "held"
+lib_id = "Device:R"
+value = "47k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "47k 1 %, 100 ppm/K: HOLD_A_HELD2_N default (contract issue 3 §5.4: 09, 47 k to 5V0_SYS) = not held (rev 0.3 D-3)"
+fields = { DocRef = "contract issue 3 §5.4; rev3-changes D-3" }
+between = ["HOLD_A_HELD2_N", "5V0_SYS"]
+
+[[part]]
+ref = "R974"
+group = "held"
+lib_id = "Device:R"
+value = "47k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "47k 1 %, 100 ppm/K: HOLD_B_HELD2_N default (contract issue 3 §5.4: 09, 47 k to 5V0_SYS) = not held (rev 0.3 D-3)"
+fields = { DocRef = "contract issue 3 §5.4; rev3-changes D-3" }
+between = ["HOLD_B_HELD2_N", "5V0_SYS"]
+
+[[part]]
+ref = "R975"
+group = "held"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1M 1 %, 100 ppm/K: backup pull-up: if the 47 k opens, a dark opto still reads 'not held' (5 uA; capture notes DEP-9)"
+between = ["HOLD_A_HELD2_N", "5V0_SYS"]
+
+[[part]]
+ref = "R976"
+group = "held"
+lib_id = "Device:R"
+value = "1M"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "1M 1 %, 100 ppm/K: backup pull-up: if the 47 k opens, a dark opto still reads 'not held' (5 uA; capture notes DEP-9)"
+between = ["HOLD_B_HELD2_N", "5V0_SYS"]
+
+[[part]]
+ref = "R977"
+group = "held"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: HOLDA_OK default: a dead or open NOR reads 'not held' (rev 0.3 D-4)"
+between = ["HOLDA_OK", "GND"]
+
+[[part]]
+ref = "U933"
+group = "held"
+lib_id = "74xGxx:74LVC1G02"
+value = "SN74LVC1G02DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G02DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g02.pdf"
+description = "HOLDB_OK = both path-B sensors held (NOR of the active-low inputs; rev 0.3 D-4) (datasheet SCES213Y)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          HOLD_B_HELD_N      # A
+  2    ~          HOLD_B_HELD2_N     # B
+  3    GND        GND                # GND
+  4    ~          HOLDB_OK           # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C961"
+group = "held"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U933"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R978"
+group = "held"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: HOLDB_OK default: a dead or open NOR reads 'not held' (rev 0.3 D-4)"
+between = ["HOLDB_OK", "GND"]
+
+[[part]]
+ref = "U934"
+group = "held"
+lib_id = "74xGxx:74LVC1G08"
+value = "SN74LVC1G08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g08.pdf"
+description = "HOLD_OK = HOLDA_OK AND HOLDB_OK: all four sensors held (rev 0.3 D-4) (datasheet SCES217AA)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          HOLDA_OK           # A
+  2    ~          HOLDB_OK           # B
+  3    GND        GND                # GND
+  4    ~          HOLD_OK            # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C962"
+group = "held"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U934"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "U935"
+group = "held"
+lib_id = "74xGxx:74LVC2G07"
+value = "SN74LVC2G07DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC2G07DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc2g07.pdf"
+description = "HOLD_RB_A2_N, HOLD_RB_B2_N open-drain readbacks of the second sensors (T-7; rev 0.3 D-5) (datasheet SCES308M)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          HOLD_A_HELD2_N     # 1A
+  2    GND        GND                # GND
+  3    ~          HOLD_B_HELD2_N     # 2A
+  4    ~          HOLD_RB_B2_N       # 2Y
+  5    VCC        5V0_SYS            # VCC
+  6    ~          HOLD_RB_A2_N       # 1Y
+"""
+
+[[part]]
+ref = "C963"
+group = "held"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U935"
 between = ["5V0_SYS", "GND"]
 
 [[part]]
@@ -2152,6 +2327,73 @@ description = "100k 1 %, 100 ppm/K: CHAIN default low (no window start from a de
 between = ["CHAIN", "GND"]
 
 [[part]]
+ref = "R979"
+group = "window"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "10k 1 %, 100 ppm/K: window-start clock delay resistor (10 k / 10 nF = 100 us; rev 0.3 D-6, LR §1.4 race B)"
+between = ["CHAIN", "CHAIN_RC"]
+
+[[part]]
+ref = "C960"
+group = "window"
+lib_id = "Device:C"
+value = "10nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "10nF C0G 50 V 0603: window-start clock delay capacitor (rev 0.3 D-6)"
+between = ["CHAIN_RC", "GND"]
+
+[[part]]
+ref = "U936"
+group = "window"
+lib_id = "74xGxx:74LVC1G17"
+value = "SN74LVC1G17DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G17DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g17.pdf"
+description = "CHAIN_D = CHAIN delayed 60-104 us [SIM rev3-wpd]: WSTART clock arrives after REARM_N has released the clear (rev 0.3 D-6) (datasheet SCES351Y)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    NC         NC                 # NC
+  2    ~          CHAIN_RC           # A
+  3    GND        GND                # GND
+  4    ~          CHAIN_D            # Y
+  5    VCC        5V0_SYS            # VCC
+"""
+
+[[part]]
+ref = "C964"
+group = "window"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U936"
+between = ["5V0_SYS", "GND"]
+
+[[part]]
+ref = "R980"
+group = "window"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: CHAIN_D default low: a dead buffer never starts the window (it then stays open; SW4 still needs every consent; F-8 (f) finds it)"
+between = ["CHAIN_D", "GND"]
+
+[[part]]
 ref = "U928"
 group = "window"
 lib_id = "74xGxx:74LVC2G74"
@@ -2160,10 +2402,10 @@ footprint = "Package_SO:SSOP-8_2.95x2.8mm_P0.65mm"
 mpn = "SN74LVC2G74DCTR"
 manufacturer = "Texas Instruments"
 datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc2g74.pdf"
-description = "WSTART latch: set by the first CHAIN edge, cleared only by re-arm (datasheet SCES203Q)"
+description = "WSTART latch: set by the first CHAIN_D edge (CHAIN delayed 60-104 us, rev 0.3 D-6), cleared only by re-arm (datasheet SCES203Q)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
-  1    C          CHAIN              # CLK
+  1    C          CHAIN_D            # CLK
   2    D          5V0_SYS            # D
   3    ~{Q}       NC                 # Q_N
   4    GND        GND                # GND

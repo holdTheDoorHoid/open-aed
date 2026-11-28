@@ -1934,7 +1934,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "DPDT HV relay + aux"
+		(property "Value" "DPDT HV relay + aux — MADE TO ORDER, PLACEHOLDER"
 			(at -7.62 -8.89 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1956,7 +1956,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.sensata.com/sites/default/files/a/sensata-g12-series-dpdt-high-voltage-relay-datasheet.pdf"
+		(property "Datasheet" "docs/requirements/patient-relay.md"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -1967,7 +1967,7 @@
 				)
 			)
 		)
-		(property "Description" "Patient relay K1401: DPDT >= 5 kV, cold-switched, carries the shock; force-guided LV auxiliary NC contact (closed only at rest). Made to order; G12-class basis. NOT a catalogue part"
+		(property "Description" "PLACEHOLDER symbol (D-64, revision 0.3): no such relay exists. Patient relay K1401 requirement: DPDT >= 5 kV, cold-switched, carries the shock; force-guided LV auxiliary NC contact (closed only at rest). Specification: docs/requirements/patient-relay.md. Wiring basis only: Sensata G12 contact forms. NOT a catalogue part"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -1978,7 +1978,7 @@
 				)
 			)
 		)
-		(property "MPN" "MADE-TO-ORDER (basis Gigavac/Sensata G12-12Vdc + force-guided aux contact)"
+		(property "MPN" "MADE-TO-ORDER PLACEHOLDER (no part exists; docs/requirements/patient-relay.md)"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)

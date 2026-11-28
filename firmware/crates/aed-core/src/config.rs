@@ -167,7 +167,12 @@ pub struct Config {
     /// [`Config::agree_percent`]).
     pub agree_abs_volts: Volts,
     /// Above this voltage the capacitor is over-charged and is emptied at once.
-    /// Provisional: 2,200 V (the design point is about 1,700 to 2,000 V).
+    /// Both controllers. Change order FW-10 (design revision 0.3): 2,070 V
+    /// reading, just below the lowest trip of the supervisor-side hardware
+    /// over-voltage latch (2,073–2,142 V, calculated band, charger-storage
+    /// notes Q4) and above the highest reading a normal charge gives (the
+    /// top of the at-plan window at the 2,000 V maximum charge, 2,032 V).
+    /// Was 2,200 V.
     pub overvoltage_limit: Volts,
     /// How often the main controller sends its status (heartbeat) message to the
     /// supervisor, and the supervisor its report back. Provisional: 50 ms.
@@ -176,7 +181,11 @@ pub struct Config {
     /// as stopped. Provisional: 250 ms (five missed heartbeats).
     pub heartbeat_timeout_ms: u32,
     /// How long one supervisor permit lasts if no shock sequence starts
-    /// within it. Provisional: 200 ms. Once the hardware reports a
+    /// within it. Change order FW-5: 120 ms, below the hardware window's
+    /// lowest simulated value (131.8 ms, logic-relay notes §1.3) and above
+    /// the latest a legitimate sequence starts (about 70 ms after the rail:
+    /// 30 ms rail-ready wait, up to 40 ms for the relay, the lead). Was
+    /// 200 ms. Once the hardware reports a
     /// sequence, the permit is held until the hardware reports it ended
     /// (it no longer matters then, D-59). Must be shorter than
     /// [`Config::hardware_permit_cap_ms`], so firmware ends an unused
@@ -186,7 +195,8 @@ pub struct Config {
     /// the main controller waits for the sequence to start: the relay moving
     /// the pads to the bridge (up to about 10 ms, HARDWARE_DESIGN.md §B8.4,
     /// unverified for any chosen relay) plus the drivers starting.
-    /// Provisional: 50 ms.
+    /// Change order FW-6: 80 ms (the 30 ms rail-ready wait, up to 40 ms for
+    /// the relay to settle, the 0.2 ms lead, and margin). Was 50 ms.
     pub sequence_start_timeout_ms: u32,
     /// After the sequence starts, the longest until the hardware reports it
     /// ended. Must exceed [`Config::hardware_time_cap_ms`]: the hardware
@@ -235,7 +245,7 @@ pub struct Config {
     pub hardware_time_cap_ms: u32,
     /// The hardware's limit on how long a permit may hold the rail up
     /// before a sequence starts, ms (a hardware figure, review R-4).
-    /// Proposed 250 ms.
+    /// Design v0.3: 150 ms nominal, 131.8–161.5 ms simulated (FW-5).
     pub hardware_permit_cap_ms: u32,
     /// How long one TEST permit lasts (D-61). Must exceed
     /// [`Config::hardware_permit_cap_ms`] so the self-test can see the
@@ -247,7 +257,8 @@ pub struct Config {
     pub test_permit_max_voltage: Volts,
     /// At most this many test permits per self-test (the supervisor counts
     /// from the moment the main controller reports "self-test"). The
-    /// switch-on test uses one, a periodic test three. Provisional: 4.
+    /// switch-on test uses one, a periodic test five (interlock, phase-1
+    /// cap, phase-2 cap, overall cap, permit cap). Provisional: 6.
     pub test_permits_per_self_test: u8,
     /// How long the self-test watches the interlock after each probe (for
     /// example "request alone") to see that the rail does NOT rise, or that
@@ -269,6 +280,90 @@ pub struct Config {
     /// before it counts (D-60): while the switch is being moved the two
     /// contacts change at slightly different moments. Provisional: 500 ms.
     pub mode_contacts_disagree_ms: u32,
+
+    // ----- design revision 0.3 (change order FW-1 … FW-19) ---------------
+    /// FW-2: after the rail reads armed (`BRIDGE_ARMED_N` low) the
+    /// delivery sequencer commands nothing (`RELAY_CMD`, `BTEST_CMD`, any
+    /// `CMD_*`) for this long; `RAIL_READY` comes 21.56–26.67 ms after it
+    /// (simulated, logic-relay notes §1.1). 30 ms. The rail must read armed
+    /// without a break for the whole wait, which also covers FW-3.
+    pub rail_ready_wait_ms: u32,
+    /// FW-3: a rail-armed reading shorter than this is not "armed" (the
+    /// permit detector can give up to 7.5 ms of spurious consent). 10 ms.
+    /// Must not exceed [`Config::rail_ready_wait_ms`].
+    pub armed_min_ms: u32,
+    /// FW-1: the patient relay counts as settled on the bridge once its
+    /// rest contact has read "left rest" without a break for this long
+    /// (restart on any sample at rest). The hardware's transfer timer is
+    /// 10.42–12.17 ms (simulated). 14 ms.
+    pub relay_settle_ms: u32,
+    /// FW-1: give up the start if the relay has not settled this long after
+    /// `RELAY_CMD`. 40 ms.
+    pub relay_settle_abort_ms: u32,
+    /// FW-7: in test mode, `CMD_*` this long after `BTEST_CMD` (the
+    /// hardware's test-relay timer is 4.74–5.52 ms with change D-16). 7 ms.
+    pub test_relay_wait_ms: u32,
+    /// FW-4: between two attempts (two rail episodes), request, permit and
+    /// test permit must all have been absent this long, counted from the
+    /// later of the main dropping its request and the supervisor reporting
+    /// its permit down. Re-arm 51.24–60.34 ms plus the permit detector's
+    /// drop-out ≤ 7.50 ms after the clock stops (simulated). 75 ms.
+    pub rearm_wait_ms: u32,
+    /// FW-12: `K_SUPPLY_EN` (the coil supply's pre-charge) must have been
+    /// raised at least this long before `RELAY_CMD`; the reservoir is full
+    /// 74–99 ms after it (simulated, logic-relay notes §3.2). 200 ms.
+    pub coil_supply_lead_ms: u32,
+    /// FW-11: any wait on a discharge path reading "not held" after its
+    /// hold clock stops allows this long (up to 22.2 ms simulated, rev3
+    /// notes §2). 25 ms.
+    pub hold_release_wait_ms: u32,
+    /// FW-11: "held" after the hold clocks start allows this long (up to
+    /// 32.9 ms simulated). 35 ms.
+    pub hold_engage_wait_ms: u32,
+    /// FW-13: pad-impedance (compression) samples are thrown away while the
+    /// charger is commanded on and for this long after (D-67; the 10 Hz
+    /// demodulation bandwidth, estimated). 100 ms.
+    pub impedance_blank_after_charge_ms: u32,
+    /// FW-18: with the charger commanded on and the capacitor below plan,
+    /// no rise for this long means the charger has stopped silently; it is
+    /// restarted. 200 ms.
+    pub charger_stall_ms: u32,
+    /// FW-18: how long the charger is held off for a restart (≥ 2 ms).
+    pub charger_restart_off_ms: u32,
+    /// FW-18: after a charger (re)start, no rise is expected for this long.
+    /// 15 ms.
+    pub charger_start_ms: u32,
+    /// FW-16 (D-62): how long the supervisor gives the REAL permit for one
+    /// self-test step, at most. 150 ms.
+    pub real_test_permit_ms: u32,
+    /// At most this many real-permit grants per self-test (D-62). The
+    /// switch-on test uses four (T-1, T-2/T-3, T-4, and the coil-cap or
+    /// dry-run steps in the periodic tests). Provisional: 6.
+    pub real_test_permits_per_self_test: u8,
+    /// The hardware's phase-1 cap, ms, nominal (D-63; 11.37 ms, band
+    /// 10.75–11.85 ms). The self-test accepts a cut within 2 ms of it.
+    pub hardware_phase1_cap_ms: u32,
+    /// The hardware's phase-2 cap, ms, nominal (7.73 ms, band 7.31–8.06 ms).
+    pub hardware_phase2_cap_ms: u32,
+    /// FW-14: `I_SHOCK` scale, microvolts per ampere (24.0 mV/A since the
+    /// v0.3 change G-2). A board-layer figure.
+    pub shock_current_uv_per_a: u32,
+    /// FW-14: the board layer counts current as present at or above this,
+    /// mA (the self-test current is about 0.2–0.29 A).
+    pub current_present_ma: u16,
+    /// FW-19: the battery load test pulse lasts at most this long, ms.
+    pub battery_load_pulse_max_ms: u32,
+    /// FW-19: and is not repeated within this long, ms.
+    pub battery_load_min_interval_ms: u32,
+    /// Run the REAL-permit self-test steps of D-62 (T-1 … T-6). Default
+    /// true. Switched off only by the unit-test harness whose simple board
+    /// model does not implement those hardware paths; the time-resolved
+    /// simulator always runs them.
+    pub self_test_real_permit_steps: bool,
+    /// FW-13 (D-67): throw compression readings away while the charger
+    /// runs. Default true. Switched off only by unit tests of the chest
+    /// logic itself, which charge on a much slower mock board.
+    pub blank_compressions_while_charging: bool,
     /// How long the supervisor tolerates its voltage reading disagreeing with the
     /// main controller's claim before it empties the capacitor and latches a fault.
     /// A short allowance is needed because the claim is up to one heartbeat old.
@@ -556,11 +651,11 @@ impl Default for Config {
             at_plan_abs_volts: Volts(12),
             agree_percent: 1,
             agree_abs_volts: Volts(12),
-            overvoltage_limit: Volts(2_200),
+            overvoltage_limit: Volts(2_070),
             heartbeat_period_ms: 50,
             heartbeat_timeout_ms: 250,
-            permit_window_ms: 200,
-            sequence_start_timeout_ms: 50,
+            permit_window_ms: 120,
+            sequence_start_timeout_ms: 80,
             sequence_end_timeout_ms: 60,
             relay_return_timeout_ms: 50,
             front_end_recovery_ms: 1_500,
@@ -569,15 +664,38 @@ impl Default for Config {
             shock_residual_max_percent: 60,
             shock_not_delivered_percent: 80,
             hardware_time_cap_ms: 25,
-            hardware_permit_cap_ms: 250,
+            hardware_permit_cap_ms: 150,
             test_permit_window_ms: 400,
             test_permit_max_voltage: Volts(60),
-            test_permits_per_self_test: 4,
+            test_permits_per_self_test: 6,
             interlock_probe_ms: 10,
-            test_sequence_timeout_ms: 50,
+            test_sequence_timeout_ms: 80,
             discharge_path_test_ms: 100,
             discharge_path_max_remaining_percent: 90,
             mode_contacts_disagree_ms: 500,
+            rail_ready_wait_ms: 30,
+            armed_min_ms: 10,
+            relay_settle_ms: 14,
+            relay_settle_abort_ms: 40,
+            test_relay_wait_ms: 7,
+            rearm_wait_ms: 75,
+            coil_supply_lead_ms: 200,
+            hold_release_wait_ms: 25,
+            hold_engage_wait_ms: 35,
+            impedance_blank_after_charge_ms: 100,
+            charger_stall_ms: 200,
+            charger_restart_off_ms: 2,
+            charger_start_ms: 15,
+            real_test_permit_ms: 150,
+            real_test_permits_per_self_test: 6,
+            hardware_phase1_cap_ms: 11,
+            hardware_phase2_cap_ms: 8,
+            shock_current_uv_per_a: 24_000,
+            current_present_ma: 100,
+            battery_load_pulse_max_ms: 100,
+            battery_load_min_interval_ms: 1_000,
+            self_test_real_permit_steps: true,
+            blank_compressions_while_charging: true,
             disagreement_persist_ms: 500,
             pad_debounce_ms: 200,
             analysis_time_limit_ms: 12_000,
@@ -820,7 +938,9 @@ impl Config {
         if !self.heat_ok() {
             return Err(ConfigError::HeatThresholds);
         }
-        if self.capacitor_life_charges == 0 || !(1..=100).contains(&self.capacitor_service_soon_percent) {
+        if self.capacitor_life_charges == 0
+            || !(1..=100).contains(&self.capacitor_service_soon_percent)
+        {
             return Err(ConfigError::CapacitorLife);
         }
         if !self.sequence_ok() {
@@ -858,6 +978,33 @@ impl Config {
             && self.shock_not_delivered_percent <= 100
             && self.test_permit_max_voltage < self.self_test_voltage
             && (1..=99).contains(&self.discharge_path_max_remaining_percent)
+            && self.rev3_ok()
+    }
+
+    /// The v0.3 waits against each other and against the hardware bands
+    /// they must cover (change order FW-1 … FW-7).
+    fn rev3_ok(&self) -> bool {
+        // Latest legitimate start after the rail reads armed: the rail-ready
+        // wait, the relay abort limit, the lead.
+        let latest_start = self
+            .rail_ready_wait_ms
+            .saturating_add(self.relay_settle_abort_ms)
+            .saturating_add(1);
+        self.armed_min_ms > 0
+            && self.armed_min_ms <= self.rail_ready_wait_ms
+            && self.relay_settle_ms > 0
+            && self.relay_settle_ms < self.relay_settle_abort_ms
+            && self.test_relay_wait_ms > 0
+            && self.sequence_start_timeout_ms > latest_start
+            && self.permit_window_ms > latest_start
+            && self.real_test_permit_ms > 0
+            && self.charger_restart_off_ms > 0
+            && self.charger_stall_ms > self.charger_start_ms
+            && self.hardware_phase1_cap_ms > 0
+            && self.hardware_phase2_cap_ms > 0
+            && self.battery_load_pulse_max_ms > 0
+            && self.battery_load_pulse_max_ms < self.battery_load_min_interval_ms
+            && self.current_present_ma > 0
     }
 
     /// What a controller concludes from its own capacitor reading after a

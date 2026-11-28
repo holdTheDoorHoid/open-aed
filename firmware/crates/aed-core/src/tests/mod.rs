@@ -10,7 +10,18 @@ mod heat_tests;
 mod mock;
 mod parts_tests;
 mod rescue_tests;
+mod rev3_tests;
 mod schedule_tests;
 mod sequence_tests;
 mod supervisor_tests;
 mod walk_tests;
+
+/// The configuration the unit tests use: the defaults, without the D-62
+/// real-permit self-test steps, which the simple board model here does not
+/// implement (the time-resolved simulator in aed-sim runs them).
+pub(crate) fn cfg() -> crate::config::Config {
+    crate::config::Config {
+        self_test_real_permit_steps: false,
+        ..crate::config::Config::default()
+    }
+}

@@ -1,0 +1,113 @@
+* fe_protect_wph.cir - sheet 15 revision 0.3: defibrillation protection of the main front end with R1528/R1529, D1506/D1507
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Transient model of pad A's taps on specs/15_frontend_main.toml (drive, sense, ECG) with pad B held at GND:
+* the whole event across pad A's taps ("one-sided", WP-H §3.1 - the conservative split). rev=0 issue-2 topology
+* (ECG and impedance branches share R1507), rev=1 as drawn now (ECG branch through its own R1528 + D1506).
+* Events (evt):
+*   1 = external defibrillator test pulse with the pads on: 5 kV peak, ~9 us rise, 3.4 ms decay time constant
+*       (IEC 60601-1 8.5.5 test as described by MEDTEQ, WP-H §3.1 [UNVERIFIED against the standard]); ideal source
+*       (no 500 uH / source resistance: pessimistic for every part on the board).
+*   2 = this device's own shock reaching the taps through a failed relay (fault 29): rectangular +V for 11.85 ms then
+*       -V for 8.06 ms (per-phase caps at the top of their bands, rev3-changes D-10/D-11), V = 2,409 V (charger's last-
+*       resort trip with maximum overdrive, E-1) - a bound; real phases decay. 2 us edges [EST].
+*   3 = event 1 applied twice 1 s apart is not simulated: the parts start each event cold-equivalent (no state), so the
+*       per-event energy below applies to each; DPCR is rated 100 pulses (TT DPCR datasheet 09.26).
+* Parts: DPCR 51 k / 2 x 24 k (12 k) with 0.2 pF body capacitance [EST]; C1501, C1502 4.7 nF each (in series);
+*   TVS CDSOD323-T03C as anti-series zeners, BV 4.0 V (VBR min), RS 3 ohm (gives ~7.7 V at 1 A, above the 7 V max
+*   VC at 1 A in Bourns REV 04/23: pessimistic for the pin current); ADS1292R pins as diodes to AVDD (3.3 V, stiff)
+*   and to GND [EST: datasheet gives abs max AVDD + 0.3 V and +-10 mA continuous, not the ESD structure].
+
+.param evt=1 rev=1 vext=5k vown=2409
+Bsrc pada 0 V = {evt==1} ? {vext}*(1-exp(-time/3u))*exp(-time/3.4m) : {vown}*( min(1,time/2u) - 2*min(1,max(0,time-11.85m)/2u) + min(1,max(0,time-19.91m)/2u) )
+
+* ---- TVS and pin models
+.subckt tvs a k
+Dz1 a m dz
+Dz2 k m dz
+.model dz D(IS=1e-12 N=1 BV=4.0 IBV=1m RS=3 CJO=3p)
+.ends
+.model dpin D(IS=1e-14 N=1 RS=5)
+Vavdd avdd 0 3.3
+
+* ---- drive tap A: pad -> C1501 -> C1502 -> 2 x 24 k -> clamp D1501 -> R1505 2.0 k -> RESP_MODP pin
+C1501 pada md1 4.7n
+C1502 md1 md2 4.7n
+R1501 md2 mdcl 24k
+R1502 md2 mdcl 24k
+Cp1501 md2 mdcl 0.4p
+X1501 mdcl 0 tvs
+R1505 mdcl modp 2.0k
+Dmp1 modp avdd dpin
+Dmp2 0 modp dpin
+Rmod modp 0 100k
+
+* ---- impedance sense tap: pad -> R1507 51 k -> D1503 -> R1511 10 k -> C1506 2.2 n -> IN1P (10 M + 10 M bias)
+R1507 pada sa 51k
+Cp1507 pada sa 0.2p
+X1503 sa 0 tvs
+R1511 sa rsa 10k
+C1506 rsa in1p 2.2n
+R1515 in1p avdd 10Meg
+R1516 in1p 0 10Meg
+Di1 in1p avdd dpin
+Di2 0 in1p dpin
+
+* ---- ECG branch: rev 0 from node sa; rev 1 from the pad through R1528 + D1506
+Rlink sa se {rev ? 1e12 : 1m}
+R1528 pada se {rev ? 51k : 1e12}
+Cp1528 pada se {rev ? 0.2p : 1f}
+* D1506 exists only in rev 1 (series 1e12 ohm removes it in rev 0)
+Rx1506 se se6 {rev ? 1m : 1e12}
+X1506 se6 0 tvs
+R1509 se ecga 10k
+De1 ecga avdd dpin
+De2 0 ecga dpin
+* C1505 470 pF to the (grounded-side) ECG node B; R1513 10 M to RLD (mid-supply source)
+C1505 ecga 0 470p
+R1513 ecga rld 10Meg
+Vrld rld 0 1.65
+
+.control
+set noaskquit
+foreach ev 1 2
+ foreach rv 0 1
+  alterparam evt=$ev
+  alterparam rev=$rv
+  reset
+  if $ev = 1
+    tran 0.5u 25m 0 0.5u
+  else
+    tran 1u 25m 0 1u
+  end
+  let p1507 = (v(pada)-v(sa))^2/51k
+  let p1528 = (v(pada)-v(se))^2/51k
+  let pdrv = (v(md2)-v(mdcl))^2/24k
+  let ptvs3 = abs(v(sa)*(v(sa)-v(rsa))/10k + v(sa)*(v(pada)-v(sa))/51k)
+  let i1507 = abs((v(pada)-v(sa))/51k)
+  let i1528 = abs((v(pada)-v(se))/51k)
+  let idrv = abs(2*(v(md2)-v(mdcl))/24k)
+  let iin2 = abs((v(se)-v(ecga))/10k)
+  let iin1 = abs(i(Vavdd))
+  let imod = abs((v(mdcl)-v(modp))/2.0k)
+  let vc1 = abs(v(pada)-v(md1))
+  meas tran e1507 integ p1507 from=0 to=25m
+  meas tran e1528 integ p1528 from=0 to=25m
+  meas tran edrv integ pdrv from=0 to=25m
+  meas tran pk1507 max p1507
+  meas tran pk1528 max p1528
+  meas tran ipk1507 max i1507
+  meas tran ipk1528 max i1528
+  meas tran ipkdrv max idrv
+  meas tran ipin_ecg max iin2
+  meas tran ipin_mod max imod
+  meas tran vcmax max vc1
+  meas tran vse max v(se)
+  meas tran vsa max v(sa)
+  meas tran iavdd max iin1
+  echo "RESULT protect event= $ev rev= $rv R1507_peak_A= $&ipk1507 R1507_peak_W= $&pk1507 R1507_J= $&e1507 R1528_peak_A(rev1_only)= $&ipk1528 R1528_peak_W= $&pk1528 R1528_J= $&e1528 drive_24k_each_J= $&edrv drive_tap_peak_A= $&ipkdrv ECG_clamp_node_max_V= $&vse imp_clamp_node_max_V= $&vsa IN2P_pin_peak_A= $&ipin_ecg RESP_MODP_pin_peak_A= $&ipin_mod current_into_AVDD_peak_A= $&iavdd C1501_max_V= $&vcmax"
+ end
+end
+.endc
+.end

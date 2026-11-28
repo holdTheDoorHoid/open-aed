@@ -1,7 +1,9 @@
 # 13_hv_bridge — output bridge power stage (WP-G). HIGH VOLTAGE.
 # NOT FOR CONSTRUCTION — unreviewed design. Drawn with AI assistance; not reviewed by a qualified high-voltage or
 # medical-device engineer (SAFETY.md §2a). Nothing here is an instruction to build, power or test anything.
-# Source: docs/HARDWARE_DESIGN.md §B6, §B13.5, §B14, §13, §14; contract.md issue 2 (§2, §4, §5.5, §5.7, §8, §9).
+# Source: docs/HARDWARE_DESIGN.md v0.3 §B6, §B13.5, §B14, §13, §14; contract.md issue 3 (§0, §2, §4, §5.5, §5.7, §8, §9);
+# change order hardware/aed-main/capture-notes/rev3-changes.md (WP-G, G-1 .. G-8). Revision 0.3 check simulations:
+#   hardware/aed-main/sim/rev3-wpg/notes.md
 # Arithmetic, ratings against stresses, the per-part failure table and every unverified item:
 #   hardware/aed-main/capture-notes/WP-G.md
 # References 1301-1399 (contract §2). Contract-fixed: Q1301 QHA, Q1302 QLA, Q1303 QHB, Q1304 QLB, R1301 R_S,
@@ -10,11 +12,12 @@
 [sheet]
 name = "13_hv_bridge"
 title = "HIGH VOLTAGE: H-bridge (4 x 3.3 kV SiC), R_S + L_S with freewheel diodes, gated push-pull high-side drive, low-side drivers, current sense and comparators, bridge test load"
-source = "docs/HARDWARE_DESIGN.md §B6, §B13.5, §B14; contract.md issue 2; capture notes WP-G.md"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B6, §B13.5, §B14; contract.md issue 3; rev3-changes.md WP-G; capture notes WP-G.md"
 date = "2026-11-27"
 comments = [
   "Every turn-off is low side first (sheet 12 orders it); coil current freewheels through D1302+D1301; no switch is ever allowed to avalanche.",
   "Every switch is held OFF by a gate-source resistor with all supplies absent. HV_*, HSA_*, HSB_* nets carry up to 2.2 kV: no test points on them (R9).",
+  "Revision 0.3 (contract issue 3): 80 A over-current trip, fast 3 A idle path IDLE_FAST_N, carrier-loss detectors on both high-side islands, LSD_OK monitor of the +20 V low-side supply, 75 nF local film capacitor HV_CAP_P-HV_RTN, I_SHOCK 24.0 mV/A. Simulated check: sim/rev3-wpg/notes.md.",
 ]
 
 [nets]
@@ -25,7 +28,9 @@ global = [
   "G_HA", "G_HB", "G_LA", "G_LB",     # gated enables from 12; 100k pull-downs here (contract §5.7)
   "BTEST_EN",                         # test relay enable from 12; 100k pull-down here
   "OC_DET_N", "IDLE_I_DET_N",         # push-pull comparator outputs -> 12 (pull-downs on 12)
-  "I_SHOCK",                          # 26.7 mV/A -> 04
+  "IDLE_FAST_N",                      # issue 3: fast 3 A idle comparator on the shunt Kelvin pair -> 12 (pull-down on 12)
+  "LSD_OK",                           # issue 3: +20 V low-side supply monitor, high = good -> 12 (pull-down on 12)
+  "I_SHOCK",                          # 24.0 mV/A (issue 3) -> 04
   "OUT_A_TAP", "OUT_B_TAP",           # 1:997 output taps, clamped to GND -> 07
 ]
 
@@ -66,6 +71,7 @@ note = """
 Phase 1: QHA on beforehand (carrier), QLB times the pulse. Phase 2: QHB on beforehand, QLA times it (§B6.1). High sides switch at zero current; low sides switch the current. VDSS 3300 V against <= 2.2 kV (1.5x). Gate drive returns to each device's SOURCE SENSE pin (terminal 3), never to the power source.
 Thermal [CALC from DS00005914A Fig 1-5, 1-18; capture notes §4]: worst planned shock (65.7 A decaying, 25 Ohm, phase 1 = 3-12 ms) Tj 55 -> 102 C at VGS 20 V, -> 119 C if a high side only reaches VGS 17 V; fault 'low side frozen on to the 28.8 ms cap' 2,000 V, 25 Ohm: 124 C worst. Limit 150 C. Fault 18 (QLB shorted, QHA turning on slowly through its linear region) is NOT covered: 130-300 C estimated -> finding F-1.
 No avalanche and no short-circuit rating exist for this part: the design never lets it avalanche (freewheel D1301/D1302) and the OC latch trips at 82-98 A, but the current at the instant of turn-off (115-126 A) is above IDM 107 A -> finding F-2.
+REVISION 0.3: OC trip 80 A (band 74-86 A, R1351 196 k): interrupted current 86-97 A [SIM sim/rev3-wpg S-2] below IDM. Fault 18 / same-side shoot-through are now ended by the fast idle path + the sheet-12 kill latch + the carrier-loss detectors: QHA energy and junction estimates in sim/rev3-wpg/notes.md S-1.
 """
 
 [[group]]
@@ -139,11 +145,11 @@ note = "Identical to the HSA island."
 
 [[group]]
 id = "isense"
-title = "Current sense: 2 mOhm 4-terminal shunt LS_SRC -> HV_RTN, bypass diode, 90 A fast comparator, INA240A1 -> I_SHOCK, 5 A idle comparator"
+title = "Current sense: 2 mOhm 4-terminal shunt LS_SRC -> HV_RTN, bypass diode, 80 A fast comparator, INA240A1 -> I_SHOCK (24.0 mV/A), 4.96 A idle comparator"
 note = """
-Over-current: shunt Kelvin -> 100 Ohm / 1 nF (tau 100 ns) -> TLV3501 (4.5 ns). Threshold 3.3 V x 10.0 k / 184 k = 179.3 mV, referred to the shunt's own HV_RTN Kelvin terminal -> 89.7 A nominal; band 82-98 A with reference +-2.9 %, offset +-6.5 mV, shunt +-1 % and TCR [CALC]. Response <= 0.2 us to the comparator output, plus 12's latch and the UCC5350 (<= 100 ns).
-Waveform: INA240A1 (gain 20) on BRIDGE_5V, 10 Ohm input resistors, 2:3 divider -> I_SHOCK = 26.67 mV/A, 3.2 V at 120 A (output swing VS - 0.2 V max) (§B6.6).
-Idle current: I_SHOCK -> 1 k / 100 pF -> TLV3501, threshold 3.3 V x 10.0 k / 247 k = 133.6 mV -> 5.0 A; band about 4.5-5.5 A. It depends on the INA240: a dead INA240 reads 0 A, which the self-test catches (no current in the test sequence) -> capture notes.
+Over-current (rev 0.3, G-1): shunt Kelvin -> 100 Ohm / 1 nF (tau 100 ns) -> TLV3501 (4.5 ns). Threshold 3.3 V x 10.0 k / 206 k = 160.2 mV, referred to the shunt's own HV_RTN Kelvin terminal -> 80.1 A nominal; band about 74-86 A with reference +-2.9 %, offset +-6.5 mV, shunt +-1 % and TCR [CALC]. Interrupted current 86-97 A at 2,200 V [SIM sim/rev3-wpg S-2]; highest planned peak 67.4 A (2,000 V, 25 Ohm).
+Waveform (rev 0.3, G-2): INA240A1 (gain 20) on BRIDGE_5V, 10 Ohm input resistors, divider 13.3 k / 20.0 k (x 0.6006) -> I_SHOCK = 24.0 mV/A; saturated output (VS - 0.2 V) x 0.6006 <= 3.20 V at BRIDGE_5V 5.5 V, below the main controller's VDDA minimum 3.26 V (§B6.6, LR §5.1).
+Idle current (slow path, kept): I_SHOCK -> 1 k / 100 pF -> TLV3501, threshold 3.3 V x 10.0 k / 277 k = 119.1 mV -> 4.96 A. It depends on the INA240: a dead INA240 reads 0 A, which the self-test catches (no current in the test sequence). The fast path (group idfast) is the primary idle detector from rev 0.3; this one stays as an independent, slower second.
 D1303 (capture addition): S3D across the shunt. If the 2 mOhm shunt ever opens, LS_SRC would otherwise rise to kilovolts and destroy both low-side drivers, the MGJ2 and the INA240; with D1303 it stays below about 1 V and the OC comparator trips at once (fail safe, detected).
 BAT54S clamps the OC comparator input to GND/BRIDGE_3V3. Outputs are push-pull on BRIDGE_3V3; the 100 k pull-downs are on 12: unpowered or open = 'fault' (R11).
 """
@@ -169,7 +175,47 @@ Relay operating range is -20..+70 C (narrower than the rest of the sheet) -> cap
 [[group]]
 id = "tp"
 title = "Test points (§15): low-voltage nets only"
-note = "OUT_A_TAP, OUT_B_TAP, I_SHOCK, OC_DET_N, IDLE_I_DET_N. None on HV_*, HSA_*, HSB_* (R9)."
+note = "OUT_A_TAP, OUT_B_TAP, I_SHOCK, OC_DET_N, IDLE_I_DET_N, and (rev 0.3) IDLE_FAST_N, LSD_OK. None on HV_*, HSA_*, HSB_* (R9)."
+
+[[group]]
+id = "idfast"
+title = "Rev 0.3 fast idle-current path: shunt Kelvin -> pedestal + OPA838 x 11 -> TLV3501 -> IDLE_FAST_N (3 A class, about 30 ns)"
+note = """
+Input filter R1365 100 Ohm / C1345 100 pF (tau 10 ns). Closes the shorted-low-side gap (fault 18 and the same-side shoot-through, BR Q1): sheet 12 ORs IDLE_FAST_N with IDLE_I_DET_N, arms it only after both low sides have been off for 9 us, and the kill latch removes G_HA/G_HB in about 45 ns.
+Threshold [CALC]: pedestal 3.3 x 100/10,100 = 32.67 mV; reference 3.3 x 1.00/7.73 = 426.9 mV = 11 x 38.81 mV -> (38.81 - 32.67) mV / 2 mOhm = 3.07 A falling-edge reference, 3.20 A rising with the 6 mV hysteresis. Both ratiometric to BRIDGE_3V3. Band 2.54-3.87 A worst case (TLV3501 +-6.5 mV / 11 dominates; OPA838 -230/+220 uV; 0.1 % parts; shunt 2.3 %).
+Departures from G-3 (capture notes rev 0.3): R1364 pedestal added (the OPA838 output cannot reach below 0.1-0.2 V, SBOS867E VOL, so without it the comparator would see 'current' at zero current); R1366/R1367 1.00 k/100 Ohm instead of 10.0 k/1.00 k (bias-current balance); D1332 single BAT54 to GND instead of BAT54S (leakage from BRIDGE_3V3).
+Normal shocks stay linear (65.7 A -> 1.80 V; saturation at 125 A). Simulated (sim/rev3-wpg S-1, S-3): shorted low side ended at 9-25 mJ in QHA; no false trip in a normal sequence or with the charger running, margin >= 1.67 A above the band bottom. GND of U1317/U1318 must be taken at SHUNT_KN (layout requirement L-1, capture notes).
+"""
+
+[[group]]
+id = "lsdmon"
+title = "Rev 0.3 LSD_OK: TLV7031 monitor of the MGJ2 +20 V low-side gate supply (trip 16.9 V)"
+note = """
+Without it an MGJ2-only failure lets the low-side gate sag through 9-12 V while the switch carries up to 50 A (BR Q4: 158-181 C). LSD_OK low ends the sequence through sheet 12 (RAIL_OK) like a BRIDGE_5V collapse and blocks a start.
+Trip [CALC]: 1.827 V x 112.1/12.1 = 16.93 V; band 16.45-17.35 V (BRIDGE_3V3 +-1.5 %, four 0.1 % resistors, TLV7031 offset +-8 mV and hysteresis 2-17 mV x 9.26, SLVSE13J). Normal rail 19.5-22 V; lowest working input (BRIDGE_5V 4.5 V, MGJ2 line regulation 1.2 %/%) about 18.1 V [EST]: margin about 0.75 V. Sensed against GND: the LS_SRC offset (<= 0.17 V at 86 A) only raises the reading.
+The -5 V rail is not monitored (capture notes, failure table).
+"""
+
+[[group]]
+id = "film"
+title = "Rev 0.3 local film capacitor HV_CAP_P - HV_RTN: 2 x 0.15 uF 3 kV polypropylene in series (75 nF) with 10 MOhm balancing"
+note = """
+Next to D1301's cathode and R1301. When the over-current turn-off stops the bridge current, the current in the cable to the off-board capacitor needs a path: without this capacitor the switch saw 3.2-3.7 kV with 0.5-1 uH of cable (BR Q2), over its 3.3 kV rating. Two in series so one shorted part does not short the main capacitor; each 3,000 V part alone takes 2.2 kV plus the spike.
+Simulated with this circuit (sim/rev3-wpg S-2): trip band 74-86 A, cable 0.5-1 uH -> switch 2.47-2.77 kV (>= 533 V under 3.3 kV); film <= 101 A (216 A rated), <= 673 V/us (1,440 V/us rated). WITH THE FILM OPEN: 3.59 kV at 1 uH, over the rating - an open film part is latent (capture notes R3.8). Standing load added to the capacitor: 20 MOhm (0.24 W at 2.2 kV).
+"""
+
+[[group]]
+id = "cla"
+title = "Rev 0.3 carrier-loss detector, HSA island (floats with HV_OUT_A): empties HSA_RECT about 1.2 us after the carrier stops"
+note = """
+BR Q1 change 3 / R3 §3: a copy rectifier (BAV70) charges 47 pF while the carrier runs and holds an NPN on, which keeps the 2N7002 off. When the carrier stops, the 47 pF decays (about 0.15 us; the 0.19 us dead time is bridged), the NPN releases, the 2N7002 gate is pulled up from the GATE node through 10 k and C1315 is emptied through 100 Ohm, so the PNP Q1306 starts turning QHA off at once. Load on the island about 3.5 mA.
+All HSA_* nets are class HV_FLOAT (no test points, R9).
+"""
+
+[[group]]
+id = "clb"
+title = "Rev 0.3 carrier-loss detector, HSB island (floats with HV_OUT_B): same as HSA"
+note = "Identical to the HSA detector, on T1302's secondary."
 
 # ================================================================= bridge switches
 [[part]]
@@ -1947,11 +1993,11 @@ pins = """
 ref = "R1351"
 group = "isense"
 lib_id = "Device:R"
-value = "174k"
+value = "196k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "generic 0603 174k 1%"
+mpn = "generic 0603 196k 1%"
 manufacturer = "any"
-description = "OC threshold divider, top"
+description = "OC threshold divider, top (rev 0.3 G-1: 174 k -> 196 k, trip 90 -> 80 A)"
 between = ["BRIDGE_3V3", "OC_REF"]
 
 [[part]]
@@ -1962,7 +2008,7 @@ value = "10.0k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "generic 0603 10.0k 1%"
 manufacturer = "any"
-description = "OC threshold divider, bottom, to the shunt's HV_RTN Kelvin: 179.3 mV = 89.7 A"
+description = "OC threshold divider, bottom, to the shunt's HV_RTN Kelvin: 3.3 V x 10.0/206 = 160.2 mV = 80.1 A"
 between = ["OC_REF", "SHUNT_KN"]
 
 [[part]]
@@ -1985,7 +2031,7 @@ footprint = "Package_TO_SOT_SMD:SOT-23-6"
 mpn = "TLV3501AIDBVR"
 manufacturer = "Texas Instruments"
 datasheet = "https://www.ti.com/lit/ds/symlink/tlv3501.pdf"
-description = "Over-current comparator, 4.5 ns, push-pull on BRIDGE_3V3: OC_DET_N low at >= 90 A"
+description = "Over-current comparator, 4.5 ns, push-pull on BRIDGE_3V3: OC_DET_N low at >= 80 A (band 74-86 A, rev 0.3)"
 pins = """
 1 -    OC_SNS
 3 +    OC_REF
@@ -2065,11 +2111,11 @@ between = ["BRIDGE_5V", "GND"]
 ref = "R1355"
 group = "isense"
 lib_id = "Device:R"
-value = "10.0k"
+value = "13.3k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "generic 0603 10.0k 0.1%"
+mpn = "generic 0603 13.3k 0.1%"
 manufacturer = "any"
-description = "2:3 divider top -> I_SHOCK 26.67 mV/A"
+description = "I_SHOCK divider top (rev 0.3 G-2: 10.0 k -> 13.3 k): 20 x 2 mOhm x 20.0/33.3 = 24.0 mV/A"
 between = ["INA_OUT", "I_SHOCK"]
 
 [[part]]
@@ -2080,7 +2126,7 @@ value = "20.0k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "generic 0603 20.0k 0.1%"
 manufacturer = "any"
-description = "2:3 divider bottom"
+description = "I_SHOCK divider bottom"
 between = ["I_SHOCK", "GND"]
 
 [[part]]
@@ -2110,11 +2156,11 @@ between = ["IDLE_SNS", "GND"]
 ref = "R1358"
 group = "isense"
 lib_id = "Device:R"
-value = "237k"
+value = "267k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "generic 0603 237k 1%"
+mpn = "generic 0603 267k 1%"
 manufacturer = "any"
-description = "Idle threshold divider top"
+description = "Idle threshold divider top (rev 0.3 G-2: 237 k -> 267 k)"
 between = ["BRIDGE_3V3", "IDLE_REF"]
 
 [[part]]
@@ -2125,7 +2171,7 @@ value = "10.0k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "generic 0603 10.0k 1%"
 manufacturer = "any"
-description = "Idle threshold divider bottom: 133.6 mV = 5.0 A on I_SHOCK"
+description = "Idle threshold divider bottom: 3.3 V x 10.0/277 = 119.1 mV = 4.96 A on I_SHOCK (24.0 mV/A)"
 between = ["IDLE_REF", "GND"]
 
 [[part]]
@@ -2434,7 +2480,7 @@ value = "I_SHOCK"
 footprint = "TestPoint:TestPoint_Pad_D1.5mm"
 mpn = "test pad"
 manufacturer = "n/a"
-description = "Shock current 26.67 mV/A"
+description = "Shock current 24.0 mV/A"
 pins = """
 1 1 I_SHOCK
 """
@@ -2463,4 +2509,661 @@ manufacturer = "n/a"
 description = "Idle-current detector"
 pins = """
 1 1 IDLE_I_DET_N
+"""
+
+# ================================================================= rev 0.3: fast idle-current path (IDLE_FAST_N)
+
+[[part]]
+ref = "R1365"
+group = "idfast"
+lib_id = "Device:R"
+value = "100R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100R 0.1%"
+manufacturer = "any"
+description = "Fast-path input resistor from the shunt Kelvin (G-3); with C1345 tau 10 ns; with R1364 forms the 32.7 mV pedestal"
+new_row = true
+between = ["SHUNT_KP", "IDF_IN"]
+
+[[part]]
+ref = "R1364"
+group = "idfast"
+lib_id = "Device:R"
+value = "10.0k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10.0k 0.1%"
+manufacturer = "any"
+description = "PEDESTAL (capture addition, see capture notes rev 0.3 P-1): 3.3 V x 100/10,100 = 32.7 mV at zero current lifts the OPA838 output to 0.36 V, above its 0.2 V worst-case low swing (SBOS867E VOL), ratiometric with the threshold"
+between = ["BRIDGE_3V3", "IDF_IN"]
+
+[[part]]
+ref = "C1345"
+group = "idfast"
+lib_id = "Device:C"
+value = "100pF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 C0G 100pF 50V"
+manufacturer = "any"
+description = "Fast-path input filter, tau about 10 ns, returned to the shunt's HV_RTN Kelvin"
+between = ["IDF_IN", "SHUNT_KN"]
+
+[[part]]
+ref = "D1332"
+group = "idfast"
+lib_id = "Diode:BAT54W"
+value = "BAT54LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bat54lt1-d.pdf"
+description = "Fast-path input clamp to GND only (departure from 'BAT54S as D1331': the upper diode's hot leakage from BRIDGE_3V3 through 99 Ohm would shift a 6 mV threshold; the shunt drop is bounded by D1303)"
+fields = { Verify = "SOT-23 pinout 1 = anode, 3 = cathode against onsemi BAT54LT1/D (drawn with KiCad's BAT54W symbol, same pin order); leakage at 33 mV reverse, 85 C" }
+pins = """
+1 A  GND
+2 NC NC
+3 K  IDF_IN
+"""
+
+[[part]]
+ref = "U1317"
+group = "idfast"
+lib_id = "aed_bridge:OPA838xDBV"
+value = "OPA838IDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "OPA838IDBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/opa838.pdf"
+description = "Fast idle preamplifier, non-inverting gain 11 (R1366/R1367), 300 MHz GBW (closed-loop about 27 MHz), on BRIDGE_3V3; input 0-0.33 V inside the negative-rail input range; output linear to 125 A"
+fields = { DocRef = "G-3 fast idle path", Verify = "differential input abs max +-1 V (SBOS867E): reached only above about 600 A with the S3D bypass conducting; input protection structure not described" }
+pins = """
+3 VIN+ IDF_IN
+4 VIN- IDF_FB
+5 PD   BRIDGE_3V3
+1 VOUT IDF_OUT
+6 VS+  BRIDGE_3V3
+2 VS-  GND
+"""
+
+[[part]]
+ref = "C1349"
+group = "idfast"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1317 decoupling"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R1366"
+group = "idfast"
+lib_id = "Device:R"
+value = "1.00k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 1.00k 0.1%"
+manufacturer = "any"
+description = "Gain 11 feedback (departure from 10.0 k: with R1367 100 Ohm the inverting input sees 91 Ohm, matching the 99 Ohm at the non-inverting input, so the 3.7 uA bias current costs 30 uV instead of 3.4 mV)"
+between = ["IDF_OUT", "IDF_FB"]
+
+[[part]]
+ref = "R1367"
+group = "idfast"
+lib_id = "Device:R"
+value = "100R"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100R 0.1%"
+manufacturer = "any"
+description = "Gain 11 ground leg, to the shunt's HV_RTN Kelvin (departure from 1.00 k, see R1366)"
+between = ["IDF_FB", "SHUNT_KN"]
+
+[[part]]
+ref = "U1318"
+group = "idfast"
+lib_id = "Comparator:TLV3501AIDBV"
+value = "TLV3501AIDBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "TLV3501AIDBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv3501.pdf"
+description = "Fast idle comparator, push-pull on BRIDGE_3V3: IDLE_FAST_N low at >= 3.07 A nominal (band 2.54-3.87 A), 10 ns at 5 mV overdrive (SBOS321E)"
+fields = { DocRef = "IDLE_FAST_N" }
+pins = """
+1 -    IDF_OUT
+3 +    IDF_REF
+4 V+   BRIDGE_3V3
+2 V-   GND
+5 ~    IDLE_FAST_N
+6 SHDN GND
+"""
+
+[[part]]
+ref = "C6301"
+group = "idfast"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1318 decoupling (overflow block)"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R1368"
+group = "idfast"
+lib_id = "Device:R"
+value = "6.73k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 6.73k 0.1%"
+manufacturer = "any"
+description = "Fast threshold top (departure from 48.7 k because of the pedestal): 3.3 V x 1.00/7.73 = 426.9 mV = 11 x (32.67 mV + 3.07 A x 2 mOhm)"
+new_row = true
+between = ["BRIDGE_3V3", "IDF_REF"]
+
+[[part]]
+ref = "R1369"
+group = "idfast"
+lib_id = "Device:R"
+value = "1.00k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 1.00k 0.1%"
+manufacturer = "any"
+description = "Fast threshold bottom, to the shunt's HV_RTN Kelvin"
+between = ["IDF_REF", "SHUNT_KN"]
+
+[[part]]
+ref = "C1346"
+group = "idfast"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "Fast threshold filter (tau 87 us; settles within RAIL_READY 20 ms)"
+between = ["IDF_REF", "SHUNT_KN"]
+
+# ================================================================= rev 0.3: LSD_OK monitor of the +20 V low-side supply
+
+[[part]]
+ref = "R1360"
+group = "lsdmon"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 0.1%"
+manufacturer = "any"
+description = "LSD_OK sense divider top (G-4); 0.18 mA from the MGJ2 +20 V (inside its preload budget)"
+new_row = true
+between = ["LSD_P20V", "LSD_SNS"]
+
+[[part]]
+ref = "R1361"
+group = "lsdmon"
+lib_id = "Device:R"
+value = "12.1k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 12.1k 0.1%"
+manufacturer = "any"
+description = "LSD_OK sense divider bottom: 20.7 V -> 2.23 V; also the default 'rail absent' state"
+between = ["LSD_SNS", "GND"]
+
+[[part]]
+ref = "C1343"
+group = "lsdmon"
+lib_id = "Device:C"
+value = "100pF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 C0G 100pF 50V"
+manufacturer = "any"
+description = "Sense filter, tau 1.08 us (rejects ground bounce at switching edges)"
+between = ["LSD_SNS", "GND"]
+
+[[part]]
+ref = "R1362"
+group = "lsdmon"
+lib_id = "Device:R"
+value = "80.6k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 80.6k 0.1%"
+manufacturer = "any"
+description = "LSD_OK threshold top: 3.3 V x 100/180.6 = 1.827 V = 16.93 V on the rail"
+between = ["BRIDGE_3V3", "LSD_TH"]
+
+[[part]]
+ref = "R1363"
+group = "lsdmon"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 100k 0.1%"
+manufacturer = "any"
+description = "LSD_OK threshold bottom"
+between = ["LSD_TH", "GND"]
+
+[[part]]
+ref = "C1344"
+group = "lsdmon"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "Threshold filter (tau 4.5 ms; rail-up settles inside RAIL_READY 20 ms with the MGJ2's 5.4 ms start)"
+between = ["LSD_TH", "GND"]
+
+[[part]]
+ref = "U1316"
+group = "lsdmon"
+lib_id = "Comparator:TLV7031DBV"
+value = "TLV7031DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TLV7031DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv7031.pdf"
+description = "LSD_OK comparator, push-pull on BRIDGE_3V3, high = +20 V rail >= 16.9 V (band 16.45-17.35 V); output held low below 1.6 V supply (POR, SLVSE13J 6.4); inputs fault tolerant to 7 V unpowered"
+fields = { DocRef = "LSD_OK" }
+pins = """
+1 ~  LSD_OK
+2 V- GND
+3 +  LSD_SNS
+4 -  LSD_TH
+5 V+ BRIDGE_3V3
+"""
+
+[[part]]
+ref = "C6302"
+group = "lsdmon"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 X7R 100nF 25V"
+manufacturer = "any"
+description = "U1316 decoupling (overflow block)"
+between = ["BRIDGE_3V3", "GND"]
+
+# ================================================================= rev 0.3: local film capacitor HV_CAP_P - HV_RTN (75 nF)
+
+[[part]]
+ref = "C1347"
+group = "film"
+lib_id = "Device:C"
+value = "0.15uF 3000Vdc PP 940C30P15K-F"
+footprint = "aed_bridge:C_Axial_CDE940C_D27mm_L46mm_wire"
+footprint_todo = true
+mpn = "940C30P15K-F"
+manufacturer = "Cornell Dubilier (CDE)"
+datasheet = "https://www.cde.com/resources/catalogs/940C.pdf"
+description = "Local film capacitor, upper of two in series (75 nF): holds the bus up while the cable to the off-board capacitor stops its current at an over-current turn-off; each part alone withstands 2.2 kV + the spike"
+fields = { DocRef = "G-6 local film", Verify = "CDE 940C catalogue: 3000 Vdc / 500 Vac, full voltage to 85 C (50 % at 105 C), dv/dt 1440 V/us, Ipeak 216 A, ESR 8 mOhm, ESL 32 nH typ, D 27 x L 46 mm axial, -F = 41 mm insulated stranded leads; mass not stated; footprint and mounting to be designed" }
+new_row = true
+between = ["HV_CAP_P", "HV_CAP_FM"]
+
+[[part]]
+ref = "C1348"
+group = "film"
+lib_id = "Device:C"
+value = "0.15uF 3000Vdc PP 940C30P15K-F"
+footprint = "aed_bridge:C_Axial_CDE940C_D27mm_L46mm_wire"
+footprint_todo = true
+mpn = "940C30P15K-F"
+manufacturer = "Cornell Dubilier (CDE)"
+datasheet = "https://www.cde.com/resources/catalogs/940C.pdf"
+description = "Local film capacitor, lower of two in series"
+fields = { DocRef = "G-6 local film", Verify = "as C1347" }
+between = ["HV_CAP_FM", "HV_RTN"]
+
+[[part]]
+ref = "R1370"
+group = "film"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Balancing resistor across C1347: 1.1 kV, 0.12 W at 2.2 kV; 2.2 kV, 0.48 W if C1348 shorts (3,000 V rating as read by WP-F, rev 9/22/2025)"
+fields = { Verify = "HVCR2512 power rating and 2.2 kV continuous with the other capacitor shorted (datasheet not opened by WP-G)" }
+between = ["HV_CAP_P", "HV_CAP_FM"]
+
+[[part]]
+ref = "R1371"
+group = "film"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Balancing resistor across C1348 (as R1370)"
+fields = { Verify = "as R1370" }
+between = ["HV_CAP_FM", "HV_RTN"]
+
+# ================================================================= rev 0.3: carrier-loss detector, HSA island (floats with HV_OUT_A)
+
+[[part]]
+ref = "D1333"
+group = "cla"
+lib_id = "Diode:BAV70"
+value = "BAV70"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV70LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bav70lt1-d.pdf"
+description = "Carrier copy rectifier (common cathode) from the secondary HSA_S1/HSA_S2"
+new_row = true
+pins = """
+1 A HSA_S1
+2 A HSA_S2
+3 K HSA_CLR
+"""
+
+[[part]]
+ref = "R1373"
+group = "cla"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 4.7k 1%"
+manufacturer = "any"
+description = "Detector charge resistor"
+between = ["HSA_CLR", "HSA_CLF"]
+
+[[part]]
+ref = "C1350"
+group = "cla"
+lib_id = "Device:C"
+value = "47pF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 C0G 47pF 50V"
+manufacturer = "any"
+description = "Detector hold capacitor: bridges the 0.19 us dead time, decays in about 0.15 us (R3 sim)"
+between = ["HSA_CLF", "HSA_KS"]
+
+[[part]]
+ref = "R1374"
+group = "cla"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 4.7k 1%"
+manufacturer = "any"
+description = "Detector discharge resistor"
+between = ["HSA_CLF", "HSA_KS"]
+
+[[part]]
+ref = "R1375"
+group = "cla"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10k 1%"
+manufacturer = "any"
+description = "Inverter base resistor"
+between = ["HSA_CLF", "HSA_CLB"]
+
+[[part]]
+ref = "Q1312"
+group = "cla"
+lib_id = "Transistor_BJT:MMBT3904"
+value = "MMBT3904"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "MMBT3904LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmbt3904lt1-d.pdf"
+description = "Detector inverter: on while the carrier runs, holds the discharge FET off"
+pins = """
+1 B HSA_CLB
+2 E HSA_KS
+3 C HSA_CLG
+"""
+
+[[part]]
+ref = "D1334"
+group = "cla"
+lib_id = "Diode:BAT54W"
+value = "BAT54LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bat54lt1-d.pdf"
+description = "Baker clamp (anode base, cathode collector): keeps the inverter out of saturation so it releases within the 1 us budget"
+fields = { Verify = "SOT-23 pinout as D1332" }
+pins = """
+1 A  HSA_CLB
+2 NC NC
+3 K  HSA_CLG
+"""
+
+[[part]]
+ref = "R1376"
+group = "cla"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10k 1%"
+manufacturer = "any"
+description = "Discharge-FET gate pull-up from the GATE node (stays charged after the carrier stops; R3 sim: powering it from the rectified node stalls)"
+new_row = true
+between = ["HSA_G", "HSA_CLG"]
+
+[[part]]
+ref = "D1335"
+group = "cla"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C15"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C15LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Discharge-FET gate clamp 15 V (2N7002 VGS max 20 V; gate node up to 21 V)"
+pins = """
+3 K  HSA_CLG
+1 A  HSA_KS
+2 NC NC
+"""
+
+[[part]]
+ref = "Q1313"
+group = "cla"
+lib_id = "Transistor_FET:2N7002"
+value = "2N7002"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "2N7002LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/nds7002a-d.pdf"
+description = "Discharge FET: empties HSA_RECT through 100 Ohm within about 1.2 us of the carrier stopping, so the PNP turns the gate off at once (VGS(th) 1.0-2.5 V)"
+pins = """
+1 G HSA_CLG
+2 S HSA_KS
+3 D HSA_CLD
+"""
+
+[[part]]
+ref = "R1377"
+group = "cla"
+lib_id = "Device:R"
+value = "100R"
+footprint = "Resistor_SMD:R_0805_2012Metric"
+mpn = "generic 0805 100R 1%"
+manufacturer = "any"
+description = "Discharge resistor: C1315/C1317 (1 nF at 18 V) emptied with tau 0.1 us; 0805 because a discharge FET stuck on with the carrier running dissipates about 2.4 W (failure table)"
+between = ["HSA_RECT", "HSA_CLD"]
+
+# ================================================================= rev 0.3: carrier-loss detector, HSB island (floats with HV_OUT_B)
+
+[[part]]
+ref = "D1336"
+group = "clb"
+lib_id = "Diode:BAV70"
+value = "BAV70"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAV70LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bav70lt1-d.pdf"
+description = "Carrier copy rectifier (common cathode) from the secondary HSB_S1/HSB_S2"
+new_row = true
+pins = """
+1 A HSB_S1
+2 A HSB_S2
+3 K HSB_CLR
+"""
+
+[[part]]
+ref = "R1378"
+group = "clb"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 4.7k 1%"
+manufacturer = "any"
+description = "Detector charge resistor"
+between = ["HSB_CLR", "HSB_CLF"]
+
+[[part]]
+ref = "C1351"
+group = "clb"
+lib_id = "Device:C"
+value = "47pF C0G"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic 0603 C0G 47pF 50V"
+manufacturer = "any"
+description = "Detector hold capacitor: bridges the 0.19 us dead time, decays in about 0.15 us (R3 sim)"
+between = ["HSB_CLF", "HSB_KS"]
+
+[[part]]
+ref = "R1379"
+group = "clb"
+lib_id = "Device:R"
+value = "4.7k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 4.7k 1%"
+manufacturer = "any"
+description = "Detector discharge resistor"
+between = ["HSB_CLF", "HSB_KS"]
+
+[[part]]
+ref = "R1380"
+group = "clb"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10k 1%"
+manufacturer = "any"
+description = "Inverter base resistor"
+between = ["HSB_CLF", "HSB_CLB"]
+
+[[part]]
+ref = "Q1314"
+group = "clb"
+lib_id = "Transistor_BJT:MMBT3904"
+value = "MMBT3904"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "MMBT3904LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmbt3904lt1-d.pdf"
+description = "Detector inverter: on while the carrier runs, holds the discharge FET off"
+pins = """
+1 B HSB_CLB
+2 E HSB_KS
+3 C HSB_CLG
+"""
+
+[[part]]
+ref = "D1337"
+group = "clb"
+lib_id = "Diode:BAT54W"
+value = "BAT54LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAT54LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bat54lt1-d.pdf"
+description = "Baker clamp (anode base, cathode collector): keeps the inverter out of saturation so it releases within the 1 us budget"
+fields = { Verify = "SOT-23 pinout as D1332" }
+pins = """
+1 A  HSB_CLB
+2 NC NC
+3 K  HSB_CLG
+"""
+
+[[part]]
+ref = "R1381"
+group = "clb"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic 0603 10k 1%"
+manufacturer = "any"
+description = "Discharge-FET gate pull-up from the GATE node (stays charged after the carrier stops; R3 sim: powering it from the rectified node stalls)"
+new_row = true
+between = ["HSB_G", "HSB_CLG"]
+
+[[part]]
+ref = "D1338"
+group = "clb"
+lib_id = "Diode:BZX84Cxx"
+value = "BZX84C15"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BZX84C15LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bzx84c2v4lt1-d.pdf"
+description = "Discharge-FET gate clamp 15 V (2N7002 VGS max 20 V; gate node up to 21 V)"
+pins = """
+3 K  HSB_CLG
+1 A  HSB_KS
+2 NC NC
+"""
+
+[[part]]
+ref = "Q1315"
+group = "clb"
+lib_id = "Transistor_FET:2N7002"
+value = "2N7002"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "2N7002LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/nds7002a-d.pdf"
+description = "Discharge FET: empties HSB_RECT through 100 Ohm within about 1.2 us of the carrier stopping, so the PNP turns the gate off at once (VGS(th) 1.0-2.5 V)"
+pins = """
+1 G HSB_CLG
+2 S HSB_KS
+3 D HSB_CLD
+"""
+
+[[part]]
+ref = "R1382"
+group = "clb"
+lib_id = "Device:R"
+value = "100R"
+footprint = "Resistor_SMD:R_0805_2012Metric"
+mpn = "generic 0805 100R 1%"
+manufacturer = "any"
+description = "Discharge resistor: C1315/C1317 (1 nF at 18 V) emptied with tau 0.1 us; 0805 because a discharge FET stuck on with the carrier running dissipates about 2.4 W (failure table)"
+between = ["HSB_RECT", "HSB_CLD"]
+
+# ================================================================= rev 0.3 test points (low-voltage nets)
+
+[[part]]
+ref = "TP1306"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "IDLE_FAST_N"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "test pad"
+manufacturer = "n/a"
+description = "Fast idle-current detector"
+pins = """
+1 1 IDLE_FAST_N
+"""
+
+[[part]]
+ref = "TP1307"
+group = "tp"
+lib_id = "Connector:TestPoint"
+value = "LSD_OK"
+footprint = "TestPoint:TestPoint_Pad_D1.5mm"
+mpn = "test pad"
+manufacturer = "n/a"
+description = "Low-side supply monitor"
+pins = """
+1 1 LSD_OK
 """

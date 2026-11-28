@@ -20,7 +20,7 @@ const NON: RhythmDecision = RhythmDecision::NonShockable;
 fn short_cpr() -> Config {
     Config {
         cpr_period_ms: 15_000,
-        ..Config::default()
+        ..super::cfg()
     }
 }
 
@@ -57,7 +57,10 @@ fn too_hot_at_switch_on_skips_the_self_test_charge_says_so_analyses_and_never_ch
     assert!(p.contains(&Prompt::DeviceTooHot));
     // The analysis ran (without charging) and said shock; the device said
     // so, sent the responder to CPR at once and analysed again.
-    let i = p.iter().position(|x| *x == Prompt::ShockAdvisedTooHot).unwrap();
+    let i = p
+        .iter()
+        .position(|x| *x == Prompt::ShockAdvisedTooHot)
+        .unwrap();
     assert_eq!(p.get(i + 1), Some(&Prompt::StartCpr));
     assert!(count(&b, |e| *e == Event::ShockHeldForHeat) >= 2);
     assert!(!b.state_sequence().contains(&S::AnalysingCharging));
@@ -98,7 +101,7 @@ fn within_one_degree_of_the_limit_a_device_that_was_held_back_still_waits() {
 #[test]
 fn becoming_too_hot_during_an_analysis_drops_the_charge_and_keeps_analysing() {
     // Slow decisions: the first comes 6 s into the analysis.
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 250 * 6);
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 250 * 6);
     b.run_to_analysing();
     b.run_ms(2_000);
     assert!(b.board.cap_v > 200.0, "charging during the analysis");
@@ -108,7 +111,11 @@ fn becoming_too_hot_during_an_analysis_drops_the_charge_and_keeps_analysing() {
     let i = seq.iter().position(|&s| s == S::AnalysingCharging).unwrap();
     assert_eq!(seq.get(i + 1), Some(&S::Analysing), "{seq:?}");
     assert_eq!(seq.get(i + 2), Some(&S::Cpr), "{seq:?}");
-    assert_eq!(b.rescue.counters().analyses, 1, "the analysis was not restarted");
+    assert_eq!(
+        b.rescue.counters().analyses,
+        1,
+        "the analysis was not restarted"
+    );
     assert!(b.has_event(|e| *e == Event::ShockHeldForHeat));
     assert_eq!(b.rescue.counters().charges_burned, 1);
     assert_eq!(b.shocks_fired(), 0);
@@ -125,10 +132,16 @@ fn above_55_c_the_device_charges_only_after_a_shock_is_advised() {
     b.board.set_all_temps(57);
     assert!(b.run_until(60_000, |b| b.shocks_fired() == 1));
     let seq = b.state_sequence();
-    assert!(seq.contains(&S::Analysing) && !seq.contains(&S::AnalysingCharging), "{seq:?}");
+    assert!(
+        seq.contains(&S::Analysing) && !seq.contains(&S::AnalysingCharging),
+        "{seq:?}"
+    );
     assert!(seq.contains(&S::Charging));
     assert!(b.has_event(|e| *e == Event::PrechargeSkippedWarm));
-    assert!(b.board.prompts_only().contains(&Prompt::ShockAdvisedCharging));
+    assert!(b
+        .board
+        .prompts_only()
+        .contains(&Prompt::ShockAdvisedCharging));
     b.assert_no_violations();
 }
 
@@ -160,7 +173,11 @@ fn in_a_rescue_all_temperature_sensors_failed_still_shocks_and_records_it() {
     b.board.sup_temp = None;
     assert!(b.run_until(60_000, |b| b.shocks_fired() == 1));
     assert!(b.has_event(|e| *e == Event::TemperaturesUnknown));
-    assert!(b.sup.events().iter().any(|e| e.event == Event::SupervisorTempIgnored(TempIgnored::SensorFailed)));
+    assert!(b
+        .sup
+        .events()
+        .iter()
+        .any(|e| e.event == Event::SupervisorTempIgnored(TempIgnored::SensorFailed)));
 }
 
 #[test]
@@ -181,7 +198,8 @@ fn a_supervisor_temperature_sensor_stuck_high_does_not_block_shocks() {
 // ----- the supervisor's own backstop ---------------------------------------------
 
 #[test]
-fn supervisor_too_hot_during_the_countdown_stops_the_shock_with_its_own_prompt_and_cpr_not_a_fault() {
+fn supervisor_too_hot_during_the_countdown_stops_the_shock_with_its_own_prompt_and_cpr_not_a_fault()
+{
     let mut b = Bench::new();
     b.run_to_countdown();
     b.board.temps = SensorSet::uniform(DeciC::from_c(58));
@@ -192,7 +210,11 @@ fn supervisor_too_hot_during_the_countdown_stops_the_shock_with_its_own_prompt_a
     assert!(!b.sup.holding());
     assert!(b.has_event(|e| *e == Event::ShockAborted(AbortReason::TooHot)));
     assert!(b.board.prompts_only().contains(&Prompt::TooHotNoShock));
-    assert!(b.sup.events().iter().any(|e| e.event == Event::SupervisorTooHot(DeciC::from_c(67))));
+    assert!(b
+        .sup
+        .events()
+        .iter()
+        .any(|e| e.event == Event::SupervisorTooHot(DeciC::from_c(67))));
     assert!(!b.state_sequence().contains(&S::Fault));
     assert!(!b.board.sup_alarm, "heat is not a supervisor fault");
     b.run_ms(3_000);
@@ -240,7 +262,7 @@ fn each_arming_counts_one_capacitor_charge() {
 
 #[test]
 fn d34_mode_switch_moved_during_analysis_recharges_for_the_new_mode_and_keeps_analysing() {
-    let mut b = Bench::with_all(Config::default(), FakePlanner::default(), 250 * 6);
+    let mut b = Bench::with_all(super::cfg(), FakePlanner::default(), 250 * 6);
     b.run_to_analysing();
     b.run_ms(3_000);
     b.board.mode = PatientMode::Child;
@@ -252,7 +274,11 @@ fn d34_mode_switch_moved_during_analysis_recharges_for_the_new_mode_and_keeps_an
     assert_eq!(b.rescue.counters().analyses, 1, "the analysis carried on");
     assert!(b.has_event(|e| *e == Event::ChargeStarted(Volts(1000))));
     assert_eq!(b.board.requests[0].plan.charge_voltage, Volts(1000));
-    assert_eq!(b.rescue.counters().capacitor_charges, 2, "adult charge, then child charge");
+    assert_eq!(
+        b.rescue.counters().capacitor_charges,
+        2,
+        "adult charge, then child charge"
+    );
 }
 
 #[test]

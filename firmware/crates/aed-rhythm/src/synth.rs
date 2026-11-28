@@ -90,25 +90,35 @@ impl Rhythm {
     /// Normal rhythm at `bpm` with a 1 mV R wave.
     #[must_use]
     pub const fn sinus(bpm: f32) -> Self {
-        Rhythm::Sinus { bpm, amplitude_uv: 1000.0 }
+        Rhythm::Sinus {
+            bpm,
+            amplitude_uv: 1000.0,
+        }
     }
 
     /// Coarse VF, about 800 µV peak to peak.
     #[must_use]
     pub const fn coarse_vf() -> Self {
-        Rhythm::VentricularFibrillation { amplitude_uv: 800.0 }
+        Rhythm::VentricularFibrillation {
+            amplitude_uv: 800.0,
+        }
     }
 
     /// Fine VF, about 120 µV peak to peak (below the 200 µV coarse/fine line).
     #[must_use]
     pub const fn fine_vf() -> Self {
-        Rhythm::VentricularFibrillation { amplitude_uv: 120.0 }
+        Rhythm::VentricularFibrillation {
+            amplitude_uv: 120.0,
+        }
     }
 
     /// Rapid VT at `bpm`, about 1 mV peak to peak.
     #[must_use]
     pub const fn rapid_vt(bpm: f32) -> Self {
-        Rhythm::VentricularTachycardia { bpm, amplitude_uv: 1200.0 }
+        Rhythm::VentricularTachycardia {
+            bpm,
+            amplitude_uv: 1200.0,
+        }
     }
 }
 

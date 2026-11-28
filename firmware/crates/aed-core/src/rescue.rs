@@ -273,6 +273,11 @@ pub enum ShockOutcome {
     TimeCapTripped,
     /// The over-current trip ended the sequence. A fault.
     OverCurrentTripped,
+    /// A per-phase hardware cap ended the sequence (D-63). A fault.
+    PhaseCapTripped,
+    /// Another hardware fault latch ended it (idle current, bridge supply,
+    /// `LSD_OK`; v0.3). A fault.
+    HardwareFault,
     /// The sequence completed but the capacitor fell further than any plan
     /// takes it, or stopped part-way. A fault.
     ResidualImplausible,
@@ -323,6 +328,10 @@ pub enum FaultKind {
     /// The capacitor could not be confirmed empty within the limit.
     /// The most serious fault: it has its own prompt.
     CapacitorNotEmptied,
+    /// The charger ended a charge by itself (`CHG_DONE_N`): its
+    /// last-resort over-voltage trip fired. The capacitor is emptied and
+    /// the charger is never restarted (coordinator addition to FW-18).
+    ChargerStoppedItself,
 }
 
 impl FaultKind {
@@ -461,6 +470,135 @@ enum ArmedExit {
     Fault(FaultKind),
 }
 
+/// The firmware's own charge control while armed (design v0.3).
+///
+/// * **Top-up only while needed (FW-13).** Compression readings are thrown
+///   away while the charger runs (D-67), so the charger is commanded on only
+///   until the charge has settled at the charger's own set point (the
+///   reading in the at-plan window and no longer rising), and again as soon
+///   as the reading sags below where it stopped (a short top-up burst).
+///   Otherwise the chest check would be blind for the whole analysis and
+///   countdown, not just the 2–6 s of the charge D-67 describes.
+/// * **Silent stop (FW-18).** With the charger on and the reading below the
+///   plan, no rise for [`Config::charger_stall_ms`] (after the
+///   [`Config::charger_start_ms`] start time) means the charger stopped
+///   without saying so: it is switched off for
+///   [`Config::charger_restart_off_ms`] and on again.
+/// * **Stopped by its own limit.** If the charger reports `CHG_DONE_N`
+///   ([`MainHardware::charger_done`]) the restart above must never fire:
+///   the charger ended the charge by its last-resort over-voltage trip, and
+///   restarting would refill the capacitor to that level again. The two are
+///   told apart by that line alone; see firmware/REV3_NOTES.md.
+#[derive(Debug, Clone, Copy)]
+struct ChargeControl {
+    topping_up: bool,
+    on_since: Option<Millis>,
+    last_rise: Option<(Millis, Volts)>,
+    off_until: Option<Millis>,
+    restarts: u16,
+    stopped_at: Option<Volts>,
+}
+
+/// After a blanking gap the compression detector has this long to give a
+/// definite state again before "cannot tell" counts, ms.
+const CHEST_REACQUIRE_MS: u32 = 3_000;
+
+/// A blanking gap longer than this restarts the compression detector, ms.
+const CHEST_GAP_RESET_MS: u32 = 500;
+
+/// The charge counts as done once the reading is in the at-plan window and
+/// has not risen by 2 V for this long, ms.
+const CHARGE_SETTLED_MS: u32 = 100;
+
+/// What [`ChargeControl::decide`] says to do this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChargeAction {
+    On,
+    Off,
+    Restart,
+    StoppedItself,
+}
+
+impl ChargeControl {
+    const fn new() -> Self {
+        ChargeControl {
+            topping_up: true,
+            on_since: None,
+            last_rise: None,
+            off_until: None,
+            restarts: 0,
+            stopped_at: None,
+        }
+    }
+
+    fn decide(
+        &mut self,
+        c: &Config,
+        target: Volts,
+        v: Volts,
+        done: bool,
+        now: Millis,
+    ) -> ChargeAction {
+        if done {
+            return ChargeAction::StoppedItself;
+        }
+        if let Some(until) = self.off_until {
+            if now < until {
+                return ChargeAction::Off;
+            }
+            self.off_until = None;
+            self.on_since = None;
+        }
+        // Top up again as soon as the reading has sagged below where the
+        // charger stopped (1 V, the reading's resolution): the at-plan
+        // window was sized for sensor error alone and leaves no room for
+        // droop (see firmware/REV3_NOTES.md §3.2).
+        if let Some(stopped) = self.stopped_at {
+            if v < stopped {
+                self.topping_up = true;
+                self.stopped_at = None;
+            }
+        }
+        if !self.topping_up {
+            self.on_since = None;
+            self.last_rise = None;
+            return ChargeAction::Off;
+        }
+        let since = *self.on_since.get_or_insert(now);
+        let rise = match self.last_rise {
+            Some((t, v0)) if v.0 < v0.0.saturating_add(2) => (t, v0),
+            _ => (now, v),
+        };
+        self.last_rise = Some(rise);
+        let still_for = now.since(rise.0);
+        let started = now.since(since) >= c.charger_start_ms;
+        if c.reached_plan(v, target) {
+            // The charger regulates to its own set point (its accuracy is
+            // the charger's, not this sensor's): once the reading is in the
+            // at-plan window and has stopped rising, the charge is done and
+            // the charger is switched off (FW-13).
+            if started && still_for >= CHARGE_SETTLED_MS {
+                self.topping_up = false;
+                self.stopped_at = Some(v);
+                self.on_since = None;
+                self.last_rise = None;
+                return ChargeAction::Off;
+            }
+            return ChargeAction::On;
+        }
+        // FW-18: below the window, on, no rise: a silent stop. (Never with
+        // the reading in the window: a charger that has reached its set
+        // point with a sensor reading low is not stalled.)
+        if started && still_for >= c.charger_stall_ms {
+            self.restarts = self.restarts.saturating_add(1);
+            self.off_until = Some(Millis(now.0.saturating_add(c.charger_restart_off_ms)));
+            self.last_rise = None;
+            return ChargeAction::Restart;
+        }
+        ChargeAction::On
+    }
+}
+
 /// The main controller's rescue sequence.
 ///
 /// Non-blocking: call [`Rescue::tick`] frequently (every few milliseconds),
@@ -508,6 +646,27 @@ pub struct Rescue<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor = NoChestSe
     armed_since: Option<Millis>,
     charged_at: Option<Millis>,
     charger_was_on: bool,
+    /// The charger is commanded on now (FW-13 blanking, FW-16 report).
+    charger_on: bool,
+    /// When it was last commanded off.
+    charger_off_at: Option<Millis>,
+    /// Firmware charge control (FW-13 top-up, FW-18 restart).
+    charge_ctl: ChargeControl,
+    /// When the coil supply was raised in this arming (FW-12).
+    coil_supply_since: Option<Millis>,
+    /// When the current compression-blanking gap began, if it has.
+    chest_blank_since: Option<Millis>,
+    /// The compression detector is restarted on the first sample after a
+    /// blanking gap (its filters would read the step across the gap as
+    /// movement).
+    chest_resume_reset: bool,
+    /// When the current blanking gap began, as the impedance samples saw it.
+    chest_gap_since: Option<Millis>,
+    /// The last impedance sample that arrived (and was thrown away) during
+    /// a blanking gap: the channel is alive.
+    chest_gap_alive_at: Option<Millis>,
+    /// The detector has given a definite state since the last gap.
+    chest_seen_since_gap: bool,
     shocked_this_arming: bool,
     emptying_since: Option<Millis>,
     plan: Option<ShockPlan>,
@@ -598,6 +757,15 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             armed_since: None,
             charged_at: None,
             charger_was_on: false,
+            charger_on: false,
+            charger_off_at: None,
+            charge_ctl: ChargeControl::new(),
+            coil_supply_since: None,
+            chest_blank_since: None,
+            chest_resume_reset: false,
+            chest_gap_since: None,
+            chest_gap_alive_at: None,
+            chest_seen_since_gap: true,
             shocked_this_arming: false,
             emptying_since: None,
             plan: None,
@@ -696,7 +864,9 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             self.events.push(now, Event::TemperaturesUnknown);
         }
         let was = self.heat_gate.inhibit();
-        let inhibit = self.heat_gate.update(&self.config, &a, ChargeContext::Rescue);
+        let inhibit = self
+            .heat_gate
+            .update(&self.config, &a, ChargeContext::Rescue);
         if inhibit != was {
             self.events.push(
                 now,
@@ -853,7 +1023,12 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     /// switch-on. The board passes what [`crate::TestSchedule`] reports.
     /// Recorded only: a device that was "not ready" still runs the rescue
     /// (its own switch-on self-test decides whether it can shock).
-    pub fn record_standby(&mut self, now: Millis, readiness: crate::Readiness, counters: crate::TestCounters) {
+    pub fn record_standby(
+        &mut self,
+        now: Millis,
+        readiness: crate::Readiness,
+        counters: crate::TestCounters,
+    ) {
         self.events.push(
             now,
             Event::StandbyRecord {
@@ -876,7 +1051,14 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     /// samples have stopped arriving.
     #[must_use]
     pub fn chest_state(&self, now: Millis) -> Option<ChestState> {
-        if !self.chest_sensing_active() {
+        if !self.chest_sensing_active() || self.chest_blanked(now) {
+            return None;
+        }
+        // After a blanking gap, until the compression detector gives a
+        // definite state again (at most 3 s), the chest counts as "not
+        // sensed" rather than "cannot tell": otherwise the end of every
+        // charge would reset the analysis.
+        if self.chest_reacquiring(now) {
             return None;
         }
         Some(if self.chest_stale(now) {
@@ -921,8 +1103,32 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             // from a sequence: the samples say nothing about the chest.
             return;
         }
+        if self.chest_blanked(now) {
+            // FW-13 (D-67): the charger's switching swamps the 64 kHz
+            // measurement. Thrown away, and the time is not counted against
+            // the channel (see `check_chest_channel`), since samples still
+            // arrive.
+            self.chest_gap_since.get_or_insert(now);
+            self.chest_gap_alive_at = Some(now);
+            self.chest_seen_since_gap = false;
+            return;
+        }
+        if let Some(g) = self.chest_gap_since.take() {
+            // After a long gap (a charge, not a short top-up) the detector's
+            // filters would read the step across it as movement: restart it.
+            if now.since(g) > CHEST_GAP_RESET_MS {
+                self.chest_resume_reset = true;
+            }
+        }
+        if self.chest_resume_reset {
+            self.chest_resume_reset = false;
+            self.chest.reset();
+        }
         let event = self.chest.push(sample);
         self.chest_last_sample = Some(now);
+        if self.chest.state() != ChestState::Unknown {
+            self.chest_seen_since_gap = true;
+        }
         if let Some(ChestEvent::Compression {
             amplitude_mohm,
             since_previous_ms,
@@ -1023,6 +1229,25 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     fn check_chest_channel(&mut self, now: Millis) {
         if !(self.config.chest_sensing && self.chest.fitted()) {
             return;
+        }
+        // FW-13: a blanking gap is not a failed channel. The failure timer
+        // is paused across it (its start moves on by the gap's length) and
+        // the staleness clock restarts when the gap ends.
+        if self.chest_blanked(now) {
+            self.chest_blank_since.get_or_insert(now);
+            return;
+        }
+        if let Some(b) = self.chest_blank_since.take() {
+            // Only if samples kept arriving: a channel that delivers nothing
+            // has failed whether or not the charger runs.
+            let alive = self.chest_gap_alive_at.is_some_and(|t| t >= b);
+            if alive {
+                let gap = now.since(b);
+                if let Some(p) = self.chest_problem_since {
+                    self.chest_problem_since = Some(Millis(p.0.saturating_add(gap)));
+                }
+                self.chest_last_sample = Some(now);
+            }
         }
         let signal = self.chest_signal(now);
         let problem = self.pads.on && signal.is_channel_problem();
@@ -1412,6 +1637,7 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         self.armed_since = Some(now);
         self.charged_at = None;
         self.charger_was_on = false;
+        self.charge_ctl = ChargeControl::new();
         self.shocked_this_arming = false;
         self.mode_at_arming = self.mode;
         self.veto = false;
@@ -1424,6 +1650,18 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     /// the state was left.
     fn analysis_step(&mut self, hw: &mut impl MainHardware, now: Millis) -> bool {
         match self.analysis_result.take() {
+            Some(RhythmDecision::Shockable) if self.chest_unseen_after_charge(now) => {
+                // FW-13 / D-67: the analysis ran on the heart signal alone
+                // while the charger blanked the compression readings. A
+                // "shock" answer then does not count until the compression
+                // sensing has looked at the chest again: compressions seen
+                // reset the analysis (as always); with hands off, the NEXT
+                // "shock" answer is acted on. Waiting for the next answer,
+                // rather than holding this one, keeps the countdown in step
+                // with the analysis, so that its last answer falls at the end
+                // of the countdown (finding F-4). This keeps F-12's
+                // protection for the advice itself.
+            }
             Some(RhythmDecision::Shockable) => {
                 self.shock_advised(hw, now);
                 return true;
@@ -1445,7 +1683,10 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             }
             None => {}
         }
-        if self.chest_state(now).is_some_and(|s| s != ChestState::HandsOff) {
+        if self
+            .chest_state(now)
+            .is_some_and(|s| s != ChestState::HandsOff)
+        {
             self.remind_hands_off(hw, now);
         }
         if self.time_in_state_ms(now) > self.config.analysis_time_limit_ms {
@@ -1486,7 +1727,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             // next analysis comes after the CPR period. No charging during
             // CPR: see the README.
             self.events.push(now, Event::ShockHeldForHeat);
-            self.counters.shocks_held_for_heat = self.counters.shocks_held_for_heat.saturating_add(1);
+            self.counters.shocks_held_for_heat =
+                self.counters.shocks_held_for_heat.saturating_add(1);
             self.not_given();
             hw.prompt(Prompt::ShockAdvisedTooHot);
             self.go(RescueState::Cpr, hw, now);
@@ -1669,6 +1911,18 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         }
         let elapsed = self.time_in_state_ms(now);
         if elapsed >= self.config.countdown_ms {
+            // D-37 with FW-13: the chest must have been seen (not blanked by
+            // the charger, not re-acquiring) when the request goes out. Top-
+            // ups are stopped for the last second of the countdown, so this
+            // waits at most for the detector; if it has not seen the chest
+            // within a further second, the shock is held back as for
+            // movement.
+            if self.chest_unseen_after_charge(now) {
+                if elapsed >= self.config.countdown_ms.saturating_add(1_000) {
+                    self.handle_armed_exit(ArmedExit::Abort(AbortReason::HandsOnChest), hw, now);
+                }
+                return;
+            }
             self.deliver(hw, now);
             return;
         }
@@ -1721,7 +1975,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
                 // own (one sequence per permit).
                 let status = hw.sequence_status();
                 if status != SequenceStatus::Idle {
-                    self.events.push(now, Event::SequenceNotIdleAtRequest(status));
+                    self.events
+                        .push(now, Event::SequenceNotIdleAtRequest(status));
                     self.begin_fault(FaultKind::InterlockNotIdle, hw, now);
                     return;
                 }
@@ -1884,7 +2139,12 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     }
 
     /// No shock, no fault: "Shock not delivered", CPR.
-    fn shock_not_delivered(&mut self, outcome: ShockOutcome, hw: &mut impl MainHardware, now: Millis) {
+    fn shock_not_delivered(
+        &mut self,
+        outcome: ShockOutcome,
+        hw: &mut impl MainHardware,
+        now: Millis,
+    ) {
         hw.withdraw_shock_request();
         self.events.push(now, Event::Shock(outcome));
         self.not_given();
@@ -1908,27 +2168,36 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         voltage: Volts,
     ) {
         match end {
-            SequenceEnd::TimeCapTripped => self.delivery_fault(ShockOutcome::TimeCapTripped, hw, now),
+            SequenceEnd::TimeCapTripped => {
+                self.delivery_fault(ShockOutcome::TimeCapTripped, hw, now)
+            }
             SequenceEnd::OverCurrentTripped => {
                 self.delivery_fault(ShockOutcome::OverCurrentTripped, hw, now);
             }
-            SequenceEnd::Completed => match self.config.check_shock_residual(voltage, self.target) {
-                ShockCheck::Delivered => {
-                    self.events.push(now, Event::Shock(ShockOutcome::Delivered));
-                    self.counters.shocks_delivered = self.counters.shocks_delivered.saturating_add(1);
-                    self.shocked_this_arming = true;
-                    self.analyzer.reset();
-                    self.last_decision = None;
-                    hw.prompt(Prompt::ShockDelivered);
-                    self.go(RescueState::Cpr, hw, now);
+            SequenceEnd::PhaseCapTripped => {
+                self.delivery_fault(ShockOutcome::PhaseCapTripped, hw, now)
+            }
+            SequenceEnd::HardwareFault => self.delivery_fault(ShockOutcome::HardwareFault, hw, now),
+            SequenceEnd::Completed => {
+                match self.config.check_shock_residual(voltage, self.target) {
+                    ShockCheck::Delivered => {
+                        self.events.push(now, Event::Shock(ShockOutcome::Delivered));
+                        self.counters.shocks_delivered =
+                            self.counters.shocks_delivered.saturating_add(1);
+                        self.shocked_this_arming = true;
+                        self.analyzer.reset();
+                        self.last_decision = None;
+                        hw.prompt(Prompt::ShockDelivered);
+                        self.go(RescueState::Cpr, hw, now);
+                    }
+                    ShockCheck::NotDelivered => {
+                        self.shock_not_delivered(ShockOutcome::NotDelivered, hw, now);
+                    }
+                    ShockCheck::Implausible | ShockCheck::HardwareTrip => {
+                        self.delivery_fault(ShockOutcome::ResidualImplausible, hw, now);
+                    }
                 }
-                ShockCheck::NotDelivered => {
-                    self.shock_not_delivered(ShockOutcome::NotDelivered, hw, now);
-                }
-                ShockCheck::Implausible | ShockCheck::HardwareTrip => {
-                    self.delivery_fault(ShockOutcome::ResidualImplausible, hw, now);
-                }
-            },
+            }
         }
     }
 
@@ -1941,7 +2210,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         let c = self.config;
         let status = hw.sequence_status();
         let relay = hw.patient_relay();
-        if relay != RelayPosition::FrontEnds || status.started() || status == SequenceStatus::Armed {
+        if relay != RelayPosition::FrontEnds || status.started() || status == SequenceStatus::Armed
+        {
             w.relay_moved = true;
         }
         if !w.ran && status.started() {
@@ -1955,9 +2225,11 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             if let SequenceStatus::Ended(end) = status {
                 w.end_recorded = true;
                 w.since = now;
-                self.events.push(now, Event::SequenceCompletedAfterWithdrawal(end));
+                self.events
+                    .push(now, Event::SequenceCompletedAfterWithdrawal(end));
                 if end == SequenceEnd::Completed {
-                    self.counters.shocks_delivered = self.counters.shocks_delivered.saturating_add(1);
+                    self.counters.shocks_delivered =
+                        self.counters.shocks_delivered.saturating_add(1);
                 }
                 self.analyzer.reset();
                 self.last_decision = None;
@@ -1973,12 +2245,15 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         } else if !running && !w.relay_fault && now.since(w.since) > c.relay_return_timeout_ms {
             w.relay_fault = true;
             if self.state == RescueState::Fault {
-                self.events.push(now, Event::Fault(FaultKind::PatientRelayStuck));
+                self.events
+                    .push(now, Event::Fault(FaultKind::PatientRelayStuck));
             } else {
                 self.begin_fault(FaultKind::PatientRelayStuck, hw, now);
             }
         }
-        let quiet = c.sequence_start_timeout_ms.saturating_add(c.sequence_end_timeout_ms);
+        let quiet = c
+            .sequence_start_timeout_ms
+            .saturating_add(c.sequence_end_timeout_ms);
         let done = match w.relay_back_at {
             Some(t) => now.since(t) >= c.front_end_recovery_ms,
             None => !w.relay_moved && now.since(w.since) > quiet,
@@ -2011,7 +2286,12 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
     }
 
     /// D-60: compare the adult/child switch's two contacts.
-    fn check_mode_contacts(&mut self, hw: &mut impl MainHardware, now: Millis, primary: PatientMode) {
+    fn check_mode_contacts(
+        &mut self,
+        hw: &mut impl MainHardware,
+        now: Millis,
+        primary: PatientMode,
+    ) {
         let ceiling = hw.patient_mode_ceiling();
         if ceiling == primary {
             self.mode_contacts_since = None;
@@ -2025,7 +2305,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         let since = *self.mode_contacts_since.get_or_insert(now);
         if !self.mode_contacts_bad && now.since(since) >= self.config.mode_contacts_disagree_ms {
             self.mode_contacts_bad = true;
-            self.events.push(now, Event::ModeContactsDisagree { primary, ceiling });
+            self.events
+                .push(now, Event::ModeContactsDisagree { primary, ceiling });
             hw.set_ready_indicator(false);
         }
     }
@@ -2073,7 +2354,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         let since_said = self.continue_cpr_said_at.map_or(u32::MAX, |t| now.since(t));
         if quiet >= limit && since_said >= limit {
             self.continue_cpr_said_at = Some(now);
-            self.counters.continue_cpr_prompts = self.counters.continue_cpr_prompts.saturating_add(1);
+            self.counters.continue_cpr_prompts =
+                self.counters.continue_cpr_prompts.saturating_add(1);
             self.events.push(now, Event::NoCompressionsPrompt);
             hw.prompt(Prompt::ContinueCpr);
         }
@@ -2345,14 +2627,58 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
                             self.counters.capacitor_charges.saturating_add(1);
                     }
                     self.charger_was_on = true;
-                    hw.set_charger(Some(self.target));
+                    let v = hw.capacitor_voltage();
+                    let done = hw.charger_done();
+                    let now = hw.now();
+                    // No top-up in the last second of the countdown: the
+                    // chest check before the request must not be blanked.
+                    let final_second = self.state == RescueState::Countdown
+                        && self.time_in_state_ms(now).saturating_add(1_000)
+                            >= self.config.countdown_ms;
+                    let decision = if final_second && !done {
+                        ChargeAction::Off
+                    } else {
+                        self.charge_ctl
+                            .decide(&self.config, self.target, v, done, now)
+                    };
+                    match decision {
+                        ChargeAction::On => self.charger(hw, Some(self.target), now),
+                        ChargeAction::Off => self.charger(hw, None, now),
+                        ChargeAction::Restart => {
+                            self.events.push(now, Event::ChargerRestarted(v));
+                            self.charger(hw, None, now);
+                        }
+                        ChargeAction::StoppedItself => {
+                            self.charger(hw, None, now);
+                            self.events.push(now, Event::ChargerStoppedItself(v));
+                            self.begin_fault(FaultKind::ChargerStoppedItself, hw, now);
+                            return;
+                        }
+                    }
                 } else {
-                    hw.set_charger(None);
+                    let now = hw.now();
+                    self.charger(hw, None, now);
                 }
+                // FW-12 as revised by the patient-interface capture: the coil
+                // supply's pre-charge is NOT overlapped with a full-power
+                // charge (a cold, nearly empty battery would sag to about
+                // 3.7 V). It is raised once the charge has reached the plan
+                // and the charger is off, and kept up through any later
+                // top-up; as a last resort it is forced up 500 ms before
+                // the end of the countdown (≥ 200 ms before `RELAY_CMD`),
+                // accepting a top-up overlap then.
+                let now = hw.now();
+                let charged = !self.charger_on && !self.charge_ctl.topping_up;
+                let late = self.state == RescueState::Countdown
+                    && self.time_in_state_ms(now).saturating_add(500) >= self.config.countdown_ms;
+                let on = self.coil_supply_since.is_some() || charged || late;
+                self.coil_supply(hw, on, now);
             }
             RescueState::Delivering if !emptying => {
                 hw.set_discharge_hold(true);
-                hw.set_charger(None);
+                let now = hw.now();
+                self.charger(hw, None, now);
+                self.coil_supply(hw, true, now);
             }
             RescueState::AttachPads
             | RescueState::Analysing
@@ -2362,11 +2688,73 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             | RescueState::Delivering
             | RescueState::Cpr
             | RescueState::Fault => {
-                hw.set_charger(None);
+                let now = hw.now();
+                self.charger(hw, None, now);
+                self.coil_supply(hw, false, now);
                 hw.withdraw_shock_request();
                 hw.set_discharge_hold(false);
             }
         }
+    }
+
+    /// Command the charger and keep the record compression blanking needs.
+    fn charger(&mut self, hw: &mut impl MainHardware, target: Option<Volts>, now: Millis) {
+        let on = target.is_some();
+        if self.charger_on && !on {
+            self.charger_off_at = Some(now);
+        }
+        self.charger_on = on;
+        hw.set_charger(target);
+    }
+
+    /// Raise or lower `K_SUPPLY_EN` (FW-12): up from the start of the charge
+    /// for a shock (so at least the countdown, 3 s, before `RELAY_CMD`;
+    /// FW-12 asks for 200 ms), down on withdrawal, abort or the end.
+    fn coil_supply(&mut self, hw: &mut impl MainHardware, on: bool, now: Millis) {
+        if on {
+            self.coil_supply_since.get_or_insert(now);
+        } else {
+            self.coil_supply_since = None;
+        }
+        hw.set_coil_supply(on);
+    }
+
+    /// True while compression sensing is in use but has not seen the chest
+    /// since the charger blanked it (blanked now, or still re-acquiring).
+    fn chest_unseen_after_charge(&self, now: Millis) -> bool {
+        if !(self.config.chest_sensing && self.chest.fitted() && !self.chest_failed) {
+            return false;
+        }
+        self.chest_blanked(now) || self.chest_reacquiring(now)
+    }
+
+    /// After a blanking gap, until the compression detector gives a
+    /// definite state again (at most [`CHEST_REACQUIRE_MS`]), the chest
+    /// counts as "not sensed" rather than "cannot tell": otherwise the end of
+    /// every charge would reset the analysis.
+    fn chest_reacquiring(&self, now: Millis) -> bool {
+        self.config.blank_compressions_while_charging
+            && !self.chest_seen_since_gap
+            && self.charger_off_at.is_some_and(|t| {
+                now.since(t)
+                    < self
+                        .config
+                        .impedance_blank_after_charge_ms
+                        .saturating_add(CHEST_REACQUIRE_MS)
+            })
+    }
+
+    /// True while compression readings are thrown away because the charger
+    /// runs or ran within [`Config::impedance_blank_after_charge_ms`]
+    /// (FW-13, D-67). The chest check then relies on the heart signal
+    /// alone, as when sensing has failed (D-38).
+    #[must_use]
+    pub fn chest_blanked(&self, now: Millis) -> bool {
+        self.config.blank_compressions_while_charging
+            && (self.charger_on
+                || self
+                    .charger_off_at
+                    .is_some_and(|t| now.since(t) < self.config.impedance_blank_after_charge_ms))
     }
 
     fn send_status_if_due(&mut self, hw: &mut impl MainHardware, now: Millis) {
@@ -2408,6 +2796,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
             temperature: self.main_temp_claim,
             test_request,
             emptying: self.emptying_since.is_some(),
+            charger_on: self.charger_on
+                || (self.state == RescueState::SelfTest && self.self_test.is_charging()),
         });
     }
 
@@ -2415,7 +2805,8 @@ impl<A: RhythmAnalyzer, P: ShockPlanner, C: ChestSensor> Rescue<A, P, C> {
         let previous = self.link.map(|l| l.report);
         if let Some(check) = report.shock_check {
             if previous.and_then(|p| p.shock_check) != Some(check) {
-                self.events.push(now, Event::SupervisorShockCheckReported(check));
+                self.events
+                    .push(now, Event::SupervisorShockCheckReported(check));
             }
         }
         if report.permit && !previous.is_some_and(|p| p.permit) {

@@ -1,0 +1,227 @@
+* relay_supply_wph.cir - sheet 14 revision 0.3: coil-supply pre-charge under K_SUPPLY_EN, then coil start under K_EN
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* What is drawn (specs/14_patient_interface.toml, revision 0.3, change order WP-H H-1/H-2):
+*   K_SUPPLY_EN (main controller, 3V3_MAIN) -> R1403 1 k -> Q1402 2N7002 -> R1402 47 k pulls K_PG; R1401 100 k
+*   gate-source; C1401 680 nF gate-drain (Miller slew); Q1401 DMP3013SFV feeds K_VIN. K_SUPPLY_EN -> R1413 100 k ->
+*   TPS61089 EN (800 k internal pull-down, SLVSD38C). K_EN (sequencer) -> R1417 10 k -> DRV110 EN only.
+*   Boost: FB 11.96 V, FSW ~500 kHz (R1405 301 k), L1401 2.2 uH, 3 x 22 uF on K_VBOOST, D1401 SS34 -> 2 x 3300 uF.
+*
+* Differences from ../logic-relay/relay_supply.cir (whose model this re-uses for the battery, rails, Q1401 and coil):
+*   1. The TPS61089 current limit is a PEAK SWITCH current limit (SLVSD38C §8.3.5, Eq. 2: ILIM = 1,030,000 / RILIM),
+*      with "constant off-time peak current mode control" (§8.1). The logic-relay model treated ILIM as the AVERAGE
+*      input current. Here the largest average input current at the limit is computed per instant from the
+*      constant off-time: toff = (1 - VIN/VOUT)/fsw, ripple dI = (VOUT - VIN) toff / L;
+*      CCM (dI < Ipk): Iavg = Ipk - dI/2; DCM: Iavg = Ipk/2 x (ton + tfall)/(ton + toff), ton = Ipk L/VIN,
+*      tfall = Ipk L/(VOUT - VIN). [EST: textbook average model of the datasheet's stated control scheme.]
+*   2. Ipk tolerance: SLVSD38C §9.2.2.3 "the minimum current limit at the worst case can be 0.8 A lower than the value
+*      calculated by Equation 4"; EC table 7.3 - 8.1 - 8.9 A at 127 k (+-0.8 A). Corners ipkoff = -0.8 / 0 / +0.8 A.
+*      Figure 7-3 graphs the limit only for RILIM 100-400 kOhm: 515 kOhm (2.0 A) is OUTSIDE the characterised range.
+*   3. Soft start 4 ms (SLVSD38C §8.3.2 text "typically 4 ms"; EC tSS 2 / 4 / 6 ms).
+*   4. DRV110 (SLVSBA8G): UVLO 4.6 V typ, start-up delay <= 50 us (not modelled), powered during the whole pre-charge.
+*   5. Optional HV charger load ichg on VBAT_SYS during the pre-charge (firmware raises K_SUPPLY_EN when charging for
+*      the shock starts, FW-12). 9.2 A is the charger's average battery current at full charge (HARDWARE_DESIGN §B4.2).
+*   6. Optional loss of the boost and of its input at t = tfail (hold-up requirement, design §B7.2: relay held >= 30 ms).
+* Relay [EST, as logic-relay]: coil 12 ohm (15 ohm hot), 60 mH; armature starts at 0.67 A (8 V / 12 ohm pick-up,
+*   docs/requirements/patient-relay.md §4), contacts transfer 10 ms later (operate time requirement <= 10 ms).
+*   Release taken as coil current < 0.42 A (5 V / 12 ohm drop-out, requirement upper bound).
+
+.param ocv=6.0 rcell=80m rcoil=15 lcoil=60m creserv=6.6m
+.param rilim=515k ipkoff=0 ichg=0 tlead=200m tfail=10
+.param tken={1m+tlead}
+.param ipk={max(0.1, 1.03Meg/rilim + ipkoff)}
+.param fsw=500k lb=2.2u eta=0.9 tss=4m
+
+* ---- battery and VBAT_SYS (as ../logic-relay/relay_supply.cir)
+Vocv ocv 0 {ocv}
+Rcells ocv bp {2*rcell}
+Vibat bp bp2 0
+Rpath bp2 bw 25m
+Lw bw vbs 200n
+Cvb vbs vbsc 60u
+Rcvb vbsc 0 5m
+B5 vbs 0 I = (v(vbs) > 2.7) * (0.5*5.08/0.9) / max(v(vbs), 2.7)
+B33 vbs 0 I = (v(vbs) > 2.5) * 0.6 / max(v(vbs), 2.5)
+* HV charger during the pre-charge only (it is stopped before the sequence; LT3751 UVLO not modelled)
+Bchg vbs 0 I = {ichg} * (time > 1m) * (time < {tken} - 5m) * (v(vbs) > 3)
+B5v v5 0 V = min(5.08, v(vbs) - 0.5*0.232)
+Bb5 b5v 0 V = v(v5) - 0.25*0.316
+
+* ---- enables: K_SUPPLY_EN at 1 ms, K_EN at tken
+Bksup ksup 0 V = (time > 1m) * (time < {tfail})
+Bcen cen 0 V = (time > {tken})
+
+* ---- Q1401 input disconnect (C1401 680 nF)
+R1401 vbs kpg 100k
+C1401 kpg kvin 680n
+R1402 kpg kpgd 47k
+S1402 kpgd 0 ksup 0 swq
+.model swq SW(VT=0.5 VH=0.1 RON=3 ROFF=1e10)
+Bq1401 vbs kvin I = 60 * ( max(0,v(vbs,kpg)-1.8)*min(max(v(vbs,kvin),0), max(0,v(vbs,kpg)-1.8)) - 0.5*min(max(v(vbs,kvin),0), max(0,v(vbs,kpg)-1.8))^2 )
+Cgs1401 vbs kpg 3n
+Ckvin kvin 0 20u
+Rkvin kvin 0 1Meg
+* boost input; opened at tfail (VBAT_SYS / input lost)
+Sfail kvin kbin ksup 0 swf
+.model swf SW(VT=0.5 VH=0.1 RON=1m ROFF=1e12)
+Ckbin kbin 0 24u
+Rkbin kbin 0 1Meg
+
+* ---- TPS61089 average model with a peak-current limit
+Dpass kbin kvb dpass
+.model dpass D(IS=1e-4 N=1.5 RS=20m)
+Bvset vset 0 V = 11.96*min(1, max(0, time-1m)/{tss})*v(ksup)
+Btoff toff 0 V = max(0, 1 - v(kbin)/max(v(kvb), v(kbin)+1m)) / {fsw} * 1e6
+* toff in microseconds (node value); ripple dI in A
+Bdi di 0 V = max(0, v(kvb) - v(kbin)) * v(toff)*1e-6 / {lb}
+Bton ton 0 V = {ipk}*{lb}/max(v(kbin),0.5) * 1e6
+Btf tf 0 V = {ipk}*{lb}/max(v(kvb)-v(kbin),1m) * 1e6
+Bimax imax 0 V = v(di) < {ipk} ? {ipk} - v(di)/2 : 0.5*{ipk}*(v(ton)+v(tf))/(v(ton)+v(toff))
+Bdem dem 0 V = v(ksup) * min(1, max(0, v(kbin)-2.5)/0.2) * min(v(imax), max(0, 20*(v(vset) - v(kvb))))
+Biin kbin 0 I = v(dem)
+Biout 0 kvb I = {eta} * v(kbin) * v(dem) / max(v(kvb), 1)
+Ckvb kvb 0 66u
+Rfb kvb 0 987k
+D1401 kvb kvc dres
+.model dres D(IS=1e-5 N=1.3 RS=15m)
+Cres kvc kvcc {creserv}
+Rres kvcc 0 30m
+* reservoir leakage (UHE 3300 uF 16 V rated <= 528 uA each at 16 V -> ~ 50 kOhm combined at 12 V [EST]) + DRV110 standby
+Rbl kvc 0 50k
+Bdrv kvc 0 I = (v(kvc) > 4.6) * 0.25m
+.ic v(kvb)=0 v(kvc)=0 v(kvin)=0 v(kbin)=0
+
+* ---- DRV110 + coil (current regulated to IPEAK for 33 ms, then IHOLD; fast decay through ~-13 V)
+Bset iset 0 V = (time < {tken} + 33m) ? 0.857 : 0.496
+Bon on 0 V = v(cen) * (v(kvc) > 4.6)
+Bapp ca 0 V = v(on) * ( v(kvc) * 0.5*(1 - tanh((i(Vcs) - v(iset))/5m)) - 13 * 0.5*(1 + tanh((i(Vcs) - v(iset))/5m)) ) + (1-v(on))*(-13)*min(1, max(0, i(Vcs))/1m)
+Vcs ca cb 0
+Rcoil cb cc {rcoil}
+Lcoil cc 0 {lcoil}
+Bkc kvc 0 I = max(0, i(Vcs)) * max(0, v(ca) + 13) / max(v(kvc) + 13, 1)
+
+.control
+set noaskquit
+* ---------- A/B: pre-charge + coil start, every battery corner, as ordered (515 k) and the drawn alternative
+foreach rl 515k 340k
+ foreach po -0.8 0 0.8
+  foreach oc 8.4 7.4 6.0
+   foreach rc 20m 80m
+    alterparam rilim=$rl
+    alterparam ipkoff=$po
+    alterparam ocv=$oc
+    alterparam rcell=$rc
+    alterparam ichg=0
+    alterparam tlead=200m
+    alterparam tfail=10
+    alterparam rcoil=15
+    reset
+    tran 10u 280m 0 10u
+    meas tran ibpre max i(Vibat) from=0.5m to=200m
+    meas tran vbpre min v(vbs) from=0.5m to=200m
+    meas tran v5pre min v(v5) from=0.5m to=200m
+    meas tran b5pre min v(b5v) from=0.5m to=200m
+    meas tran tfull when v(kvc)=11.0 rise=1
+    meas tran vres0 find v(kvc) at=200.9m
+    meas tran ibcoil max i(Vibat) from=201m to=280m
+    meas tran vbcoil min v(vbs) from=201m to=280m
+    meas tran v5coil min v(v5) from=201m to=280m
+    meas tran b5coil min v(b5v) from=201m to=280m
+    meas tran vrmin min v(kvc) from=201m to=280m
+    meas tran tpick when i(Vcs)=0.67 rise=1
+    let tfull_ms = (tfull-1m)*1000
+    let ttr_ms = (tpick - 201m)*1000 + 10
+    let tot_ms = ttr_ms + 14 + 1
+    echo "RESULT supply R1406= $rl ipk_offset_A= $po ocv= $oc rcell= $rc precharge_Ibat_peak_A= $&ibpre precharge_VBAT_SYS_min_V= $&vbpre precharge_5V0_min_V= $&v5pre precharge_BRIDGE_5V_min_V= $&b5pre reservoir_11V_ms= $&tfull_ms reservoir_at_KEN_V= $&vres0 coil_Ibat_peak_A= $&ibcoil coil_VBAT_SYS_min_V= $&vbcoil coil_5V0_min_V= $&v5coil coil_BRIDGE_5V_min_V= $&b5coil reservoir_min_during_coil_V= $&vrmin transfer_after_KEN_ms= $&ttr_ms transfer_plus_14ms_wait_plus_tick_ms= $&tot_ms"
+   end
+  end
+ end
+end
+* ---------- C: HV charger running during the pre-charge (9.2 A average), highest-current boost corner (+0.8 A)
+foreach rl 515k 340k
+ foreach oc 7.4 6.0
+  foreach rc 20m 80m
+    alterparam rilim=$rl
+    alterparam ipkoff=0.8
+    alterparam ocv=$oc
+    alterparam rcell=$rc
+    alterparam ichg=9.2
+    alterparam tlead=200m
+    alterparam tfail=10
+    reset
+    tran 10u 210m 0 10u
+    meas tran ibpre max i(Vibat) from=0.5m to=195m
+    meas tran vbpre min v(vbs) from=0.5m to=195m
+    meas tran v5pre min v(v5) from=0.5m to=195m
+    meas tran tfull when v(kvc)=11.0 rise=1
+    let tfull_ms = (tfull-1m)*1000
+    echo "RESULT with_charger R1406= $rl ipk_offset_A= 0.8 ocv= $oc rcell= $rc Ibat_peak_A= $&ibpre VBAT_SYS_min_V= $&vbpre 5V0_min_V= $&v5pre reservoir_11V_ms= $&tfull_ms"
+  end
+ end
+end
+* ---------- D: hold-up. Boost and its input lost 20 ms after K_EN (before the earliest sequence start, WP-H §3.5)
+foreach rl 515k 340k
+ foreach po -0.8 0
+  foreach cr 6.6m 5.28m
+    alterparam rilim=$rl
+    alterparam ipkoff=$po
+    alterparam creserv=$cr
+    alterparam ocv=6.0
+    alterparam rcell=80m
+    alterparam ichg=0
+    alterparam tlead=200m
+    alterparam tfail=221m
+    alterparam rcoil=15
+    reset
+    tran 10u 290m 0 10u
+    meas tran vrf find v(kvc) at=221m
+    meas tran trel when i(Vcs)=0.42 fall=1 from=221m
+    let hold_ms = (trel-221m)*1000
+    echo "RESULT holdup R1406= $rl ipk_offset_A= $po C_reservoir= $cr coil_ohm= 15 reservoir_at_failure_V= $&vrf held_after_failure_ms= $&hold_ms"
+  end
+ end
+end
+alterparam creserv=6.6m
+alterparam tfail=10
+* ---------- E: coil inductance and resistance sensitivity of the transfer time (cold, nearly empty battery)
+foreach rl 515k 340k
+ foreach lc 30m 60m 120m
+  foreach rcl 12 15
+    alterparam rilim=$rl
+    alterparam ipkoff=-0.8
+    alterparam lcoil=$lc
+    alterparam rcoil=$rcl
+    alterparam ocv=6.0
+    alterparam rcell=80m
+    reset
+    tran 10u 240m 0 10u
+    meas tran tpick when i(Vcs)=0.67 rise=1
+    let ttr_ms = (tpick - 201m)*1000 + 10
+    let tot_ms = ttr_ms + 15
+    echo "RESULT transfer R1406= $rl ipk_offset_A= -0.8 L_coil= $lc R_coil= $rcl transfer_after_KEN_ms= $&ttr_ms with_wait_ms= $&tot_ms"
+  end
+ end
+end
+alterparam lcoil=60m
+alterparam rcoil=15
+* ---------- F: K_SUPPLY_EN raised late (lead 50 / 100 ms instead of >= 200 ms), cold nearly empty battery
+foreach rl 515k 340k
+ foreach tl 50m 100m
+    alterparam rilim=$rl
+    alterparam ipkoff=-0.8
+    alterparam tlead=$tl
+    alterparam ocv=6.0
+    alterparam rcell=80m
+    reset
+    tran 10u 200m 0 10u
+    let tk = 1m + $tl
+    meas tran vres0 find v(kvc) at=$&tk
+    meas tran tpick when i(Vcs)=0.67 rise=1
+    meas tran b5min min v(b5v) from=0.5m to=200m
+    let ttr_ms = (tpick - tk)*1000 + 10
+    echo "RESULT late_supply R1406= $rl lead= $tl reservoir_at_KEN_V= $&vres0 transfer_after_KEN_ms= $&ttr_ms BRIDGE_5V_min_V= $&b5min"
+ end
+end
+.endc
+.end

@@ -60,7 +60,10 @@ const fn is_space(b: u8) -> bool {
 }
 
 const fn is_delim(b: u8) -> bool {
-    matches!(b, b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%')
+    matches!(
+        b,
+        b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+    )
 }
 
 /// Positions of every `N G obj` in the file: object number -> offset just
@@ -72,13 +75,24 @@ fn find_objects(file: &[u8]) -> BTreeMap<u32, usize> {
     while let Some(off) = find(file, b"obj", i) {
         i = off + 3;
         // Must be followed by a delimiter and preceded by "<num> <gen> ".
-        if file.get(off + 3).is_some_and(|b| !is_space(*b) && !is_delim(*b)) {
+        if file
+            .get(off + 3)
+            .is_some_and(|b| !is_space(*b) && !is_delim(*b))
+        {
             continue;
         }
         let mut j = off;
         let back = |j: &mut usize, digits: bool| -> bool {
             let end = *j;
-            while *j > 0 && file.get(*j - 1).is_some_and(|b| if digits { b.is_ascii_digit() } else { is_space(*b) }) {
+            while *j > 0
+                && file.get(*j - 1).is_some_and(|b| {
+                    if digits {
+                        b.is_ascii_digit()
+                    } else {
+                        is_space(*b)
+                    }
+                })
+            {
                 *j -= 1;
             }
             *j < end
@@ -93,10 +107,18 @@ fn find_objects(file: &[u8]) -> BTreeMap<u32, usize> {
         if !back(&mut j, true) {
             continue;
         }
-        if j > 0 && file.get(j - 1).is_some_and(|b| !is_space(*b) && !is_delim(*b)) {
+        if j > 0
+            && file
+                .get(j - 1)
+                .is_some_and(|b| !is_space(*b) && !is_delim(*b))
+        {
             continue;
         }
-        if let Some(n) = file.get(j..num_end).and_then(|s| std::str::from_utf8(s).ok()).and_then(|s| s.parse().ok()) {
+        if let Some(n) = file
+            .get(j..num_end)
+            .and_then(|s| std::str::from_utf8(s).ok())
+            .and_then(|s| s.parse().ok())
+        {
             out.insert(n, off + 3);
         }
     }
@@ -107,7 +129,10 @@ fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     if needle.is_empty() || from >= hay.len() {
         return None;
     }
-    hay.get(from..)?.windows(needle.len()).position(|w| w == needle).map(|p| p + from)
+    hay.get(from..)?
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + from)
 }
 
 /// The dictionary text of the object starting at `pos` (up to `stream` or
@@ -116,7 +141,9 @@ fn object_dict(file: &[u8], pos: usize) -> Result<(&[u8], Option<usize>), PdfErr
     let end = find(file, b"endobj", pos).unwrap_or(file.len());
     let st = find(file, b"stream", pos).filter(|s| *s < end);
     let dict_end = st.unwrap_or(end);
-    let dict = file.get(pos..dict_end).ok_or_else(|| PdfError::NotPdf("object out of range".into()))?;
+    let dict = file
+        .get(pos..dict_end)
+        .ok_or_else(|| PdfError::NotPdf("object out of range".into()))?;
     Ok((dict, st))
 }
 
@@ -136,10 +163,17 @@ fn dict_value<'a>(dict: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
             return rest.get(..=close);
         }
         if rest.first() == Some(&b'/') {
-            let end = rest.iter().skip(1).position(|b| is_space(*b) || is_delim(*b)).map_or(rest.len(), |p| p + 1);
+            let end = rest
+                .iter()
+                .skip(1)
+                .position(|b| is_space(*b) || is_delim(*b))
+                .map_or(rest.len(), |p| p + 1);
             return rest.get(..end);
         }
-        let end = rest.iter().position(|b| *b == b'/' || *b == b'>').unwrap_or(rest.len());
+        let end = rest
+            .iter()
+            .position(|b| *b == b'/' || *b == b'>')
+            .unwrap_or(rest.len());
         return rest.get(..end);
     }
     None
@@ -153,7 +187,10 @@ fn trim_start(s: &[u8]) -> &[u8] {
 /// The numbers `N` of every `N G R` reference in `text`.
 fn references(text: &[u8]) -> Vec<u32> {
     let s = String::from_utf8_lossy(text);
-    let words: Vec<&str> = s.split(|c: char| c.is_whitespace() || c == '[' || c == ']').filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = s
+        .split(|c: char| c.is_whitespace() || c == '[' || c == ']')
+        .filter(|w| !w.is_empty())
+        .collect();
     let mut out = Vec::new();
     for w in words.windows(3) {
         if let [n, g, r] = w {
@@ -168,12 +205,19 @@ fn references(text: &[u8]) -> Vec<u32> {
 }
 
 fn integer(text: &[u8]) -> Option<i64> {
-    std::str::from_utf8(text).ok()?.split_whitespace().next()?.parse().ok()
+    std::str::from_utf8(text)
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// The decoded data of stream object `num`.
 fn stream_data(file: &[u8], objs: &BTreeMap<u32, usize>, num: u32) -> Result<Vec<u8>, PdfError> {
-    let pos = *objs.get(&num).ok_or_else(|| PdfError::NotPdf(format!("object {num} not found")))?;
+    let pos = *objs
+        .get(&num)
+        .ok_or_else(|| PdfError::NotPdf(format!("object {num} not found")))?;
     let (dict, st) = object_dict(file, pos)?;
     let st = st.ok_or_else(|| PdfError::NotPdf(format!("object {num} is not a stream")))?;
     let mut start = st + "stream".len();
@@ -187,7 +231,9 @@ fn stream_data(file: &[u8], objs: &BTreeMap<u32, usize>, num: u32) -> Result<Vec
         Some(v) => {
             let refs = references(v);
             if let Some(r) = refs.first() {
-                let p = *objs.get(r).ok_or_else(|| PdfError::NotPdf("length object missing".into()))?;
+                let p = *objs
+                    .get(r)
+                    .ok_or_else(|| PdfError::NotPdf("length object missing".into()))?;
                 let (d, _) = object_dict(file, p)?;
                 integer(d)
             } else {
@@ -197,9 +243,12 @@ fn stream_data(file: &[u8], objs: &BTreeMap<u32, usize>, num: u32) -> Result<Vec
         None => None,
     };
     let raw = match len.and_then(|l| usize::try_from(l).ok()) {
-        Some(l) if file.get(start..start + l).is_some() => file.get(start..start + l).unwrap_or(&[]),
+        Some(l) if file.get(start..start + l).is_some() => {
+            file.get(start..start + l).unwrap_or(&[])
+        }
         _ => {
-            let end = find(file, b"endstream", start).ok_or_else(|| PdfError::NotPdf("stream without end".into()))?;
+            let end = find(file, b"endstream", start)
+                .ok_or_else(|| PdfError::NotPdf("stream without end".into()))?;
             file.get(start..end).unwrap_or(&[])
         }
     };
@@ -241,7 +290,8 @@ pub fn read_pages(file: &[u8]) -> Result<Vec<Page>, PdfError> {
         if ty != Some(b"/Page".as_slice()) {
             continue;
         }
-        let contents = dict_value(dict, b"/Contents").ok_or_else(|| PdfError::NotPdf("page without contents".into()))?;
+        let contents = dict_value(dict, b"/Contents")
+            .ok_or_else(|| PdfError::NotPdf("page without contents".into()))?;
         let mut content = Vec::new();
         for r in references(contents) {
             let data = stream_data(file, &objs, r)?;
@@ -296,11 +346,15 @@ fn tokenize(src: &[u8]) -> Result<Vec<Tok>, PdfError> {
             let mut s = Vec::new();
             i += 1;
             loop {
-                let c = *src.get(i).ok_or_else(|| PdfError::NotPdf("unterminated string".into()))?;
+                let c = *src
+                    .get(i)
+                    .ok_or_else(|| PdfError::NotPdf("unterminated string".into()))?;
                 i += 1;
                 match c {
                     b'\\' => {
-                        let e = *src.get(i).ok_or_else(|| PdfError::NotPdf("unterminated string".into()))?;
+                        let e = *src
+                            .get(i)
+                            .ok_or_else(|| PdfError::NotPdf("unterminated string".into()))?;
                         i += 1;
                         match e {
                             b'n' => s.push(b'\n'),
@@ -344,12 +398,21 @@ fn tokenize(src: &[u8]) -> Result<Vec<Tok>, PdfError> {
             if src.get(i + 1) == Some(&b'<') {
                 return unsupported("dictionary in content stream");
             }
-            let end = find(src, b">", i).ok_or_else(|| PdfError::NotPdf("unterminated hex string".into()))?;
-            let hex: Vec<u8> = src.get(i + 1..end).unwrap_or(&[]).iter().copied().filter(|c| !is_space(*c)).collect();
+            let end = find(src, b">", i)
+                .ok_or_else(|| PdfError::NotPdf("unterminated hex string".into()))?;
+            let hex: Vec<u8> = src
+                .get(i + 1..end)
+                .unwrap_or(&[])
+                .iter()
+                .copied()
+                .filter(|c| !is_space(*c))
+                .collect();
             let mut s = Vec::new();
             for pair in hex.chunks(2) {
-                let txt = std::str::from_utf8(pair).map_err(|_| PdfError::NotPdf("bad hex string".into()))?;
-                let v = u8::from_str_radix(&format!("{txt:0<2}"), 16).map_err(|_| PdfError::NotPdf("bad hex string".into()))?;
+                let txt = std::str::from_utf8(pair)
+                    .map_err(|_| PdfError::NotPdf("bad hex string".into()))?;
+                let v = u8::from_str_radix(&format!("{txt:0<2}"), 16)
+                    .map_err(|_| PdfError::NotPdf("bad hex string".into()))?;
                 s.push(v);
             }
             out.push(Tok::Str(s));
@@ -369,7 +432,10 @@ fn tokenize(src: &[u8]) -> Result<Vec<Tok>, PdfError> {
                 i += 1;
             }
             let word = src.get(start..i).unwrap_or(&[]);
-            let num = std::str::from_utf8(word).ok().filter(|w| w.bytes().all(|c| c.is_ascii_digit() || c == b'.' || c == b'-' || c == b'+'));
+            let num = std::str::from_utf8(word).ok().filter(|w| {
+                w.bytes()
+                    .all(|c| c.is_ascii_digit() || c == b'.' || c == b'-' || c == b'+')
+            });
             match num.and_then(|w| w.parse::<f64>().ok()) {
                 Some(v) if v.is_finite() => out.push(Tok::Num(v)),
                 _ => {
@@ -460,7 +526,12 @@ fn last<const K: usize>(nums: &[f64], op: &[u8]) -> Result<[f64; K], PdfError> {
         .checked_sub(K)
         .and_then(|s| nums.get(s..))
         .and_then(|s| <[f64; K]>::try_from(s).ok())
-        .ok_or_else(|| PdfError::Unsupported(format!("operator {} needs {K} numbers", String::from_utf8_lossy(op))))
+        .ok_or_else(|| {
+            PdfError::Unsupported(format!(
+                "operator {} needs {K} numbers",
+                String::from_utf8_lossy(op)
+            ))
+        })
 }
 
 fn latin1(b: &[u8]) -> String {
@@ -561,7 +632,9 @@ pub fn interpret(content: &[u8]) -> Result<Drawing, PdfError> {
                 points += 1;
             }
             b"l" | b"c" | b"v" | b"y" => {
-                let [x, y] = last(&nums, &op).map_err(|_| PdfError::Unsupported("path operator without coordinates".into()))?;
+                let [x, y] = last(&nums, &op).map_err(|_| {
+                    PdfError::Unsupported("path operator without coordinates".into())
+                })?;
                 let p = apply(&ctm, x, y);
                 match path.last_mut() {
                     Some(sp) => sp.push(p),
@@ -594,13 +667,18 @@ pub fn interpret(content: &[u8]) -> Result<Drawing, PdfError> {
                             sp.push(first);
                         }
                     }
-                    d.strokes.push(Stroke { colour, width, points: sp });
+                    d.strokes.push(Stroke {
+                        colour,
+                        width,
+                        points: sp,
+                    });
                 }
             }
             b"f" | b"F" | b"f*" | b"n" => path.clear(),
-            b"W" | b"W*" | b"g" | b"rg" | b"k" | b"cs" | b"sc" | b"scn" | b"i" | b"J" | b"j" | b"M" | b"d"
-            | b"gs" | b"ri" | b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Tr" | b"Ts" | b"Do" | b"sh" | b"d0" | b"d1"
-            | b"BX" | b"EX" | b"MP" | b"DP" | b"BMC" | b"BDC" | b"EMC" => {}
+            b"W" | b"W*" | b"g" | b"rg" | b"k" | b"cs" | b"sc" | b"scn" | b"i" | b"J" | b"j"
+            | b"M" | b"d" | b"gs" | b"ri" | b"Tc" | b"Tw" | b"Tz" | b"TL" | b"Tr" | b"Ts"
+            | b"Do" | b"sh" | b"d0" | b"d1" | b"BX" | b"EX" | b"MP" | b"DP" | b"BMC" | b"BDC"
+            | b"EMC" => {}
             b"BT" => {
                 tm = IDENTITY;
                 tlm = IDENTITY;
@@ -625,7 +703,12 @@ pub fn interpret(content: &[u8]) -> Result<Drawing, PdfError> {
                 };
                 let m = mul(&tm, &ctm);
                 let size = font_size * (m[0] * m[0] + m[1] * m[1]).sqrt();
-                d.texts.push(Text { x: m[4], y: m[5], size, text: latin1(&bytes) });
+                d.texts.push(Text {
+                    x: m[4],
+                    y: m[5],
+                    size,
+                    text: latin1(&bytes),
+                });
             }
             other => {
                 return unsupported(format!("operator {}", String::from_utf8_lossy(other)));
@@ -650,7 +733,10 @@ mod tests {
 
     #[test]
     fn tokenizer_handles_strings_names_and_numbers() {
-        let t = tokenize(b"/Cs6 CS 0 0 1 SCN (a\\(b\\)c \\101) [(x)-3.5(y)] TJ <4142> -.5 % comment\n q").unwrap();
+        let t = tokenize(
+            b"/Cs6 CS 0 0 1 SCN (a\\(b\\)c \\101) [(x)-3.5(y)] TJ <4142> -.5 % comment\n q",
+        )
+        .unwrap();
         assert_eq!(t[0], Tok::Name(b"Cs6".to_vec()));
         assert_eq!(t[2], Tok::Num(0.0));
         assert_eq!(t[6], Tok::Str(b"a(b)c A".to_vec()));
@@ -671,7 +757,10 @@ mod tests {
         assert_eq!(d.strokes[0].colour, Colour::Grey(0.0));
         assert_eq!(d.strokes[0].points[2], (60.0, 120.0));
         assert!(d.strokes[1].colour.is_blue());
-        assert_eq!(d.strokes[1].points, vec![(30.0, 20.0), (31.0, 20.5), (28.0, 21.0)]);
+        assert_eq!(
+            d.strokes[1].points,
+            vec![(30.0, 20.0), (31.0, 20.5), (28.0, 21.0)]
+        );
         assert_eq!(d.texts.len(), 2);
         assert_eq!(d.texts[0].text, "12.29.22");
         assert!((d.texts[0].x - 70.0).abs() < 1e-9 && (d.texts[0].y - 20.0).abs() < 1e-9);
@@ -702,8 +791,16 @@ mod tests {
         }
         z.extend_from_slice(&((b << 16) | a).to_be_bytes());
         let mut f = b"%PDF-1.5\n1 0 obj\n<</Type/Pages/Kids[2 0 R]/Count 1>>\nendobj\n".to_vec();
-        f.extend_from_slice(b"2 0 obj\n<</Contents 3 0 R/Rotate 90/Type/Page/Parent 1 0 R>>\nendobj\n");
-        f.extend_from_slice(format!("3 0 obj\n<</Filter/FlateDecode/Length {}>>stream\r\n", z.len()).as_bytes());
+        f.extend_from_slice(
+            b"2 0 obj\n<</Contents 3 0 R/Rotate 90/Type/Page/Parent 1 0 R>>\nendobj\n",
+        );
+        f.extend_from_slice(
+            format!(
+                "3 0 obj\n<</Filter/FlateDecode/Length {}>>stream\r\n",
+                z.len()
+            )
+            .as_bytes(),
+        );
         f.extend_from_slice(&z);
         f.extend_from_slice(b"\nendstream\nendobj\ntrailer\n%%EOF\n");
         f
@@ -725,9 +822,18 @@ mod tests {
 
     #[test]
     fn dictionary_lookup_does_not_confuse_page_and_pages() {
-        assert_eq!(dict_value(b"<</Type/Pages/Count 1>>", b"/Type"), Some(b"/Pages".as_slice()));
-        assert_eq!(dict_value(b"<</Type /Page/Rotate 90>>", b"/Type"), Some(b"/Page".as_slice()));
-        assert_eq!(dict_value(b"<</Contents[18 0 R 19 0 R]>>", b"/Contents"), Some(b"[18 0 R 19 0 R]".as_slice()));
+        assert_eq!(
+            dict_value(b"<</Type/Pages/Count 1>>", b"/Type"),
+            Some(b"/Pages".as_slice())
+        );
+        assert_eq!(
+            dict_value(b"<</Type /Page/Rotate 90>>", b"/Type"),
+            Some(b"/Page".as_slice())
+        );
+        assert_eq!(
+            dict_value(b"<</Contents[18 0 R 19 0 R]>>", b"/Contents"),
+            Some(b"[18 0 R 19 0 R]".as_slice())
+        );
         assert_eq!(references(b"[18 0 R 19 0 R]"), vec![18, 19]);
     }
 }

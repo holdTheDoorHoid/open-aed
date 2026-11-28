@@ -1,0 +1,107 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+* S-3 (WP-G task 3): must the new fast idle path (IDLE_FAST_N, 3 A class, ~30 ns) stay quiet during a NORMAL
+* sequence and with the charger running? Healthy bridge, sheet 13 AS DRAWN in rev 0.3 (circuit-level islands
+* with carrier-loss detectors, local film string, fast path with its threshold placed at 'ith' amperes).
+* Sheet 12 (WP-D) arms the idle fault only while both low sides have been off for >= 9 us
+* (IDLE_F = IDLE_ANY AND LA_OFF10 AND LB_OFF10, specs/12_bridge_logic.toml). The armed windows here:
+*   W1 lead: CMD_HA rises (QHA turns on slowly, both outputs charge from 0 V to the capacitor voltage through
+*      the patient, charging QLA/QLB Coss THROUGH THE SHUNT) until CMD_LB;
+*   W2 gap:  9 us after phase 1 ends, QHA off, QHB on (lead) until CMD_LA;
+*   W3 end:  9 us after phase 2 ends, QHB off, to the end of the run.
+* Phases are shortened (t1 100 us, t2 100 us) so the phase-end currents are higher than in a real 3-9 ms
+* phase (conservative for the edges). chg = 1 adds the charger's output current pulses into HV_CAP_P
+* (secondary peak 21.4 A / 50 = 0.43 A [../charger-storage/charger.cir], ~1 us flyback, 25 us period [EST])
+* plus a reverse-recovery pulse of -0.3 A for 100 ns (UX-F5B trr 70-150 ns) [EST].
+.include wpg_common.inc
+.param v0=1950 rp=25 ith=2.54 lsh=0.3n lst=50n lcap=500n tc=55 chg=0 vol=0.15 vos=0 cin=100p
+.param t1=100u t2=100u
+.param ths=200u
+.param tlb={ths+100u} tha_off={ths+100u+t1+20u} thb_on={ths+100u+t1+220u} tla={ths+100u+t1+320u}
+.param thb_off={ths+100u+t1+320u+t2+20u}
+Vgnd0 rtn 0 0
+Cmain capi rtn 100u
+Vchg vchg 0 {v0*1.0005}
+Rchg vchg capi 10k
+XB capi rtn oa ob gha ghb gla glb lss kn tjha tjla tjhb tjlb bus isn capp fm hbridge3
++ params: lst={lst} lcap={lcap} tc={tc} lsh={lsh} lsn=5n
+XP oa ob patient params: rp={rp} lpat=1.5u
+Vpos vp lss 20.7
+Vneg vn lss -5
+Vb5 b5v 0 5
+* BRIDGE_3V3 and the fast path's GND taken at the shunt's HV_RTN Kelvin terminal (SHUNT_KN): see notes.md,
+* layout requirement L-1 (GND bounce against SHUNT_KN must stay inside the OPA838's -0.2 V input range)
+V33 v33 kn 3.3
+* charger output pulses into HV_CAP_P (board side)
+Ichg 0 capp PULSE(0 {0.43*chg} 1u 10n 1u 0 25u)
+Irr capp 0 PULSE(0 {0.3*chg} 2.02u 20n 20n 60n 25u)
+* commands (carrier enables already include the 2 us sync)
+Vcha cha 0 PWL(0 0 {ths+2u} 0 {ths+2u+20n} 1 {tha_off} 1 {tha_off+20n} 0)
+Vclb clb 0 PWL(0 0 {tlb} 0 {tlb+20n} 1 {tlb+t1} 1 {tlb+t1+20n} 0)
+Vchb chb 0 PWL(0 0 {thb_on} 0 {thb_on+20n} 1 {thb_off} 1 {thb_off+20n} 0)
+Vcla cla 0 PWL(0 0 {tla} 0 {tla+20n} 1 {tla+t2} 1 {tla+t2+20n} 0)
+XDLA cla vp vn gla lss lsdrv
+XDLB clb vp vn glb lss lsdrv
+XDHA cha b5v gha oa recta pnpa clga hsisland
+XDHB chb b5v ghb ob rectb pnpb clgb hsisland
+XF lss kn v33 kn fflt faout fref fastpath params: vosc={0.022*(ith-3.204)} vos={vos} vol={vol} cin={cin}
+* overdrive probe: (amplifier output - reference) through 1 k / 6 pF (6 ns)
+Eov ovn 0 faout fref 1
+Rovf ovn ovf 1k
+Covf ovf 0 6p
+* slow path for comparison (INA240 0.4 us + 1 k/100 pF), amperes
+Rif1 isn if1 1k
+Cif1 if1 0 0.4n
+Rif2 if1 if2 1k
+Cif2 if2 0 100p
+.options method=gear reltol=2e-3 trtol=1 rshunt=1e10 gmin=1e-10 abstol=1e-6 vntol=1e-4 itl4=200
+.control
+set noaskquit
+* (keep equal to .param ith; run.sh rewrites this line)
+let ith_v = 2.54
+let tstop_req = 1.0e-3
+tran 5n 1.0m 195u 10n
+let tw1a = 202e-6
+let tw1b = 300e-6
+let tw2a = 300e-6+100e-6+9e-6
+let tw2b = 300e-6+100e-6+320e-6
+let tw3a = tw2b+100e-6+9e-6
+let tw3b = 1.0e-3
+* overdrive at the comparator (positive = past its rising switching point at ith), mV, and the time spent past it
+let ovd = (v(faout)-v(fref)-0.022*(ith_v-3.204)-0.003)*1000
+let isa = abs(v(isn))
+let isl = abs(v(if2))
+let pos = ovd gt 0
+* the same overdrive seen through a 6 ns low-pass (the amplifier's own closed-loop pole, 27 MHz): sub-ns ripple on
+* the amplifier output in this macro is a solver artefact (period ~1 ns, far above its bandwidth), see notes.md
+let ovdf = (v(ovf)-0.022*(ith_v-3.204)-0.003)*1000
+meas tran q1 max ovdf from=tw1a to=tw1b
+meas tran q2 max ovdf from=tw2a to=tw2b
+meas tran q3 max ovdf from=tw3a to=tw3b
+meas tran o1 max ovd from=tw1a to=tw1b
+meas tran o2 max ovd from=tw2a to=tw2b
+meas tran o3 max ovd from=tw3a to=tw3b
+meas tran p1 integ pos from=tw1a to=tw1b
+meas tran p2 integ pos from=tw2a to=tw2b
+meas tran p3 integ pos from=tw3a to=tw3b
+meas tran f1 max v(fflt) from=tw1a to=tw1b
+meas tran f2 max v(fflt) from=tw2a to=tw2b
+meas tran f3 max v(fflt) from=tw3a to=tw3b
+meas tran i1 max isa from=tw1a to=tw1b
+meas tran i2 max isa from=tw2a to=tw2b
+meas tran i3 max isa from=tw3a to=tw3b
+meas tran s1 max isl from=tw1a to=tw1b
+meas tran s2 max isl from=tw2a to=tw2b
+meas tran s3 max isl from=tw3a to=tw3b
+meas tran ip1 max isa from=tw1b to=tw2a
+* the shunt Kelvin voltage, replayed into the fast path alone by s3b_replay.cir (run.sh)
+let vk = v(lss,kn)
+wrdata WAVEFILE vk
+let p1n = p1*1e9
+let p2n = p2*1e9
+let p3n = p3*1e9
+let n = length(time)-1
+let te = time[n]
+echo "RESULT CASE_LABEL | fast flag max W1/W2/W3=$&f1/$&f2/$&f3 (trips if > 0.5) | comparator overdrive max W1/W2/W3=$&o1/$&o2/$&o3 mV (negative = margin) | time past the switching point W1/W2/W3=$&p1n/$&p2n/$&p3n ns | overdrive through 6 ns W1/W2/W3=$&q1/$&q2/$&q3 mV | shunt |I| max W1/W2/W3=$&i1/$&i2/$&i3 A | slow path max W1/W2/W3=$&s1/$&s2/$&s3 A | phase-1 peak=$&ip1 A | t_end=$&te of $&tstop_req"
+.endc
+.end

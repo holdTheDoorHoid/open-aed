@@ -196,7 +196,9 @@ pub enum AnnotError {
 impl fmt::Display for AnnotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AnnotError::TooLarge(n) => write!(f, "annotation file is {n} bytes, larger than allowed"),
+            AnnotError::TooLarge(n) => {
+                write!(f, "annotation file is {n} bytes, larger than allowed")
+            }
             AnnotError::Truncated { at } => write!(f, "annotation file truncated at byte {at}"),
             AnnotError::ModifierWithoutAnnotation { at } => {
                 write!(f, "annotation modifier with no annotation at byte {at}")
@@ -283,7 +285,11 @@ pub fn parse_annotations(bytes: &[u8]) -> Result<Vec<Annotation>, AnnotError> {
                     .last_mut()
                     .ok_or(AnnotError::ModifierWithoutAnnotation { at })?;
                 // The 10-bit field is signed in WFDB's reading.
-                last.subtype = if i & 0x200 != 0 { (i | 0xfc00) as i16 } else { i as i16 };
+                last.subtype = if i & 0x200 != 0 {
+                    (i | 0xfc00) as i16
+                } else {
+                    i as i16
+                };
             }
             code::AUX => {
                 let len = usize::from(i);
@@ -382,7 +388,12 @@ mod tests {
 
     #[test]
     fn odd_aux_with_pad_and_nonprintable_bytes() {
-        let bytes = build(&[&w(code::RHYTHM, 1), &w(code::AUX, 5), b"(VF\x01\x00\x00", &w(code::NORMAL, 1)]);
+        let bytes = build(&[
+            &w(code::RHYTHM, 1),
+            &w(code::AUX, 5),
+            b"(VF\x01\x00\x00",
+            &w(code::NORMAL, 1),
+        ]);
         let a = parse_annotations(&bytes).unwrap();
         assert_eq!(a[0].aux, "(VF?");
         assert_eq!(a.len(), 2);
@@ -395,7 +406,9 @@ mod tests {
         // Truncated SKIP.
         assert!(parse_annotations(&build(&[&w(code::SKIP, 0), &[0, 0]])).is_err());
         // AUX longer than the file.
-        assert!(parse_annotations(&build(&[&w(code::NORMAL, 1), &w(code::AUX, 100), b"ab"])).is_err());
+        assert!(
+            parse_annotations(&build(&[&w(code::NORMAL, 1), &w(code::AUX, 100), b"ab"])).is_err()
+        );
         // AUX before any annotation.
         assert!(parse_annotations(&build(&[&w(code::AUX, 2), b"ab"])).is_err());
         // SUB before any annotation.

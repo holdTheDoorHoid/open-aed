@@ -23,7 +23,10 @@
 //!    the relay on the bridge) the hardware latches SEQUENCE ACTIVE. From
 //!    then the request, permit and hold lines are ignored: the planned
 //!    pulse completes, unless the non-retriggerable time cap expires first
-//!    or the over-current trip fires. Drive is then removed.
+//!    or the over-current trip fires. Drive is then removed. Since design
+//!    revision 0.3 (D-63) each phase also has its own cap, and the other
+//!    hardware fault latches (idle current, rail or low-side driver supply)
+//!    end it too.
 //! 4. The rail may stay up without a sequence starting for at most the
 //!    permit-duration cap; then it is removed and locked out.
 //! 5. After a sequence (or the permit-duration cap) the hardware is locked
@@ -104,28 +107,65 @@ pub const fn charger_may_run(charger_enabled: bool, discharge_active: bool) -> b
     charger_enabled && !discharge_active
 }
 
-/// The hardware's fixed timings, in microseconds.
+/// The hardware's fixed timings, in microseconds, for ONE unit.
+///
+/// The real figures have tolerance bands (component tolerance, temperature,
+/// leakage). [`LatchTiming::PROPOSED`] is the nominal unit;
+/// [`LatchTiming::EARLIEST`] and [`LatchTiming::LATEST`] are the ends of each
+/// band, so a simulation can check that the firmware works with every unit
+/// the design allows, not just the nominal one. Sources: HARDWARE_DESIGN.md
+/// v0.3 §B13.3 and the simulation notes `hardware/aed-main/sim/logic-relay/
+/// notes.md` §1.3 and §2 (simulated) and `sim/rev3/notes.md` §4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LatchTiming {
-    /// The non-retriggerable time cap: drive is cut this long after the
-    /// first conducting moment, whatever the timer does. The hardware
-    /// design proposes 25 ms (HARDWARE_DESIGN.md §B6.4); the longest
-    /// planned shock is 15.5 ms (aed-waveform DESIGN_TABLE).
+    /// The non-retriggerable overall time cap from the first conducting
+    /// moment. 25 ms nominal, 23.77–26.22 ms simulated (LR §2). Since v0.3
+    /// a backstop behind the per-phase caps.
     pub time_cap_us: u32,
-    /// Longest the rail may stay up before a sequence starts (review R-4,
-    /// R-11). Proposed: 250 ms, above the firmware's 200 ms permit window.
+    /// The phase-1 cap (D-63, change order FW-9): from the first conducting
+    /// moment until phase 1 has ended. 11.37 ms nominal, 10.75–11.85 ms
+    /// (calculated band, §B13.3 rule 4).
+    pub phase1_cap_us: u32,
+    /// The phase-2 cap (D-63, FW-9): from the first phase-2 conducting
+    /// moment until the sequence is done. 7.73 ms nominal, 7.31–8.06 ms.
+    pub phase2_cap_us: u32,
+    /// Longest the rail may stay up before a sequence starts (the 150 ms
+    /// window on sheet 09). 150 ms nominal, 131.8–161.5 ms simulated
+    /// (LR §1.3); FW-5 changed the model from 250 ms.
     pub permit_cap_us: u32,
     /// How long request, permit and test permit must all be absent together
-    /// before a lockout clears. Proposed: 20 ms.
+    /// before a lockout clears (the re-arm comparator). 56.28 ms nominal,
+    /// 51.24–60.34 ms simulated (LR §1.3); FW-4 changed the model from
+    /// 20 ms. The firmware waits longer still (75 ms,
+    /// [`crate::Config::rearm_wait_ms`]) because the permit detector also
+    /// holds consent for up to 7.5 ms after the supervisor stops its clock.
     pub rearm_us: u32,
 }
 
 impl LatchTiming {
-    /// The proposed figures above.
+    /// The nominal unit.
     pub const PROPOSED: LatchTiming = LatchTiming {
         time_cap_us: 25_000,
-        permit_cap_us: 250_000,
-        rearm_us: 20_000,
+        phase1_cap_us: 11_370,
+        phase2_cap_us: 7_730,
+        permit_cap_us: 150_000,
+        rearm_us: 56_280,
+    };
+    /// Every figure at the low end of its band.
+    pub const EARLIEST: LatchTiming = LatchTiming {
+        time_cap_us: 23_770,
+        phase1_cap_us: 10_750,
+        phase2_cap_us: 7_310,
+        permit_cap_us: 131_800,
+        rearm_us: 51_240,
+    };
+    /// Every figure at the high end of its band.
+    pub const LATEST: LatchTiming = LatchTiming {
+        time_cap_us: 26_220,
+        phase1_cap_us: 11_850,
+        phase2_cap_us: 8_060,
+        permit_cap_us: 161_500,
+        rearm_us: 60_340,
     };
 }
 
@@ -151,6 +191,18 @@ pub struct LatchInputs {
     pub phases_done: bool,
     /// The over-current comparator is tripped.
     pub over_current: bool,
+    /// The phase timer is in phase 2 (after the gap). The phase-2 cap runs
+    /// from the first conducting moment with this set (D-63).
+    pub in_phase2: bool,
+    /// A hardware fault latch other than over-current fired: idle current
+    /// (either comparator), `BRIDGE_5V` under-voltage or `LSD_OK` low
+    /// (v0.3, §B13.3 rule 6). During a sequence it ends it; before one it
+    /// blocks the start.
+    pub hardware_fault: bool,
+    /// A start condition of sheet 12 other than consent is not met (rail
+    /// ready, relay transferred, coil window, lead, mode checks): a
+    /// conducting command does not latch the sequence.
+    pub start_blocked: bool,
 }
 
 /// The sequence latch: what the hardware remembers between instants.
@@ -165,6 +217,10 @@ pub struct Latch {
     /// Microseconds that request, permit and test permit have all been
     /// absent together (only counted while locked out).
     pub consent_absent_us: u32,
+    /// Phase 1 has ended in this sequence (its cap no longer applies).
+    pub phase1_done: bool,
+    /// Microseconds since phase 2 first conducted, if it has.
+    pub phase2_us: Option<u32>,
 }
 
 impl Default for Latch {
@@ -180,6 +236,8 @@ impl Latch {
         test: false,
         in_status_us: 0,
         consent_absent_us: 0,
+        phase1_done: false,
+        phase2_us: None,
     };
 
     /// True while the interlock rail is up (drive power available).
@@ -208,6 +266,8 @@ impl Latch {
             test,
             in_status_us: 0,
             consent_absent_us: 0,
+            phase1_done: false,
+            phase2_us: None,
         }
     }
 
@@ -259,7 +319,11 @@ impl Latch {
                     // Withdrawn before the first conducting moment: nothing
                     // has happened, the rail drops.
                     self.to(SequenceStatus::Idle, false)
-                } else if i.drive && (self.test || i.relay_on_bridge) {
+                } else if i.drive
+                    && (self.test || i.relay_on_bridge)
+                    && !i.start_blocked
+                    && !i.hardware_fault
+                {
                     self.to(SequenceStatus::Active, self.test)
                 } else if self.in_status_us.saturating_add(dt_us) >= t.permit_cap_us {
                     self.to(SequenceStatus::LockedOut, self.test)
@@ -269,14 +333,43 @@ impl Latch {
             }
             SequenceStatus::Active => {
                 // The consent lines are not looked at here (D-59).
+                let elapsed = self.in_status_us.saturating_add(dt_us);
+                let phase1_done = self.phase1_done || i.in_phase2 || !i.drive;
+                let phase2_us = match self.phase2_us {
+                    Some(us) => Some(us.saturating_add(dt_us)),
+                    None if i.in_phase2 && i.drive => Some(0),
+                    None => None,
+                };
+                let phase2_over = match phase2_us {
+                    Some(us) => us > t.phase2_cap_us,
+                    None => false,
+                };
                 if i.over_current {
-                    self.to(SequenceStatus::Ended(SequenceEnd::OverCurrentTripped), self.test)
-                } else if self.in_status_us.saturating_add(dt_us) > t.time_cap_us {
-                    self.to(SequenceStatus::Ended(SequenceEnd::TimeCapTripped), self.test)
+                    self.to(
+                        SequenceStatus::Ended(SequenceEnd::OverCurrentTripped),
+                        self.test,
+                    )
+                } else if i.hardware_fault {
+                    self.to(SequenceStatus::Ended(SequenceEnd::HardwareFault), self.test)
+                } else if (!self.phase1_done && elapsed > t.phase1_cap_us) || phase2_over {
+                    self.to(
+                        SequenceStatus::Ended(SequenceEnd::PhaseCapTripped),
+                        self.test,
+                    )
+                } else if elapsed > t.time_cap_us {
+                    self.to(
+                        SequenceStatus::Ended(SequenceEnd::TimeCapTripped),
+                        self.test,
+                    )
                 } else if i.phases_done {
                     self.to(SequenceStatus::Ended(SequenceEnd::Completed), self.test)
                 } else {
-                    self.stay(dt_us)
+                    Latch {
+                        in_status_us: elapsed,
+                        phase1_done,
+                        phase2_us,
+                        ..self
+                    }
                 }
             }
             SequenceStatus::Ended(_) | SequenceStatus::LockedOut => {

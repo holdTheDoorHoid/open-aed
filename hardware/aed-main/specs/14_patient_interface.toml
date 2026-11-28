@@ -1,21 +1,24 @@
 # 14_patient_interface — PATIENT: patient relay K1401 with its 12 V coil supply (input disconnect, TPS61089 boost,
 # hold-up reservoir, DRV110 peak-and-hold economiser, fast-release clamp), force-guided aux contact -> K_REST_N;
 # pad connector J1401; pad identity (1-Wire) and presence lines; pad-area NTC.
-# NOT FOR CONSTRUCTION — unreviewed design. Source: docs/HARDWARE_DESIGN.md §B7; contract.md issue 2 (§5.7, §5.8, §8).
+# NOT FOR CONSTRUCTION — unreviewed design. Source: docs/HARDWARE_DESIGN.md v0.3 §B7; contract.md issue 3 (§0, §5.7, §5.8, §8);
+# change order capture-notes/rev3-changes.md WP-H (H-1, H-2, H-3, H-6).
 # Capture notes, arithmetic and failure table: hardware/aed-main/capture-notes/WP-H.md. References 1401-1499.
 
 [sheet]
 name = "14_patient_interface"
 title = "PATIENT: patient relay K1401 + 12 V coil supply, hold-up, economiser and aux contact; pad connector; pad ID and presence; pad NTC"
-source = "docs/HARDWARE_DESIGN.md §B7; hardware/aed-main/contract.md §5.7, §5.8, §8; capture notes WP-H"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B7; hardware/aed-main/contract.md issue 3 §0, §5.7, §5.8, §8; rev3-changes.md WP-H; capture notes WP-H"
 date = "2026-11-27"
 comments = ["At rest the pads connect to the front ends (PT_FE_A/B); only an energised K1401 connects them to the bridge (HV_OUT_A/B).",
-            "K1401 is a MADE-TO-ORDER relay (no catalogue part has >= 5 kV, a shock-carry rating AND a force-guided aux contact): see notes."]
+            "K1401 is a PLACEHOLDER for a MADE-TO-ORDER relay that does not exist yet (D-64, docs/requirements/patient-relay.md): pin numbers and ratings are requirements, not a part.",
+            "Revision 0.3: the coil supply (Q1401 + U1401) is enabled by K_SUPPLY_EN from the main controller and filled before the shock; K_EN now enables only the coil driver U1402."]
 
 [nets]
 power = ["GND", "VBAT_SYS"]
 global = [
-  "K_EN",           # 12 -> 14: coil supply on (BRIDGE_3V3 logic); 100 k pull-down HERE (contract §5.7)
+  "K_EN",           # 12 -> 14: coil DRIVER (DRV110) on only (issue 3; BRIDGE_3V3 logic); 100 k pull-down R1404 HERE
+  "K_SUPPLY_EN",    # 04 -> 14 (issue 3): coil SUPPLY on (Q1401 + U1401; 3V3_MAIN logic); 100 k pull-down R1421 HERE
   "K_REST_N",       # 14 -> 04, 12: aux contact to GND, low = at rest; pull-up on 04
   "HV_OUT_A", "HV_OUT_B",   # 13 -> 14: bridge outputs (relay NO contacts)
   "PT_FE_A", "PT_FE_B",     # 14 -> 15, 16: relay rest (NC) contacts to the front ends
@@ -37,19 +40,26 @@ reason = "GND and VBAT_SYS are made on 01_power_battery (WP-A), a placeholder in
 type = "pin_not_driven"
 match = "K_EN|Q1402|U1401 Pin 7|U1402 Pin 13"
 until_sheet = "12_bridge_logic"
-reason = "K_EN is driven by the sequencer on 12_bridge_logic (WP-D, placeholder here); the 100 k pull-down R1404 on this sheet defines it as 'coil off' meanwhile."
+reason = "K_EN is driven by the sequencer on 12_bridge_logic (WP-D, drawn in parallel); the 100 k pull-down R1404 on this sheet defines it as 'coil off' meanwhile."
+
+[[erc_accepted]]
+type = "pin_not_driven"
+match = "K_SUPPLY_EN|Q1402|U1401 Pin 7"
+until_sheet = "04_main_mcu"
+reason = "K_SUPPLY_EN (contract issue 3) is driven by the main controller on 04_main_mcu (WP-B, drawn in parallel, not yet at issue 3 in this worktree); the 100 k pull-down R1421 on this sheet defines it as 'coil supply off' meanwhile."
 
 [[erc_accepted]]
 type = "isolated_pin_label"
-match = "K_EN|K_REST_N|HV_OUT_A|HV_OUT_B|PAD_PRESENT_N|PAD_ID_1W|NTC_PADS"
-reason = "Other end on 04_main_mcu, 12_bridge_logic or 13_hv_bridge (WP-B, WP-D, WP-G; placeholders in this worktree). Disappears at the merge."
+match = "K_EN|K_SUPPLY_EN|K_REST_N|HV_OUT_A|HV_OUT_B|PAD_PRESENT_N|PAD_ID_1W|NTC_PADS"
+reason = "Other end on 04_main_mcu, 12_bridge_logic or 13_hv_bridge (WP-B, WP-D, WP-G; drawn in parallel). K_SUPPLY_EN is new in contract issue 3: single-ended until 04 is at issue 3. Disappears at the merge."
 
 
 # ====================================================================== groups
 [[group]]
 id = "relay"
-title = "K1401 patient relay (made to order, DPDT >= 5 kV, cold-switched) and J1401 pad connector"
+title = "K1401 patient relay: PLACEHOLDER for a made-to-order part (D-64; no such relay exists yet) and J1401 pad connector"
 note = """
+PLACEHOLDER (revision 0.3, D-64): no catalogue relay meets the requirement; docs/requirements/patient-relay.md is the specification a maker must meet. The symbol, its terminal numbers and the G12 figures below are a wiring placeholder only, not a selected part.
 At rest (coil off): PT_PAD_A -> NC_A -> PT_FE_A and PT_PAD_B -> NC_B -> PT_FE_B: the pads see only the two front ends (15, 16). Energised: pads -> NO -> HV_OUT_A/B (bridge, 13). The relay is closed and opened with no current (the sequencer on 12 orders it); it must CARRY 65 A peak for <= 15.5 ms, >= 100 A for 20 ms, 465 A for <= 5 us in a fault [UNVERIFIED for every candidate: no maker publishes a pulse/carry rating].
 Candidate search (notes §4): G17 (the design's reference) is a 7.5 kV SF6 relay with 1.0 ohm max contact resistance, 10 A carry, 12 ohm/12 W 100 ms coil and is no longer in Sensata's catalogue. Best real basis: Sensata/Gigavac G12-12Vdc (DPDT vacuum, 8 kV operating / 10 kV test, 20 mOhm, 10 A carry, 15/9 ms, 12 V 60 ohm coil, -55..+125 C). NO catalogue HV relay has an auxiliary contact: the aux contact is a made-to-order requirement (§B7.2), linked to BOTH poles so a single welded pole is seen (fault 29).
 Terminal numbers 1-10 are project numbers (none published). Coil supply below is sized for the worst coil considered (12 ohm, 12 W, G17 class); with a 60 ohm G12-class coil it simply runs at 100 % duty (2.4 W).
@@ -67,21 +77,23 @@ K_REST_N: aux contact AUX_NC closes K_AUX to GND only at rest. 1 k series + TVS 
 
 [[group]]
 id = "boostin"
-title = "Coil supply input disconnect: Q1401 P-FET, slow turn-on, driven by K_EN (zero standby draw)"
+title = "Coil supply input disconnect: Q1401 P-FET, slow turn-on, driven by K_SUPPLY_EN (zero standby draw)"
 note = """
 A boost converter passes VIN to VOUT when disabled (TPS61089 datasheet §8.3.2), so without this switch the reservoir and DRV110 would sit at VBAT_SYS in standby (aluminium-cap leakage up to 0.5 mA rated, DRV110 0.25 mA) — against the zero-standby budget of design §11. Q1401 DMP3013SFV (-30 V, VGS +/-25 V, 17 mOhm max at -4.5 V).
-K_EN high -> Q1402 (2N7002, 3.3 V gate) pulls K_PG down through R1402 47 k. Miller capacitor C1401 68 nF sets the drain slew: ~ (7.4-2.5) V / 47 k ~ 0.1 mA minus 25 uA through R1401 -> ~1.1 V/ms -> reservoir precharge current 6.6 mF x 1.1 V/ms ~ 7 A for ~ 6-7 ms [EST; Q1401 SOA at ~3.7 V x 7 A x 7 ms UNVERIFIED].
-K_EN low -> R1401 100 k pulls the gate to the source; Q1401 off in a few ms. R1404 100 k is the contract's K_EN default (coil off).
+Revision 0.3 (H-1, H-2): K_SUPPLY_EN (main controller; raised when charging for the shock starts, >= 200 ms before RELAY_CMD, FW-12) high -> R1403 -> Q1402 (2N7002, 3.3 V gate) pulls K_PG down through R1402 47 k. Miller capacitor C1401 680 nF (was 68 nF) sets the drain slew ~0.15 V/ms -> reservoir pre-charge ~1 A instead of ~7 A [CALC]. Q1401 dissipates ~1/2 C V^2 ~ 0.14 J either way, now over ~45 ms instead of ~6 ms (lower peak power; SOA still UNVERIFIED).
+K_SUPPLY_EN low (firmware, or the main domain unpowered: R1421 100 k holds it low) -> R1401 100 k pulls the gate to the source; Q1401 off within ~0.1-0.2 s (tau 100 k x 680 nF; harmless: the boost is disabled at once through R1413). R1421 is the contract default for K_SUPPLY_EN; R1404 stays the default for K_EN (coil driver off).
+Simulated (sim/rev3-wph/relay_supply_wph.cir): reservoir at 11 V 60-168 ms after K_SUPPLY_EN; battery peak during the pre-charge 1.7-3.3 A including ~0.6 A of other loads.
 """
 
 [[group]]
 id = "boost"
-title = "12 V boost U1401 TPS61089 (VIN 2.7-12 V, VOUT 4.5-12.6 V, 7 A switch), EN = K_EN"
+title = "12 V boost U1401 TPS61089 (VIN 2.7-12 V, VOUT 4.5-12.6 V), EN = K_SUPPLY_EN, peak switch limit 2.0 A"
 note = """
-FB: VREF 1.212 V; R1407 887 k / R1408 100 k -> 11.96 V (OVP 12.7-13.6 V). FSW: R1405 301 k FSW-to-SW -> ~500 kHz (datasheet point). ILIM: R1406 127 k -> 8.1 A typ (7.3-8.9 A): fast reservoir charge.
-Load: coil peak 0.86 A x 11.6 V ~ 10 W + DRV110/sense ~0.3 W -> ~2.1 A in at 5.5 V, 1.6 A at 7.4 V [CALC]; plus reservoir charging at the current limit for ~10 ms after K_EN (input up to ~8 A, inside the pack protector's 30 A, OUTSIDE the design's 2.0 A budget: notes).
+FB: VREF 1.212 V; R1407 887 k / R1408 100 k -> 11.96 V (OVP 12.7-13.6 V). FSW: R1405 301 k FSW-to-SW -> ~500 kHz (datasheet point).
+ILIM (revision 0.3, H-2): R1406 515 k -> 1,030,000 / 515 k = 2.0 A PEAK SWITCH current (SLVSD38C Eq. 2), tolerance -0.8 A (§9.2.2.3) / +0.8 A (EC table at 127 k) -> 1.2-2.8 A. 515 k is OUTSIDE the datasheet's graphed range (Figure 7-3: 100-400 k): Verify. Being a peak limit with ~2.7 A ripple at 6 V in, the average input at the limit is only ~1-1.8 A, less than the 2.0 A the change order assumed; it still fills the reservoir in <= 168 ms and the coil peak phase is carried by the reservoir (>= 8.7 V) [SIM rev3-wph].
+Load: coil peak 0.86 A x 11.6 V ~ 10 W + DRV110/sense ~0.3 W; the reservoir is pre-filled under K_SUPPLY_EN, so there is no surge at K_EN (I-15).
 L1401 2.2 uH (datasheet nominal; Coilcraft XAL7030-222, Isat >= 9 A [BK, verify]). COUT 3 x 22 uF ceramic on K_VBOOST (datasheet 10-1000 uF effective); the 6.6 mF reservoir sits behind D1401 so the boost loop sees it only while charging it [loop behaviour while charging UNVERIFIED: SIM].
-EN: K_EN through R1413 100 k (R7: reader may be unpowered while its input ramps); internal 800 k pull-down -> 2.9 V high, 1.2 V threshold.
+EN: K_SUPPLY_EN through R1413 100 k (R7: reader may be unpowered while its input ramps); internal 800 k pull-down (SLVSD38C REN) -> 2.9 V high, 1.2 V threshold.
 """
 
 [[group]]
@@ -89,7 +101,8 @@ id = "holdup"
 title = "Hold-up reservoir K_VCOIL: D1401 + 2 x 3300 uF 16 V (6.6 mF) — relay stays closed >= 30 ms if the boost or VBAT_SYS fails"
 note = """
 Sized [CALC, notes §3.5] for the worst case: boost lost at the earliest sequence start (~20 ms after K_EN) while the DRV110 is still in its 33 ms peak phase (coil resistive, tau = R_coil x C), then hold at 0.5 A regulated. Hot coil 15 ohm (hold needs >= 7.8 V): ~48 ms; boost lost during hold: ~60 ms; both > 30 ms. 4.4 mF would leave ~30 ms with no margin; the design's 1.7 mF assumed a constant 3 W draw and no peak phase.
-Precharge happens through Q1401 slew (see input group); standby voltage 0 V. Discharge after a shock through the DRV110 supply (~0.25 mA) and leakage.
+Pre-charge (revision 0.3): filled under K_SUPPLY_EN before the shock is due (budget ~2 A for ~0.1 s, H-6), held at ~11.8 V until K_SUPPLY_EN falls; standby voltage 0 V. Discharge after a shock through the DRV110 supply (0.2-0.25 mA standby, SLVSBA8G) and leakage.
+With the 2.0 A boost limit the coil peak phase draws more than the boost supplies at a low battery, so the reservoir is below 11.6 V when a sequence starts; simulated hold-up after a boost/VBAT_SYS loss: capture notes WP-H, Revision 0.3.
 Nichicon UHE1C332MHD: 16 V, 3300 uF, 12.5 x 35.5 mm, -40..+105 C; 13.6 V worst-case OVP = 85 % of rating.
 """
 
@@ -99,7 +112,7 @@ title = "Coil economiser U1402 DRV110A (peak 0.86 A for 33 ms, hold 0.5 A, 20 kH
 note = """
 RSENSE R1419 0.25 ohm. IPEAK = 0.9 V x 66.67 k / RPEAK / RSENSE: R1415 280 k -> 0.857 A (>= G17 pick-up 8 V / 12 ohm = 0.67 A). IHOLD = 0.15 V x 66.67 k / RHOLD / RSENSE: R1416 80.6 k -> 0.496 A (> G17 worst drop-out 5 V / 12 ohm = 0.42 A; 'hold at ~50 %', design §B7.2). Hold sense voltage 124 mV (> 30 mV minimum). KEEP C1414 0.33 uF -> 33 ms peak (tKEEP = C x 1e5 s/F): covers pull-in while K_VCOIL is still rising from the battery level. OSC to GND -> 20 kHz default (datasheet Eq. 4 text).
 VIN: R1414 1 k from K_VCOIL + C1413 4.7 uF (datasheet Table 3: 1 k at 12 V with EN toggled; internal clamp 15 V; VIN >= 6 V). OUT drives Q1403 gate at VIN (<= 13 V): Q1403 DMN3027LFG has VGS +/-25 V (a +/-12 V part would be overstressed). R1420 100 k holds the gate low when U1402 is unpowered.
-EN: K_EN via R1417 10 k with R1418 47 k to GND (the DRV110 EN pin floats HIGH internally: this keeps it low when K_EN is low or open). K_EN low -> gate off at once.
+EN: K_EN via R1417 10 k with R1418 47 k to GND (the DRV110 EN pin floats HIGH internally: this keeps it low when K_EN is low or open). K_EN low -> gate off at once (CI-8). Revision 0.3: K_EN drives ONLY this enable; VIN is already present from the pre-charged reservoir; start-up delay <= 50 us (SLVSBA8G tD).
 Fast release: coil current at turn-off goes K_COIL_L -> D1402 SS34 -> D1403 SMBJ10A (VBR 11.1-12.3 V) -> K_VCOIL: ~ -12.8 V across the coil instead of -0.5 V (release time is in the timing budget, R-12). The same path freewheels the 20 kHz hold PWM (fast decay: more ripple and loss in hold, acceptable for <= 90 ms). Drain peak = 13.2 V + 12.3 V + ~1 V + 0.5 V ~ 27 V < 30 V VDS (90 %) [CALC].
 The 90 ms on-time cap and the <= 60 ms start window are on 12_bridge_logic (contract §8); this sheet only obeys K_EN. STATUS (open drain) is not read: no contract net.
 """
@@ -135,13 +148,13 @@ pins = """
 ref = "K1401"
 group = "relay"
 lib_id = "aed_patient:PATIENT_RELAY_DPDT_AUX"
-value = "DPDT HV relay + aux (made to order, G12 basis)"
+value = "DPDT HV relay + aux — MADE TO ORDER, PLACEHOLDER (docs/requirements/patient-relay.md)"
 footprint = "aed_patient:PatientRelay_MadeToOrder"
 footprint_todo = true
 mpn = "MADE-TO-ORDER (basis Gigavac/Sensata G12-12Vdc + force-guided aux contact)"
 manufacturer = "TBD"
 datasheet = "https://www.sensata.com/sites/default/files/a/sensata-g12-series-dpdt-high-voltage-relay-datasheet.pdf"
-fields = { DocRef = "K1401", Verify = "carry 65 A pk/15.5 ms, 100 A/20 ms, 465 A/5 us; >= 5 kV contact-contact, pole-pole, contact-coil; aux contact force-guided to both poles; coil pick-up/drop-out; operate <= 15 ms" }
+fields = { DocRef = "K1401 (docs/requirements/patient-relay.md v0.1)", Verify = "no part exists; D-64" }
 pins = """
 1  COM_A    PT_PAD_A
 2  NC_A     PT_FE_A
@@ -241,7 +254,7 @@ footprint = "Package_SON:Diodes_PowerDI3333-8"
 mpn = "DMP3013SFV-7"
 manufacturer = "Diodes Incorporated"
 datasheet = "https://www.diodes.com/assets/Datasheets/DMP3013SFV.pdf"
-fields = { Verify = "SOA for ~7 A at ~3.7 V for ~7 ms during the reservoir precharge" }
+fields = { Verify = "SOA for ~1-3 A at <= 7 V for ~50 ms during the reservoir pre-charge (revision 0.3: ~0.14 J per pre-charge)" }
 pins = """
 1 S VBAT_SYS
 2 S VBAT_SYS
@@ -265,11 +278,12 @@ between = ["VBAT_SYS", "K_PG"]
 ref = "C1401"
 group = "boostin"
 lib_id = "Device:C"
-value = "68n 50V X7R"
+value = "680n 50V X7R"
 footprint = "Capacitor_SMD:C_0603_1608Metric"
-mpn = "GRM188R71H683KA93D"
-manufacturer = "Murata"
-datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM188R71H683KA93D"
+mpn = "TBD: 680 nF 50 V X7R 0603 MLCC (orderable code not confirmed)"
+manufacturer = "TBD (Murata GRM188 series or equivalent)"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor"
+fields = { DocRef = "C1401 Miller slew (revision 0.3, H-2: 68 nF -> 680 nF)", Verify = "orderable 680 nF X7R 0603 code; DC-bias loss at <= 8.4 V (sets the slew); >= 16 V rating is enough (VBAT_SYS <= 8.4 V)" }
 between = ["K_PG", "K_VIN"]
 
 [[part]]
@@ -294,7 +308,7 @@ manufacturer = "onsemi"
 datasheet = "https://www.onsemi.com/pdf/datasheet/2n7002l-d.pdf"
 fields = { Verify = "VGS(th) max vs 3.3 V drive (needs only ~0.1 mA); pinout G1 S2 D3 per stock symbol" }
 pins = """
-1 G K_ENG
+1 G K_SUPG
 2 S GND
 3 D K_PGD
 """
@@ -308,7 +322,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "RC0603FR-071KL"
 manufacturer = "Yageo"
 datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-between = ["K_EN", "K_ENG"]
+between = ["K_SUPPLY_EN", "K_SUPG"]
 
 [[part]]
 ref = "R1404"
@@ -319,8 +333,20 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "RC0603FR-07100KL"
 manufacturer = "Yageo"
 datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-fields = { DocRef = "K_EN default resistor (contract §5.7)" }
+fields = { DocRef = "K_EN default resistor (contract §5.7): coil driver off" }
 between = ["K_EN", "GND"]
+
+[[part]]
+ref = "R1421"
+group = "boostin"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+fields = { DocRef = "K_SUPPLY_EN default resistor (contract issue 3 §5.7): coil supply off" }
+between = ["K_SUPPLY_EN", "GND"]
 
 [[part]]
 ref = "C1402"
@@ -365,7 +391,7 @@ footprint = "Package_DFN_QFN:Texas_VQFN-RNR0011A-11"
 mpn = "TPS61089RNRR"
 manufacturer = "Texas Instruments"
 datasheet = "https://www.ti.com/lit/ds/symlink/tps61089.pdf"
-fields = { Verify = "stability/behaviour while charging the 6.6 mF reservoir through D1401 (datasheet COUT range 10-1000 uF)" }
+fields = { Verify = "stability/behaviour while charging the 6.6 mF reservoir through D1401 (datasheet COUT range 10-1000 uF); current limit at RILIM 515 k (outside Figure 7-3's 100-400 k range)" }
 pins = """
 1  FSW   K_FSW
 2  VCC   K_VCC
@@ -389,7 +415,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "RC0603FR-07100KL"
 manufacturer = "Yageo"
 datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-between = ["K_EN", "K_BEN"]
+between = ["K_SUPPLY_EN", "K_BEN"]
 
 [[part]]
 ref = "L1401"
@@ -400,7 +426,7 @@ footprint = "Inductor_SMD:L_Coilcraft_XAL7030-222"
 mpn = "XAL7030-222MEC"
 manufacturer = "Coilcraft"
 datasheet = "https://www.coilcraft.com/getmedia/1941eff1-c84d-4a7c-b3d5-2b4f8ad9b1a0/xal7030.pdf"
-fields = { Verify = "Isat >= 9 A (ILIM max 8.9 A) and DCR" }
+fields = { Verify = "Isat >= 3 A (ILIM max 2.8 A, revision 0.3) and DCR; datasheet not read" }
 between = ["K_VIN", "K_SW"]
 
 [[part]]
@@ -418,11 +444,12 @@ between = ["K_FSW", "K_SW"]
 ref = "R1406"
 group = "boost"
 lib_id = "Device:R"
-value = "127k"
+value = "515k 1%"
 footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "RC0603FR-07127KL"
+mpn = "RC0603FR-07515KL"
 manufacturer = "Yageo"
 datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+fields = { DocRef = "ILIM 2.0 A peak (revision 0.3, H-2: 127 k -> 515 k)", Verify = "RILIM above the 100-400 k range graphed in SLVSD38C Figure 7-3; Yageo code formula-derived" }
 between = ["K_ILIM", "GND"]
 
 [[part]]

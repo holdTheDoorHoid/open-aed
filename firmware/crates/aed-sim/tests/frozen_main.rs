@@ -58,7 +58,13 @@ fn check_frozen(s: &Scenario) -> RunResult {
                 emptied_at = Some(p.now_ms);
             }
             if p.now_ms > t + limit {
-                assert!(p.cap_v < empty, "{}: {:.0} V {} ms after the freeze", s.name, p.cap_v, p.now_ms - t);
+                assert!(
+                    p.cap_v < empty,
+                    "{}: {:.0} V {} ms after the freeze",
+                    s.name,
+                    p.cap_v,
+                    p.now_ms - t
+                );
                 assert!(!p.charger_running(), "{}: charger still running", s.name);
                 assert!(p.supervisor_alarm, "{}: supervisor alarm off", s.name);
             }
@@ -82,7 +88,8 @@ fn check_frozen(s: &Scenario) -> RunResult {
 }
 
 #[test]
-fn frozen_main_while_charging_during_analysis_empties_the_capacitor_stops_the_charger_and_sounds_the_alarm() {
+fn frozen_main_while_charging_during_analysis_empties_the_capacitor_stops_the_charger_and_sounds_the_alarm(
+) {
     // D-29: the capacitor charges while the analysis runs.
     let r = check_frozen(&freeze_at(RescueState::AnalysingCharging, 3_000, &[]));
     assert!(r.shocks.is_empty());
@@ -94,6 +101,10 @@ fn frozen_main_while_charging_empties_the_capacitor_stops_the_charger_and_sounds
     // charge is done and the device waits in Charging.
     let mut s = freeze_at(RescueState::Charging, 1_000, &[]);
     s.plant.charger_watts = 20.0;
+    // Without compression sensing: with it, a "shock" answer reached while
+    // the charger blanks the chest waits for the charge to end (FW-13), so
+    // the device would go straight to the countdown, never to Charging.
+    s.chest_sensing = false;
     let r = check_frozen(&s);
     assert!(r.entered(RescueState::Charging));
     assert!(r.shocks.is_empty());
@@ -110,14 +121,21 @@ fn frozen_main_while_delivering_empties_the_capacitor_and_sounds_the_alarm() {
     // To freeze in Delivering before the shock, the bridge must not fire at
     // once: here it fails to fire, so the request stays raised and pending
     // when the main controller freezes.
-    let r = check_frozen(&freeze_at(RescueState::Delivering, 0, &[Fault::BridgeFailsToFire]));
+    let r = check_frozen(&freeze_at(
+        RescueState::Delivering,
+        0,
+        &[Fault::BridgeFailsToFire],
+    ));
     assert!(r.shocks.is_empty());
 }
 
 #[test]
 fn without_the_charger_rule_a_frozen_main_leaves_the_capacitor_charged() {
     // The evidence for the hardware rule: switch it off and finding F-3 returns.
-    let mut s = by_name("fault-main-freeze").unwrap();
+    // Frozen while the charger is commanded on (since v0.3 the firmware
+    // switches it off once a charge has settled, so the freeze must catch a
+    // charge in progress).
+    let mut s = freeze_at(RescueState::AnalysingCharging, 3_000, &[]);
     s.plant.charger_gated_by_discharge = false;
     let r = run(&s).unwrap();
     assert!(

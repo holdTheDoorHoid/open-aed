@@ -32,7 +32,9 @@ fn usage() {
     println!("        [--extended]                add compression-sensing variations (touches, breaths, ...)");
     println!("  aed-sim random <seed>             replay one run of the random campaign");
     println!("        (with the same --no-chest / --extended options as the campaign)");
-    println!("  aed-sim record-demo               print a record download (D-09) from a simulated week");
+    println!(
+        "  aed-sim record-demo               print a record download (D-09) from a simulated week"
+    );
     println!("  aed-sim read-record <file>        check and summarise a record download");
 }
 
@@ -53,7 +55,9 @@ fn main() -> ExitCode {
             };
             let mut text = String::new();
             let events: Option<&aed_core::EventRecord<256>> = None;
-            if aed_core::write_record(&mut text, &r.standby, 7 * aed_sim::standby::DAY_S, events).is_err() {
+            if aed_core::write_record(&mut text, &r.standby, 7 * aed_sim::standby::DAY_S, events)
+                .is_err()
+            {
                 return ExitCode::FAILURE;
             }
             print!("{text}");
@@ -122,17 +126,15 @@ fn main() -> ExitCode {
         }
         name => {
             let chosen = if name == "random" {
-                args.get(1)
-                    .and_then(|a| a.parse().ok())
-                    .map(|seed| {
-                        aed_sim::campaign::random_scenario_with(
-                            seed,
-                            aed_sim::campaign::CampaignOptions {
-                                chest_sensing: !args.iter().any(|a| a == "--no-chest"),
-                                extended: args.iter().any(|a| a == "--extended"),
-                            },
-                        )
-                    })
+                args.get(1).and_then(|a| a.parse().ok()).map(|seed| {
+                    aed_sim::campaign::random_scenario_with(
+                        seed,
+                        aed_sim::campaign::CampaignOptions {
+                            chest_sensing: !args.iter().any(|a| a == "--no-chest"),
+                            extended: args.iter().any(|a| a == "--extended"),
+                        },
+                    )
+                })
             } else {
                 by_name(name)
             };

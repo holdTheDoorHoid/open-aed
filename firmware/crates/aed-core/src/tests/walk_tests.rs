@@ -44,7 +44,7 @@ fn walk_config() -> Config {
     Config {
         cpr_period_ms: 15_000,
         analysis_time_limit_ms: 10_000,
-        ..Config::default()
+        ..super::cfg()
     }
 }
 
@@ -59,7 +59,9 @@ fn limit(c: &Config, s: RescueState) -> Option<u32> {
         ),
         S::Analysing | S::AnalysingCharging => Some(c.analysis_time_limit_ms),
         S::Charging => Some(c.charge_time_limit_ms),
-        S::Countdown => Some(c.countdown_ms),
+        // Plus up to 1 s waiting for the chest to be seen after a charge
+        // blanked it (FW-13, D-37).
+        S::Countdown => Some(c.countdown_ms + 1_000),
         S::Delivering => Some(c.delivery_timeout_ms),
         S::Cpr => Some(c.cpr_period_ms),
         S::AttachPads | S::Fault => None,
@@ -223,8 +225,15 @@ fn random_walk_with(seed: u64, length_ms: u32, chest: bool) -> Vec<String> {
             }
             if chest && rng.chance(60) {
                 use super::mock::BoardChest as C;
-                let c = [C::HandsOff, C::HandsOff, C::HandsOff, C::Compressing, C::Unknown, C::Saturated, C::OutOfRange]
-                    [rng.below(7) as usize];
+                let c = [
+                    C::HandsOff,
+                    C::HandsOff,
+                    C::HandsOff,
+                    C::Compressing,
+                    C::Unknown,
+                    C::Saturated,
+                    C::OutOfRange,
+                ][rng.below(7) as usize];
                 b.board.set_chest(c);
             }
             if chest && rng.chance(5) {

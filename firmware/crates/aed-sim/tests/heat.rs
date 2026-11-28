@@ -6,7 +6,13 @@
 //! SIMULATION ONLY: one-node thermal model with parts-study figures
 //! (`src/thermal.rs`), scripted weather, cartoon patient. Says nothing about
 //! a real device.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, missing_docs)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    missing_docs
+)]
 
 use aed_core::{Config, HeatBand, Prompt, Reason, RescueState, TempPoint};
 use aed_rhythm::synth::Rhythm;
@@ -32,14 +38,23 @@ fn ready_at(r: &StandbyResult, t: u32) -> bool {
 // ----- rescues -----------------------------------------------------------------------
 
 #[test]
-fn a_rescue_started_while_too_hot_guides_cpr_at_once_analyses_without_charging_then_shocks_once_cooled() {
+fn a_rescue_started_while_too_hot_guides_cpr_at_once_analyses_without_charging_then_shocks_once_cooled(
+) {
     let r = run(&by_name("hot-device-rescue").unwrap()).unwrap();
     assert!(r.violations.is_empty(), "{:#?}", r.violations);
     assert_eq!(r.shocks.len(), 1);
     assert!(r.said(Prompt::DeviceTooHot));
     assert!(r.said(Prompt::ShockAdvisedTooHot));
-    let held = r.prompts.iter().position(|(_, p)| *p == Prompt::ShockAdvisedTooHot).unwrap();
-    assert_eq!(r.prompts[held + 1].1, Prompt::StartCpr, "CPR at once, never silent");
+    let held = r
+        .prompts
+        .iter()
+        .position(|(_, p)| *p == Prompt::ShockAdvisedTooHot)
+        .unwrap();
+    assert_eq!(
+        r.prompts[held + 1].1,
+        Prompt::StartCpr,
+        "CPR at once, never silent"
+    );
     assert!(r.shocks_held_for_heat >= 1);
     // No charge of any kind while it was too hot: the first charge is the
     // one for the shock.
@@ -74,7 +89,13 @@ fn a_failed_main_temperature_sensor_or_a_supervisor_sensor_stuck_high_does_not_b
 /// A long rescue with no shockable rhythm (every analysis burns a charge
 /// inside the device, D-29) on a hot day: the device warms. Numbers are
 /// printed for the report (SIMULATED).
-fn long_no_shock(ambient: f64, start: f64, minutes: u32, config: Config, vf_from_min: Option<u32>) -> aed_sim::RunResult {
+fn long_no_shock(
+    ambient: f64,
+    start: f64,
+    minutes: u32,
+    config: Config,
+    vf_from_min: Option<u32>,
+) -> aed_sim::RunResult {
     let mut s = Scenario::base("long-no-shock", "long asystole rescue on a hot day");
     s.rhythm = Rhythm::Asystole;
     s.after_shock = vec![];
@@ -83,7 +104,10 @@ fn long_no_shock(ambient: f64, start: f64, minutes: u32, config: Config, vf_from
     s.duration_ms = minutes * 60_000;
     s.expect = Expect::InvariantsOnly;
     if let Some(m) = vf_from_min {
-        s.script.push((Trigger::At(m * 60_000), Action::SetRhythm(Rhythm::coarse_vf())));
+        s.script.push((
+            Trigger::At(m * 60_000),
+            Action::SetRhythm(Rhythm::coarse_vf()),
+        ));
         s.after_shock = vec![Some(Rhythm::Asystole)];
     }
     Simulation::with_config(&s, config).unwrap().run()
@@ -115,7 +139,8 @@ fn a_long_no_shock_rescue_on_a_50_c_day_stays_below_the_60_c_limit_and_is_never_
 }
 
 #[test]
-fn a_long_rescue_in_a_57_c_car_reaches_the_limit_only_without_the_precharge_rule_and_vf_is_then_not_silent() {
+fn a_long_rescue_in_a_57_c_car_reaches_the_limit_only_without_the_precharge_rule_and_vf_is_then_not_silent(
+) {
     // Without the 55 °C rule the burned charges take the device to 60 °C;
     // VF at minute 20 then gets "Shock advised. Device too hot to charge."
     let without = long_no_shock(
@@ -129,10 +154,16 @@ fn a_long_rescue_in_a_57_c_car_reaches_the_limit_only_without_the_precharge_rule
         Some(20),
     );
     assert!(without.violations_of(Rule::ChargedWhenTooHot).is_empty());
-    assert!(without.violations_of(Rule::LeftWithoutInstruction).is_empty());
+    assert!(without
+        .violations_of(Rule::LeftWithoutInstruction)
+        .is_empty());
     // With the rule it burns no charges above 55 °C and shocks the VF.
     let with_rule = long_no_shock(57.0, 58.0, 26, Config::default(), Some(20));
-    assert!(with_rule.violations.is_empty(), "{:#?}", with_rule.violations);
+    assert!(
+        with_rule.violations.is_empty(),
+        "{:#?}",
+        with_rule.violations
+    );
     assert!(with_rule.peak_interior_c < 60.0);
     assert_eq!(with_rule.shocks.len(), 1, "VF at minute 20 is shocked");
     println!(
@@ -149,7 +180,10 @@ fn a_long_rescue_in_a_57_c_car_reaches_the_limit_only_without_the_precharge_rule
         with_rule.shocks.len()
     );
     if without.peak_interior_c > 60.0 && without.shocks.is_empty() {
-        assert!(without.said(Prompt::ShockAdvisedTooHot), "never silent about a held shock");
+        assert!(
+            without.said(Prompt::ShockAdvisedTooHot),
+            "never silent about a held shock"
+        );
     }
 }
 
@@ -186,8 +220,15 @@ fn a_hot_afternoon_in_a_car_goes_ready_not_ready_cooled_self_test_ready() {
         .unwrap()
         .0;
     assert!(!ready_at(&r, cooled + 20 * MIN));
-    let retest = r.tests.iter().find(|t| t.at_s >= cooled + 30 * MIN).unwrap();
-    assert!(retest.at_s <= cooled + 36 * MIN, "re-tested at once once cooled");
+    let retest = r
+        .tests
+        .iter()
+        .find(|t| t.at_s >= cooled + 30 * MIN)
+        .unwrap();
+    assert!(
+        retest.at_s <= cooled + 36 * MIN,
+        "re-tested at once once cooled"
+    );
     // (The decision at a wake is made before that wake's test runs.)
     assert!(ready_at(&r, retest.at_s + 10 * MIN));
     assert_eq!(r.standby.heat().lifetime().too_hot_events, 1);
@@ -219,9 +260,15 @@ fn over_70_c_latches_service_needed_which_cooling_and_tests_do_not_clear() {
     no_violations(&r);
     let end = 5 * DAY_S - 1;
     let reasons = reasons_at(&r, end);
-    assert!(reasons.contains(&Reason::ServiceNeededOverheat), "{reasons:?}");
+    assert!(
+        reasons.contains(&Reason::ServiceNeededOverheat),
+        "{reasons:?}"
+    );
     assert!(reasons.contains(&Reason::PadsReplaceAfterOverheat));
-    assert!(!reasons.contains(&Reason::WasTooHot), "it cooled and was re-tested");
+    assert!(
+        !reasons.contains(&Reason::WasTooHot),
+        "it cooled and was re-tested"
+    );
     assert!(!ready_at(&r, end));
     assert!(r.standby.heat().lifetime().max.unwrap() > aed_core::DeciC::from_c(70));
 }
@@ -249,7 +296,8 @@ fn an_8_hour_warm_spell_makes_the_device_not_ready_until_cooled_and_retested() {
 }
 
 #[test]
-fn a_log_gap_from_the_battery_taken_out_is_recorded_not_ready_until_a_self_test_passes_and_nothing_durable_is_lost() {
+fn a_log_gap_from_the_battery_taken_out_is_recorded_not_ready_until_a_self_test_passes_and_nothing_durable_is_lost(
+) {
     let mut s = StandbyScenario {
         weather: Some(car_afternoon),
         ..StandbyScenario::quiet(5)
@@ -262,7 +310,10 @@ fn a_log_gap_from_the_battery_taken_out_is_recorded_not_ready_until_a_self_test_
     assert!(d.heat_gap_found);
     assert_eq!(r.power_losses, 1);
     let life = r.standby.heat().lifetime();
-    assert_eq!(life.too_hot_events, 1, "the car afternoon before the power loss is kept");
+    assert_eq!(
+        life.too_hot_events, 1,
+        "the car afternoon before the power loss is kept"
+    );
     assert!(life.gaps_unknown_length >= 1);
     let test_after = r.tests.iter().find(|x| x.at_s >= t).unwrap();
     assert!(!ready_at(&r, t) || test_after.at_s == t);
@@ -273,17 +324,29 @@ fn a_log_gap_from_the_battery_taken_out_is_recorded_not_ready_until_a_self_test_
 fn a_dead_capacitor_temperature_sensor_puts_the_tests_off_and_is_not_ready() {
     let mut s = StandbyScenario::quiet(3);
     s.changes = vec![
-        (DAY_S, Change::TempSensor(TempPoint::Capacitor, TempSensorFault::Missing)),
-        (DAY_S, Change::TempSensor(TempPoint::Supervisor, TempSensorFault::Missing)),
+        (
+            DAY_S,
+            Change::TempSensor(TempPoint::Capacitor, TempSensorFault::Missing),
+        ),
+        (
+            DAY_S,
+            Change::TempSensor(TempPoint::Supervisor, TempSensorFault::Missing),
+        ),
     ];
     let r = run_standby(&s).unwrap();
     no_violations(&r);
     assert!(reasons_at(&r, 2 * DAY_S).contains(&Reason::TempSensorFault));
-    assert!(!r.tests.iter().any(|t| t.at_s > DAY_S), "no test charges a capacitor of unknown temperature");
+    assert!(
+        !r.tests.iter().any(|t| t.at_s > DAY_S),
+        "no test charges a capacitor of unknown temperature"
+    );
 }
 
 fn slow_warming(t: u32) -> f64 {
-    20.0 + 15.0 * (f64::from(t % DAY_S) / f64::from(DAY_S) * std::f64::consts::TAU).sin().max(0.0)
+    20.0 + 15.0
+        * (f64::from(t % DAY_S) / f64::from(DAY_S) * std::f64::consts::TAU)
+            .sin()
+            .max(0.0)
 }
 
 #[test]
@@ -293,7 +356,10 @@ fn a_stuck_main_or_supervisor_temperature_sensor_is_found_and_shown_not_ready() 
             weather: Some(slow_warming),
             ..StandbyScenario::quiet(2)
         };
-        s.changes = vec![(HOUR, Change::TempSensor(point, TempSensorFault::StuckAt(20.0)))];
+        s.changes = vec![(
+            HOUR,
+            Change::TempSensor(point, TempSensorFault::StuckAt(20.0)),
+        )];
         let r = run_standby(&s).unwrap();
         no_violations(&r);
         let flagged = r
@@ -355,7 +421,10 @@ fn capacitor_wear_thresholds_service_soon_then_due_and_the_weekly_test_continues
     assert!(soon.contains(&Reason::CapacitorServiceSoon) && ready_at(&r, 22 * DAY_S));
     let due = reasons_at(&r, 29 * DAY_S);
     assert!(due.contains(&Reason::CapacitorServiceDue) && !ready_at(&r, 29 * DAY_S));
-    assert!(r.standby.wear().test_charges >= 7, "the weekly test continues past the life");
+    assert!(
+        r.standby.wear().test_charges >= 7,
+        "the weekly test continues past the life"
+    );
 }
 
 fn cold_then_hot(t: u32) -> f64 {
@@ -378,7 +447,11 @@ fn dock_charging_is_inhibited_when_cold_and_when_hot() {
     assert!(!cold.battery_charging_allowed);
     let hot = r.decision_at(2 * DAY_S + 12 * HOUR).unwrap();
     assert!(!hot.battery_charging_allowed);
-    assert!(r.decision_at(3 * DAY_S + 12 * HOUR).unwrap().battery_charging_allowed);
+    assert!(
+        r.decision_at(3 * DAY_S + 12 * HOUR)
+            .unwrap()
+            .battery_charging_allowed
+    );
 }
 
 // ----- months of mixed weather ------------------------------------------------------------
@@ -413,20 +486,31 @@ fn months_of_mixed_weather_keep_every_heat_invariant() {
         (40 * DAY_S + 3 * HOUR, Change::PowerLoss),
         (60 * DAY_S, Change::Docked(false)),
         (65 * DAY_S, Change::Docked(true)),
-        (100 * DAY_S + 9 * HOUR, Change::InUseUntil(100 * DAY_S + 10 * HOUR)),
+        (
+            100 * DAY_S + 9 * HOUR,
+            Change::InUseUntil(100 * DAY_S + 10 * HOUR),
+        ),
         (152 * DAY_S, Change::PowerLoss),
         (200 * DAY_S, Change::TempOffset(TempPoint::Pads, 1.5)),
     ];
     let r = run_standby(&s).unwrap();
     no_violations(&r);
     let life = r.standby.heat().lifetime();
-    let not_ready = r.decisions.iter().filter(|(_, d)| !d.readiness.is_ready()).count();
+    let not_ready = r
+        .decisions
+        .iter()
+        .filter(|(_, d)| !d.readiness.is_ready())
+        .count();
     let held = r
         .decisions
         .iter()
         .filter(|(_, d)| aed_core::Standby::<2160>::deferred_for_heat(d))
         .count();
-    let no_dock = r.decisions.iter().filter(|(_, d)| !d.battery_charging_allowed).count();
+    let no_dock = r
+        .decisions
+        .iter()
+        .filter(|(_, d)| !d.battery_charging_allowed)
+        .count();
     println!(
         "{days} days of mixed weather (SIMULATED): {} wakes, {} tests, hottest {:?} dC, coolest {:?} dC, \
          {} too-hot episodes, {} service latch(es), {:.1} h above 60 °C, {} gaps, {} wakes not ready, \
@@ -447,10 +531,16 @@ fn months_of_mixed_weather_keep_every_heat_invariant() {
         r.standby.heat().log().len(),
         r.standby.heat().log().overwritten()
     );
-    assert!(life.too_hot_events >= 3, "the weather must exercise the limits");
+    assert!(
+        life.too_hot_events >= 3,
+        "the weather must exercise the limits"
+    );
     assert!(life.service_events >= 1);
     assert!(r.standby.heat().service_needed());
     assert_eq!(r.power_losses, 2);
-    assert!(r.standby.heat().log().overwritten() > 0, "the record wrapped");
+    assert!(
+        r.standby.heat().log().overwritten() > 0,
+        "the record wrapped"
+    );
     assert_ne!(r.standby.heat().band(), HeatBand::TooHot);
 }

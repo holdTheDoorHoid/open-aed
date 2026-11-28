@@ -2,17 +2,18 @@
 # BQ25887 2-cell boost charger with 0-45 C TS window, dock data transceiver (VDOCK-powered open-drain driver,
 # 74LVC1G17 receiver on 3V3_MAIN), dock-detect MOSFET.
 # NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a). Nothing here is an instruction to build or power anything.
-# Source: docs/HARDWARE_DESIGN.md §B1.4-B1.5, §11; contract.md issue 2 §5.1, §5.2, §8 row 02, §9 WP-A.
+# Source: docs/HARDWARE_DESIGN.md §B1.4-B1.5, §11; contract.md issue 2 §5.1, §5.2, §8 row 02, §9 WP-A;
+# issue 3 §0 (VBAT_MID) and capture-notes/rev3-changes.md WP-A A-1.
 # Capture notes: hardware/aed-main/capture-notes/WP-A.md. References 201-299.
 
 [sheet]
 name = "02_power_dock"
 title = "Dock contacts, TPS25947 input protection, BQ25887 2S charger (TS window), dock data, dock detect"
-source = "docs/HARDWARE_DESIGN.md §B1.4-B1.5; contract.md issue 2 §5.1, §5.2, §8, §9 (WP-A)"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B1.4-B1.5; contract.md issue 3 §0, §5.1, §5.2, §8, §9 (WP-A)"
 date = "2026-11-27"
 comments = [
   "Contacts are dead when undocked (D-46): the eFuse blocks reverse current, the data contact is only ever pulled low by Q201",
-  "U201 MID / CBSET node BAT_MID_02 is NOT yet joined to the pack mid-point (sheet 01 BAT_MID): contract has no net (issue C-1)",
+  "Issue 3 (rev 0.3, A-1): U201 MID and CBSET join the pack mid-point through the contract net VBAT_MID (from J101 pin 3 on 01)",
 ]
 
 [nets]
@@ -27,6 +28,7 @@ global = [
   "DOCK_DET_N",   # Q202 (open drain) -> 03, 04; pull-up 100k to 3V3_AON on 03
   "I2C_M_SCL",
   "I2C_M_SDA",
+  "VBAT_MID",     # issue 3 (I-1): pack mid-point from 01 (J101 pin 3) -> U201 MID via R207 300 ohm, CBSET via R208 100 ohm
 ]
 
 [[erc_accepted]]
@@ -57,7 +59,8 @@ ILIM: IINMAX = KILIM / RILIM, KILIM = 1110 A.ohm typ: R206 562 ohm -> 1.98 A. Ch
 CD (active-high disable, 900 k internal pull-down) = CHGR_CE_N directly: low = charge (D-48 default: a docked, switched-off device still charges). R211 100 k is the contract's default resistor.
 TS window (D-48 hard stop 0-45 C): the 0-45 C window cannot be made with the RT1/RT2 pair of Eq 1-2 (RT2 comes out negative: the BQ25887 T1-T5 span is 0-60 C). Chosen: RT1 only (R209 10.0 k REGN->TS), RT2 not fitted. With a 10 k B25/50 = 3380 NTC: T1 (73.25 % REGN, charge suspended below) at about +1 C, T5 (34.375 %) at about 44 C; with VT and 1 % NTC/resistor tolerance T5 = 43.5-44.8 C, T1 = 0.5-1.9 C [CALC from the B-equation, not from the maker's R-T table: VERIFY]. Between T3 (about 31 C) and T5 the JEITA defaults apply: 4.0 V/cell, 100 % current (REG08 reset values) - conservative.
 NTC TH201 is a board-mounted 0402 NTC placed against the cells (the pack's two NTCs belong to U101 on sheet 01): DEPARTURE, see capture notes.
-MID / CBSET: MID through 300 ohm (pin table: reverse-plug protection), CBSET through R208 100 ohm (balancing 4.2 / 100 = 42 mA, 0.18 W). Their common node BAT_MID_02 must be the pack mid-point (J101 pin 3 on sheet 01); the contract has NO inter-sheet net for it (issue C-1). Without it the charger cannot regulate per cell. Until the contract adds it this node is left joined only to R207 and R208.
+MID / CBSET: MID through 300 ohm (pin table: reverse-plug protection), CBSET through R208 100 ohm (balancing 4.2 / 100 = 42 mA, 0.18 W). Issue 3 (rev 0.3, A-1, I-1): their common node is the contract net VBAT_MID, the pack mid-point from J101 pin 3 on sheet 01, so the charger regulates each cell. VBAT_MID is referred to the pack negative (BAT_NEG, cell side of R101) while U201 GND is system GND; the difference is the R101 drop, <= 2 mOhm x 21 A = 42 mV peak, 18 mV at 9.2 A [CALC] and ~0 while only charging (charge current returns through R101 too: <= 2 A x 2 mOhm = 4 mV).
+One balancer only (design §B1.1, rev 0.3 A-4): the BQ25887's balancing through CBSET is the one kept; the MAX17320's is disabled by configuration (nBalTh.BALCFG = 0, MAX17320 datasheet Rev 12 Table 21; record on sheet 01).
 STAT and PG unused (open drain, left open). PSEL = GND (adapter, 3 A class; ILIM pin sets the real limit).
 """
 
@@ -419,7 +422,7 @@ mpn = "generic 0402 300R 1%"
 manufacturer = "any"
 description = "MID series 300 ohm (pin table: bottom-cell reverse plug protection)"
 new_row = true
-between = ["CHG_MID", "BAT_MID_02"]
+between = ["CHG_MID", "VBAT_MID"]
 
 [[part]]
 ref = "R208"
@@ -430,7 +433,7 @@ footprint = "Resistor_SMD:R_1206_3216Metric"
 mpn = "generic 1206 100R 1% 0.25W"
 manufacturer = "any"
 description = "CBSET current limit: 4.2/100 = 42 mA balancing, 0.18 W"
-between = ["CHG_CB", "BAT_MID_02"]
+between = ["CHG_CB", "VBAT_MID"]
 
 # ====================================================================== parts: data
 [[part]]

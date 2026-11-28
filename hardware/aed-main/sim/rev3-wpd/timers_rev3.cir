@@ -1,0 +1,102 @@
+* timers_rev3.cir - new or changed WP-D timers of revision 0.3 (sheets 09 and 12)
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* Circuits copied from hardware/aed-main/specs/12_bridge_logic.toml and 09_interlock.toml (revision 0.3 capture):
+*   P1CAP  ACT -> R6214 113k thin film -> P1_RC, C1282 100n C0G +-2 %, D1216 BAS116; U1271 TLV7031 IN+ P1_TH, IN- P1_RC;
+*          P1_TH = R6215 57.6k / R6216 100k (thin film) on BRIDGE_3V3                  (phase-1 cap, change D-10)
+*   P2CAP  P2S -> R6219 76.8k thin film -> P2_RC, C1283 100n C0G +-2 %, D1217 BAS116; U1273 at R6220 57.6k / R6221 100k
+*                                                                                       (phase-2 cap, change D-11)
+*   CHAIN  CHAIN (LVC1G08 output on 5V0_SYS) -> R979 10k thick film -> CHAIN_RC, C960 10n C0G; U936 SN74LVC1G17 on
+*          5V0_SYS -> CHAIN_D                                                           (window-start delay, change D-6)
+*   REARM  as ../logic-relay/races.cir (B), at corners: how long after the first consent returns REARM_N releases the
+*          WSTART clear; the CHAIN_D edge must come later than that.
+* Each timer starts at t = 1 ms. Corner s: 0 nominal, -1 every part towards the EARLIEST event, +1 towards the LATEST.
+* Bands as ../logic-relay/timers.cir (capture-notes/WP-D.md §3): C0G +-2.2 % (+-2 % part) or +-5.5 %; thin film +-0.35 %;
+* thick film +-2 %; TLV7031/7041 VOS +-8 mV, hysteresis 3/10/25 mV; BAS116 leakage 0 or 80 nA (150 C maximum used as a
+* bound for -20..+70 C); SN74LVC1G17 at 5 V: VT+ 0.482-0.609 x VCC (SCES351Y, 4.5 V row), input leakage +-5 uA (II).
+* Temperature enters only through these bands (the parts' own temperature terms are inside them).
+.include ../logic-relay/models/behavioural.lib
+
+.param s=0
+.param ileak={s<0 ? 80n : 0}
+.param vos={8m*s}
+.param hyst={s>0 ? 25m : (s<0 ? 3m : 10m)}
+.param ftp5={0.5455+0.0635*s}
+.param iin17={-5u*s}
+.param tst=1m
+
+V33 r33 0 3.3
+V50 r50 0 5.08
+Vgo33 g33i 0 PULSE(0 3.3 {tst} 5n 5n 1 2)
+Vgo50 g50i 0 PULSE(0 5.08 {tst} 5n 5n 1 2)
+
+* ---------------- phase-1 cap (12)
+Rp1d g33i act 25
+R1233 act 0 100k
+R6214 act p1rc {113k*(1+0.0035*s)}
+D1216 p1rc act bas116
+Ilp1 act p1rc {ileak}
+C1282 p1rc 0 {100n*(1+0.022*s)}
+R6215 r33 p1th {57.6k*(1-0.0035*s)}
+R6216 p1th 0 {100k*(1+0.0035*s)}
+Xp1 p1th p1rc p1cn r33 0 cmp params: vos={-vos} hyst={hyst} od=0
+R6217 p1cn 0 100k
+
+* ---------------- phase-2 cap (12)
+Rp2d g33i p2s 25
+R6218 p2s r33 100k
+R6219 p2s p2rc {76.8k*(1+0.0035*s)}
+D1217 p2rc p2s bas116
+Ilp2 p2s p2rc {ileak}
+C1283 p2rc 0 {100n*(1+0.022*s)}
+R6220 r33 p2th {57.6k*(1-0.0035*s)}
+R6221 p2th 0 {100k*(1+0.0035*s)}
+Xp2 p2th p2rc p2cn r33 0 cmp params: vos={-vos} hyst={hyst} od=0
+R6222 p2cn 0 100k
+
+* ---------------- window-start delay (09)
+Rcd g50i chain 25
+R961 chain 0 100k
+R979 chain chrc {10k*(1+0.02*s)}
+C960 chrc 0 {10n*(1+0.055*s)}
+Iin936 0 chrc {iin17}
+X936 chrc chaind r50 0 schmitt params: ftp={ftp5} ftm=0.387 inv=0
+R980 chaind 0 100k
+
+* ---------------- re-arm release (09), consent returns at t = 1 ms after a long absence
+Va ai 0 PWL(0 5.08 1m 5.08 1.00001m 0 20m 0)
+Rad ai anyn 25
+R968 anyn 0 100k
+R969 anyn arc {549k*(1-0.0035*s)}
+D906 arc anyn bas116
+C958 arc 0 {100n*(1-0.055*s)}
+R970 r50 ath {56.2k*(1+0.0035*s)}
+R971 ath 0 {100k*(1-0.0035*s)}
+Xac ath arc rearmn r50 0 cmp params: vos={vos} hyst={hyst} od=1
+R972 rearmn r50 {100k*(1+0.02*s)}
+Cpin rearmn 0 {10p*(1+s*0.5)}
+* the RC starts fully charged (all consents absent for a long time)
+.ic v(arc)=5.08 v(rearmn)=0
+
+.control
+set noaskquit
+foreach sc -1 0 1
+  alterparam s=$sc
+  reset
+  tran 1u 15m 0 1u uic
+  meas tran tp1 when v(p1cn)=1.65 fall=1
+  meas tran tp2 when v(p2cn)=1.65 fall=1
+  meas tran tch when v(chaind)=2.54 rise=1
+  meas tran trel when v(rearmn)=2.54 rise=1
+  let p1 = (tp1 - 1m)*1000
+  let p2 = (tp2 - 1m)*1000
+  let ch = (tch - 1m)*1e6
+  let rl = (trel - 1m)*1e6
+  echo "RESULT corner= $sc phase1_cap_ms= $&p1 (firmware longest phase 1 = 10.0 ms; CO band 10.75-11.85)"
+  echo "RESULT corner= $sc phase2_cap_ms= $&p2 (firmware longest phase 2 = 6.7 ms; CO band 7.31-8.06)"
+  echo "RESULT corner= $sc CHAIN_to_CHAIN_D_us= $&ch (must exceed the REARM_N release)"
+  echo "RESULT corner= $sc REARM_N_release_after_consent_us= $&rl"
+end
+.endc
+.end

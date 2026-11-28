@@ -32,8 +32,16 @@ fn write_split(data: &std::path::Path, dir: &std::path::Path) -> ExitCode {
     };
     let split = make_split(&records);
     let files = [
-        ("development.txt", "Development half: all tuning uses only these records.", &split.development),
-        ("held_out.txt", "Held-out half: run once, with frozen settings, at the end.", &split.held_out),
+        (
+            "development.txt",
+            "Development half: all tuning uses only these records.",
+            &split.development,
+        ),
+        (
+            "held_out.txt",
+            "Held-out half: run once, with frozen settings, at the end.",
+            &split.held_out,
+        ),
     ];
     if let Err(e) = std::fs::create_dir_all(dir) {
         eprintln!("cannot create {}: {e}", dir.display());
@@ -45,11 +53,27 @@ fn write_split(data: &std::path::Path, dir: &std::path::Path) -> ExitCode {
             eprintln!("cannot write {file}: {e}");
             return ExitCode::FAILURE;
         }
-        println!("{file}: {} records, sha256 {}", names.len(), sha256_hex(text.as_bytes()));
+        println!(
+            "{file}: {} records, sha256 {}",
+            names.len(),
+            sha256_hex(text.as_bytes())
+        );
     }
     for r in &records {
-        let side = if split.development.contains(&format!("{}/{}", r.db.name(), r.name)) { "development" } else { "held-out" };
-        println!("  {}/{}  {:<18} {side}", r.db.name(), r.name, r.content.text());
+        let side = if split
+            .development
+            .contains(&format!("{}/{}", r.db.name(), r.name))
+        {
+            "development"
+        } else {
+            "held-out"
+        };
+        println!(
+            "  {}/{}  {:<18} {side}",
+            r.db.name(),
+            r.name,
+            r.content.text()
+        );
     }
     ExitCode::SUCCESS
 }
@@ -75,7 +99,12 @@ fn today() -> String {
 
 fn git(args: &[&str]) -> Option<String> {
     let dir = env!("CARGO_MANIFEST_DIR");
-    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -85,13 +114,23 @@ fn commit_text() -> String {
     let Some(hash) = git(&["rev-parse", "--short", "HEAD"]) else {
         return "unknown (git not available)".into();
     };
-    let rhythm = git(&["status", "--porcelain", "--", "../aed-rhythm", "../aed-types"]).unwrap_or_default();
+    let rhythm = git(&[
+        "status",
+        "--porcelain",
+        "--",
+        "../aed-rhythm",
+        "../aed-types",
+    ])
+    .unwrap_or_default();
     let all = git(&["status", "--porcelain"]).unwrap_or_default();
     let others = all.lines().count();
     let rhythm_note = if rhythm.is_empty() {
         "no uncommitted changes in `aed-rhythm` or `aed-types`".to_string()
     } else {
-        format!("**uncommitted changes in the analyser**: {}", rhythm.lines().collect::<Vec<_>>().join("; "))
+        format!(
+            "**uncommitted changes in the analyser**: {}",
+            rhythm.lines().collect::<Vec<_>>().join("; ")
+        )
     };
     format!("`{hash}` ({rhythm_note}; {others} uncommitted path(s) elsewhere in the repository)")
 }
@@ -173,9 +212,17 @@ fn main() -> ExitCode {
     let only = match &records {
         None => None,
         Some(path) => match std::fs::read(path) {
-            Ok(bytes) => match std::str::from_utf8(&bytes).map_err(|e| e.to_string()).and_then(parse_list) {
+            Ok(bytes) => match std::str::from_utf8(&bytes)
+                .map_err(|e| e.to_string())
+                .and_then(parse_list)
+            {
                 Ok(list) => {
-                    eprintln!("restricted to {} records from {} (sha256 {})", list.len(), path.display(), sha256_hex(&bytes));
+                    eprintln!(
+                        "restricted to {} records from {} (sha256 {})",
+                        list.len(),
+                        path.display(),
+                        sha256_hex(&bytes)
+                    );
                     Some((list, path.display().to_string(), sha256_hex(&bytes)))
                 }
                 Err(e) => {
@@ -192,14 +239,30 @@ fn main() -> ExitCode {
     if dbs.is_empty() {
         dbs = Db::ALL.to_vec();
     }
-    eprintln!("aed-eval: development tool, not a medical device. Evaluating {dbs:?} from {} ...", data.display());
-    let settings = if untuned { aed_eval::tune::UNTUNED } else { aed_rhythm::Settings::DEFAULT };
+    eprintln!(
+        "aed-eval: development tool, not a medical device. Evaluating {dbs:?} from {} ...",
+        data.display()
+    );
+    let settings = if untuned {
+        aed_eval::tune::UNTUNED
+    } else {
+        aed_rhythm::Settings::DEFAULT
+    };
     let start = match (warm, warm_guard_ms) {
         (false, _) => aed_eval::eval::Start::Cold,
         (true, None) => aed_eval::eval::Start::DEVICE_WARM,
-        (true, Some(ms)) => aed_eval::eval::Start::Warm { guard_samples: ms * aed_eval::eval::FS / 1000 },
+        (true, Some(ms)) => aed_eval::eval::Start::Warm {
+            guard_samples: ms * aed_eval::eval::FS / 1000,
+        },
     };
-    let (outputs, failed) = run_all_with(&data, &dbs, threads, only.as_ref().map(|(l, _, _)| l.as_slice()), settings, start);
+    let (outputs, failed) = run_all_with(
+        &data,
+        &dbs,
+        threads,
+        only.as_ref().map(|(l, _, _)| l.as_slice()),
+        settings,
+        start,
+    );
     if outputs.is_empty() {
         eprintln!("No records could be loaded.");
         for (db, r, e) in &failed {

@@ -24,7 +24,13 @@ pub fn secs(ms: u32) -> String {
 pub fn timeline(r: &RunResult) -> String {
     let mut out = String::new();
     for e in &r.timeline {
-        let _ = writeln!(out, "{:>8}  {}  {}", clock(e.t_ms), e.source.label(), e.text);
+        let _ = writeln!(
+            out,
+            "{:>8}  {}  {}",
+            clock(e.t_ms),
+            e.source.label(),
+            e.text
+        );
     }
     out
 }
@@ -34,7 +40,11 @@ pub fn timeline(r: &RunResult) -> String {
 pub fn summary(r: &RunResult) -> String {
     let mut out = String::new();
     let s = &r.scenario;
-    let _ = writeln!(out, "SUMMARY: {}  (SIMULATION ONLY; provisional settings)", s.name);
+    let _ = writeln!(
+        out,
+        "SUMMARY: {}  (SIMULATION ONLY; provisional settings)",
+        s.name
+    );
     let _ = writeln!(out, "  Scenario:            {}", s.description);
     let _ = writeln!(out, "  Simulated time:      {}", secs(s.duration_ms));
     match r.pads_on_to_first_shock_ms() {
@@ -118,7 +128,12 @@ pub fn summary(r: &RunResult) -> String {
         let _ = writeln!(out, "  Faults injected:     none");
     }
     for (t, f) in &r.injected {
-        let _ = writeln!(out, "  Fault injected:      {} at {}", f.describe(), clock(*t));
+        let _ = writeln!(
+            out,
+            "  Fault injected:      {} at {}",
+            f.describe(),
+            clock(*t)
+        );
     }
     if !r.supervisor_refusals.is_empty() {
         let reasons: Vec<&str> = r
@@ -136,7 +151,13 @@ pub fn summary(r: &RunResult) -> String {
     } else {
         let _ = writeln!(out, "  SAFETY INVARIANTS BROKEN: {}", r.violations.len());
         for v in &r.violations {
-            let _ = writeln!(out, "    at {}: {} ({})", clock(v.t_ms), v.rule.describe(), v.detail);
+            let _ = writeln!(
+                out,
+                "    at {}: {} ({})",
+                clock(v.t_ms),
+                v.rule.describe(),
+                v.detail
+            );
         }
     }
     out

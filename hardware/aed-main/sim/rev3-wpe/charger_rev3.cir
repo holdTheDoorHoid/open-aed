@@ -1,0 +1,233 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* charger_rev3.cir — WP-E re-run of the 10_hv_charger flyback for design revision 0.3 (rev3-changes.md E-1, E-2,
+* S-12). Same per-cycle method and the same hand-built models as ../charger-storage/charger.cir (read its header:
+* on-time analytic, flyback transistor-level per cycle at 14 capacitor voltages, charge time integrated).
+* What is new here:
+*  a. Transformer loss as a factor etaT on the delivered energy (core + AC winding loss as a fraction of the
+*     throughput, rev3-changes E-2: >= 90 %). etaT is an ASSUMED requirement, not a transformer model.
+*  b. The v0.3 inductance tolerance 7.5 uH +10 % / -5 % (7.125 - 8.25 uH) instead of +-10 %.
+*  c. The v0.3 standing load 2.80 Mohm (board 3.90 Mohm || capacitor's internal 10 Mohm, HARDWARE_DESIGN §B5.6).
+*  d. The LT3751 one-shot clock (datasheet rev D: 32 / 38 / 44 us; "maximum IPK will not be reached within the
+*     refresh clock period ... lower than expected maximum output power"). The datasheet does not say how the
+*     clock limits the cycle; modelled here [EST] as: if on-time + flyback + 0.5 us exceeds tclk, the on-time is
+*     cut to fit, the peak current falls in proportion, the energy with its square. A BOUND, not a model.
+*  e. Flyback duration at the top of the L3 trip band (what the VOUT comparator gets to see), and clamp energy
+*     at the L3 top with the SMCJ45A at its quoted minimum VBR and a cold estimate.
+*  NOT modelled (as the original): core loss as a circuit, winding AC resistance, LT3751 minimum on/off times,
+*  VTRANS ripple, temperatures.
+.include ../charger-storage/models/datasheet_models.lib
+* clamp TVS: model as ../charger-storage (SMCJ45A, BV 52.6 V nominal) with BV as a parameter; swept at 52.6, the
+* quoted minimum 50.0 V [UNVERIFIED, WP-E §4] and a cold estimate 47.75 V (x 0.955 at -20 C, +0.1 %/K [EST]).
+.param vt=7.0 ipk=21.4 lp=7.5u leak=0.01 nturn=50 vout=1000 trr=100n vfadd=0 tsim=20u tvsbv=52.6
+.param kc={sqrt(1-leak)}
+.param ls={lp*nturn*nturn}
+
+VTR vt 0 {vt}
+LPRI vt drn {lp} ic={ipk}
+LSEC 0 sec {ls} ic=0
+K1 LPRI LSEC {kc}
+COSS drn src 1.2n ic=0.1
+DBP src drn DBODYP
+RSNS src 0 5m
+RSNB vt snb 10
+CSNB snb drn 1n ic={vt}
+DCL drn clp ES3D
+VCLX clp clx 0
+DTVS vt clx TVSV
+.model TVSV d(is=1e-12 n=1 bv={tvsbv} ibv=1m nbv=1.5 rs=0.97 cjo=1.5n)
+RWS sec s1 20
+CSEC sec 0 15p
+XD1 s1 s2 UXF5B params: ttr={trr} vfadd={vfadd}
+XD2 s2 s3 UXF5B params: ttr={trr} vfadd={vfadd}
+R1004 s3 s4 10
+VISEC s4 vo 0
+VOUT vo 0 {vout}
+BPO pout 0 V=v(vo)*i(VISEC)
+BPC pcl 0 V=v(clp,vt)*i(VCLX)
+
+.control
+set noaskquit
+* ---------------- charge-time corners --------------------------------------------------------------
+foreach cn 1 2 3 4 5 6 7 8
+  set rbl = 2.80e6
+  set leakv = 0.01
+  set rwp = 5e-3
+  set etat = 0.90
+  set tclk = 1
+  set vpack = 7.2
+  set vcs = 0.106
+  set rsns = 5.0e-3
+  set lpv = 7.5e-6
+  set kron = 1.0
+  set trrv = 70e-9
+  set vfa = 0
+  set cap = 100e-6
+  if $cn = 1
+    set cname = "NOMINAL_7V2_L7.5u_etaT0.90"
+  end
+  if $cn = 2
+    set cname = "TYPICAL_COLD_5V8_L7.5u_etaT0.90"
+    set vpack = 5.8
+    set vfa = 1.5
+  end
+  if $cn > 2
+    set vpack = 5.5
+    set vcs = 0.100
+    set rsns = 5.05e-3
+    set kron = 1.55
+    set trrv = 150e-9
+    set vfa = 3.0
+    set cap = 105e-6
+    set lpv = 7.125e-6
+  end
+  if $cn = 3
+    set cname = "WORST_5V5_L-5%_etaT1.00(no_transformer_loss,compare_CS_Q3)"
+    set etat = 1.0
+  end
+  if $cn = 4
+    set cname = "WORST_5V5_L-5%_etaT0.90"
+  end
+  if $cn = 5
+    set cname = "WORST_5V5_L+10%(8.25u)_etaT0.90_clock38us"
+    set lpv = 8.25e-6
+    set tclk = 38e-6
+  end
+  if $cn = 6
+    set cname = "WORST_5V5_L-5%_etaT0.756"
+    set etat = 0.756
+  end
+  if $cn = 7
+    set cname = "WORST_5V5_L+10%(8.25u)_etaT0.90_clock32us(min)"
+    set lpv = 8.25e-6
+    set tclk = 32e-6
+  end
+  if $cn = 8
+    set cname = "COLD_5V5_HIGH_IPK(112mV,R-1%)_L+10%_etaT0.90_clock32us(min)"
+    set lpv = 8.25e-6
+    set tclk = 32e-6
+    set vcs = 0.112
+    set rsns = 4.95e-3
+  end
+  let vtv = $vpack - 0.2
+  let ron = 4.25e-3*$kron + $rsns + $rwp
+  let itrip = $vcs/$rsns
+  let ipkv = itrip + 180e-9*vtv/$lpv
+  let ton = -($lpv/ron)*ln(1 - itrip*ron/vtv) + 180e-9
+  let tau = $lpv/ron
+  let t1 = ton - 180e-9
+  let qon = (vtv/ron)*(t1 - tau*(1 - exp(-t1/tau))) + 180e-9*(itrip + ipkv)/2
+  let edrawn = vtv*qon
+  set ipks = $&ipkv
+  echo "CORNER $cname | VT=$&vtv Ipk=$&ipkv A on-time=$&ton s Lpri=$lpv etaT=$etat tclk=$tclk"
+  alterparam ipk = $ipks
+  alterparam lp = $lpv
+  alterparam trr = $trrv
+  alterparam vfadd = $vfa
+  alterparam vt = $&vtv
+  alterparam leak = $leakv
+  alterparam tvsbv = 52.6
+  set tadult = 0
+  set tchild = 0
+  set t1950 = 0
+  set t2009 = 0
+  set vprev = 0
+  set pprev = 0
+  foreach vv 25 50 100 200 400 700 1000 1150 1300 1600 1800 1950 2008.6
+    alterparam vout = $vv
+    let ts = 1.3*50*$lpv*ipkv/($vv + 30) + 3e-6
+    alterparam tsim = $&ts
+    reset
+    tran 1n $&ts 0 10n uic
+    meas tran eout integ v(pout)
+    let tdl = 0.3*50*$lpv*ipkv/($vv + 30)
+    meas tran toff when i(VISEC)=1m fall=1 td=$&tdl
+    let tnat = ton + toff + 0.5e-6
+    let tcyc = tnat
+    let eo = eout*$etat
+    let cut = 1
+    * the bound is applied only from 1,000 V up: below that the flyback alone is longer than the clock and the
+    * part runs in its clock-driven start-up mode by design (datasheet Start-Up Protection), not a power limit
+    let useclk = 0
+    if $vv >= 1000
+      let useclk = 1
+    end
+    if (tnat > $tclk) & (useclk > 0)
+      * on-time cut to fit the clock [EST]: current and flyback scale with r, energy with r^2
+      let tonc = $tclk - toff - 0.5e-6
+      let r = tonc/ton
+      let tcyc = tonc + toff*r + 0.5e-6
+      let eo = eout*$etat*r*r
+      let cut = r
+    end
+    let pout = eo/tcyc
+    let pnet = pout - $vv*$vv/$rbl
+    if $vprev = 0
+      let dt = $cap*$vv*$vv/pnet
+    else
+      let dt = $cap*($vv - $vprev)*( $vv/pnet + $vprev/$pprev )/2
+    end
+    let tnew = $tadult + dt
+    set tadult = $&tnew
+    if $vv <= 1150
+      set tchild = $&tnew
+    end
+    if $vv <= 1950
+      set t1950 = $&tnew
+    end
+    set t2009 = $&tnew
+    let fk = 1e-3/tcyc
+    echo "  V=$vv Pout_W=$&pout Pnet_W=$&pnet f_kHz=$&fk natural_period_us=$&tnat ipk_scale_by_clock=$&cut t_cum_s=$&tnew"
+    set vprev = $vv
+    set pprev = $&pnet
+  end
+  echo "RESULT $cname to_1150V_s=$tchild to_1950V_s=$t1950 to_2008.6V_s=$t2009"
+end
+
+* ---------------- flyback duration at the L3 trip top (VOUT comparator sensing time) ----------------
+* lowest peak current (100 mV / 5.05 mohm = 19.8 A), slow high-VF diodes (largest drops), capacitor at the
+* true L3 top 2,316 V (no overdrive) and 2,409 V (max overdrive); LPRI at the v0.3 minimum and the v0.2 minimum.
+foreach lpx 7.125e-6 6.75e-6
+  foreach vx 2116 2316 2409
+    alterparam lp = $lpx
+    alterparam ipk = 19.8
+    alterparam vt = 5.3
+    alterparam vout = $vx
+    alterparam trr = 150n
+    alterparam vfadd = 3.0
+    alterparam leak = 0.01
+    alterparam tvsbv = 52.6
+    alterparam tsim = 8u
+    reset
+    tran 1n 8u 0 5n uic
+    meas tran toff when i(VISEC)=1m fall=1 td=0.5u
+    echo "SENSE Lpri=$lpx Vcap_true=$vx flyback_duration_s=$&toff (LT3751 sizing rule: >= 3 us; overdrive specified at 2 us)"
+  end
+end
+
+* ---------------- clamp energy at the L3 top (8.2 V, 22.9 A, 1 % leakage) --------------------------
+foreach bvx 52.6 50.0 47.75
+  foreach vx 2200 2316 2409
+    alterparam lp = 7.5u
+    alterparam ipk = 22.9
+    alterparam vt = 8.2
+    alterparam vout = $vx
+    alterparam trr = 70n
+    alterparam vfadd = 0
+    alterparam leak = 0.01
+    alterparam tvsbv = $bvx
+    alterparam tsim = 10u
+    reset
+    tran 1n 10u 0 5n uic
+    meas tran vdpk max v(drn)
+    meas tran ecl integ v(pcl)
+    meas tran eout integ v(pout)
+    let eclu = ecl*1e6
+    let eou = eout*1e6
+    echo "CLAMP TVS_BV=$bvx Vcap=$vx Vdrain_peak=$&vdpk clamp_uJ_per_cycle=$&eclu delivered_uJ_per_cycle=$&eou"
+  end
+end
+quit
+.endc
+.end

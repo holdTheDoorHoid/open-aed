@@ -559,3 +559,367 @@ J1101 footprint to be made; netlist round trip matches the pin table exactly.
 
 Not done: SPICE of the stack, pump and release; PCB thermal estimate for the TO-268s; the five-device alternative;
 a two-element threshold (F-2); a test-point check against the as-yet-uncaptured readers.
+
+---
+
+## Revision 0.3 (27 November 2026)
+
+> **NOT FOR CONSTRUCTION — unreviewed design.** Every figure marked [SIM] below is a simulation with hand-built models
+> (ngspice 42, `hardware/aed-main/sim/rev3-wpf/`), not a measurement. Nothing here has been built, and nothing here
+> is safe or ready for use on a person or animal.
+
+Applied from `capture-notes/rev3-changes.md` section WP-F (F-1…F-12), against `docs/HARDWARE_DESIGN.md` v0.3 and
+`contract.md` issue 3. Branch `worktree-agent-a3965dc4adad4d619`.
+
+### R3.0 In plain language
+
+The two discharge paths now use stronger 1,700-volt transistors, and each transistor's control wire has a one-way
+valve (a high-voltage diode) so that one failed transistor cannot drag its neighbours' share of the voltage onto a
+single part. Each path also has two independent "held" sensors on separate wires, so one failed sensor part can
+no longer make the path look held when it is not.
+
+I drew all of that, then simulated the circuit exactly as drawn, part by part, including every single part failing
+open or short. Three things came out that the change order did not expect:
+
+1. **One part of the change order had to be changed.** The voltage-sharing chain was a single 4.7 MΩ resistor per
+   step. If the bottom one of those ever broke open, the new valves would let the whole capacitor voltage
+   (≈ 2,170 V) land on one transistor rated about 1,670–1,700 V [SIM]. I made each step **two 10 MΩ resistors side
+   by side** (5.0 MΩ): if one breaks the other still holds the step, and the worst case is then well inside the
+   rating. It also solves a parts problem: no high-voltage 4.7 MΩ chip resistor could be confirmed, while the 10 MΩ
+   part is already on this sheet. Eight extra resistors, change W-1.
+2. **The cold-weather "held" check still does not work in my simulation unless the hold clock is at least about
+   3.2 V.** The earlier check runs that said it worked at −20 °C were, it turns out, run at room temperature for
+   the semiconductor parts (a quirk of the simulator, explained in R3.7). At a true −20 °C with the 3.1 V clock the
+   design assumes, the hold voltage is about 0.4–0.5 V too weak and the sensors flicker. This fails safe (the
+   device refuses to charge in the cold) but it would make the device unusable; it needs the design authority and
+   the interlock-sheet owner, because the fix is the clock amplitude or the pump, not a value on this sheet.
+3. **A shorted reference diode in a "held" sensor is now caught**, better than the change order says: it overloads
+   the hold pump, the other sensor reads "not held", and the device refuses to charge — visible at the next
+   self-test instead of hiding.
+
+With change W-1, every single-part failure I simulated keeps every transistor inside its rating in steady state and
+through a realistic charge–shock–recharge sequence, with the smallest margin about 0.19 of the rating (one cold
+Monte Carlo run with a shorted sharing-string element; 0.24 for every other fault) [SIM]. The one exception is a
+deliberately impossible test (a 1 µs voltage jump followed by a 2 ms recharge with a transistor already shorted),
+reported in R3.3. Discharge still works by default with any one part failed.
+
+### R3.1 Changes applied (designators)
+
+| Change | Parts | What |
+|---|---|---|
+| F-1 | Q1101–Q1108 | IXTT10N100D2 → **IXTT2N170D2** (new symbol `aed_storage:IXTT2N170D2`, pins 1 G / 2 D = tab / 3 S read from DS100418B page 2; the old symbol is removed) |
+| F-2 | **D1127–D1132** GP02-40 (DO-41, 12.7 mm pitch footprint) | gate steering diode in each upper feed; R1115–R1120 now end on new nets `HV_A_GF2..4` / `HV_B_GF2..4`; anode `HV_x_GFk`, cathode `HV_x_Gk` |
+| F-3 | **R6101–R6106** 22 MΩ CRHV2512 | across each steering diode |
+| F-4 | R1121–R1126 | 10 MΩ 0603 → **100 MΩ CRHV2512** |
+| F-5 + **W-1** | R1107–R1114 + **R6115–R6122** | sharing string: each of the four elements is **2 × 10 MΩ HVCR2512 in parallel** (5.0 MΩ) instead of one 4.7 MΩ — departure, see R3.8 |
+| F-6 | **R6107–R6114** 10 MΩ HVCR2512, **C1137–C1144** 3.3 nF 2 kV C0G 2220 | drain–source across every device |
+| F-7 | C1101–C1108 | kept; MPN aligned with the new parts to **C2220Y332JGGACAUTO** (the only 3,300 pF 2 kV C0G 2220 code found in a listing) |
+| F-8 | D1112 / D1116 pin 1 → `PMPA_H4` / `PMPB_H4`; **R1194 / R1195** 470 Ω | pump output resistor |
+| F-9 | Q1112, Q1113 | MMBFJ177 → **MMBFJ270** (stock P-JFET symbol, 1 D / 2 S / 3 G — see R3.5) |
+| F-10 | D1125, D1126 → **MMSZ4687T1G**; **R1196 / D1133 / R1197 / U1105 / TP1107** (A), **R1198 / D1134 / R1199 / U1106 / TP1108** (B) | second held sensor per stack on new globals **`HOLD_A_HELD2_N`**, **`HOLD_B_HELD2_N`** |
+| F-11 | group notes | pump requirement, release ≤ 25 ms stopped low, 1.5 kHz; "727 V" removed (dump-resistor text now 733 V at 2,200 V) |
+| F-12 | — | capacitor bleed and surge rating stay requirements on C1101 (`docs/requirements/storage-capacitor.md`); nothing drawn |
+
+New references: D1127–D1134, C1137–C1144, U1105–U1106, R1194–R1199, TP1107–TP1108, overflow R6101–R6122.
+Sheet total 230 parts (was 182). The sheet keeps its NOT FOR CONSTRUCTION notice.
+
+### R3.2 Static sharing, as drawn [SIM `stack_static_wpf.cir`]
+
+Stack A as drawn (B is identical). Each case is a DC solution at 2,200 V (1,950 V where stated). Temperature
+factors from IXYS DS100418B Fig. 12: **cold** = −20 °C, \|V_GS(off)\| × 0.89, device leakage ≤ 6.5 µA, steering-diode
+leakage 0.5 µA [EST], rating **1,666 V**; **hot** = 70 °C, × 1.11, ≤ 96 µA, steering-diode leakage **50 µA** (its
+100 °C maximum, a deliberate bound), rating **1,700 V**. Monte Carlo: resistors ± 2 %, V_GS(off) anywhere in
+−2…−4 V, device leakage 2–100 % of its maximum, diode leakage 0–100 % of the corner value; 100 runs for the
+no-fault and shorted-device cases, 12 runs for every other fault. **Margin = 1 − worst / rating.**
+
+| Case (2,200 V unless stated) | Cold: worst device V (margin) | Hot: worst device V (margin) |
+|---|---|---|
+| No fault (Monte Carlo 100) | 566 V (0.66) | 640 V (0.62) |
+| Any one device shorted (Monte Carlo 100, random position) | 1,168 V (0.30) | 1,267 V (0.25) |
+| Device shorted, by position (Q1101 short: the whole path conducts): Q1101 / Q1102 / Q1103 / Q1104 | 3 / 1,166 / 910 / 808 V (worst 0.30) | 3 / 1,246 / 1,051 / 929 V (worst 0.27) |
+| Any one device open | 578 V (0.65) | 646 V (0.62) |
+| String element shorted (R110x ‖ R611x), by position 1 / 2 / 3 / 4 | 655 / 747 / 1,353 / 748 V (worst 0.19) | 733 / 780 / 855 / 814 V (worst 0.50) |
+| One resistor of a string pair open | 895 V (0.46) | 896 V (0.47) |
+| String capacitor C1101–C1104 shorted | 753 V (0.55) | 886 V (0.48) |
+| Per-device 10 MΩ R6107–R6110 shorted | 1,165 V (0.30) | 1,274 V (0.25) |
+| Per-device 10 MΩ open | 1,219 V (0.27) | 1,007 V (0.41) |
+| Per-device 3.3 nF C1137–C1140 shorted | 1,175 V (0.29) | 1,277 V (0.25) |
+| 100 kΩ feed R1115–R1117 shorted | 568 V (0.66) | 625 V (0.63) |
+| 100 kΩ feed open | 1,107 V (0.34) | 1,107 V (0.35) |
+| Steering diode D1127–D1129 shorted | 565 V (0.66) | 614 V (0.64) |
+| Steering diode open | 565 V (0.66) | 625 V (0.63) |
+| 22 MΩ bypass R6101–R6103 shorted | 567 V (0.66) | 622 V (0.63) |
+| 22 MΩ bypass open | 1,104 V (0.34) | 648 V (0.62) |
+| 100 MΩ gate–source R1121–R1123 shorted | 1,168 V (0.30) | 1,277 V (0.25) |
+| 100 MΩ gate–source open | 566 V (0.66) | 619 V (0.64) |
+| Gate TVS D1101–D1104 shorted | 1,171 V (0.30) | 1,284 V (0.24) |
+| Gate TVS open | 563 V (0.66) | 618 V (0.64) |
+| *Change order's single 4.7 MΩ element open: R1107 / R1108 / R1109 / R1110 (nominal parts)* | 2,156 / 1,257 / 1,022 / 873 V (worst -0.29) | 2,175 / 1,226 / 1,233 / 883 V (worst -0.28) |
+
+What the table says, in plain terms:
+- Healthy stack: every device 553 V with nominal parts, ≤ 566 V cold / 640 V hot with tolerance spread.
+- **Any one device shorted: ≤ 1,168 V cold / 1,267 V hot (margins 0.30 / 0.25)** — the design authority's "≈ V/2" holds; the hot figure is set by the
+  steering diodes' leakage (next table).
+- **The worst single fault is a shorted sharing-string element (R1109 ‖ R6117, or its capacitor C1103): 1,353 V**
+  in one cold Monte Carlo run (735 V with nominal parts). In that run all three upper devices were pinched hard off
+  (gates at the 15 V clamp) and the bottom device took the per-device resistors' share; I did not find a mechanism
+  that makes this unique to the cold corner, and it may be a second DC solution reached by the sweep. Margin 0.19.
+- Open per-device resistor across the bottom device (R6107): 1,219 V cold (0.27).
+- **The change order's single 4.7 MΩ element, open:** **2,156 V cold / 2,175 V hot on the bottom device** with R1107 open (1.29 / 1.28 × the rating), 1,257 V with R1108 open. That is why W-1.
+
+Steering-diode leakage, hot, device 2 shorted, nominal parts [SIM]:
+
+| GP02-40 leakage | 0 | 5 µA (25 °C max) | 50 µA (100 °C max) | 200 µA |
+|---|---|---|---|---|
+| Bottom device | 1,161 V | 1,172 V | 1,278 V | 1,631 V |
+
+About 2.2 V per µA. The datasheet's typical curve gives ≈ 1.3–3 µA at 100 °C, so the 50 µA row is pessimistic
+by roughly an order of magnitude at 70 °C; the 200 µA row shows where it would stop being acceptable.
+
+Stress on the other parts in the worst static fault cases [SIM]: steering diode reverse ≤ 548 V (rated
+4,000 V); 22 MΩ bypass the same voltage, ≤ 14 mW; 100 kΩ feed ≤ 7 V (it no longer sees the fault voltage);
+upper gate–source ≤ 18 V (TVS clamp, so the 100 MΩ dissipates nothing); string resistor ≤ 892 V per element
+(one of a pair open) — all within the HVCR/CRHV 3,000 V working ratings.
+
+### R3.3 Dynamic sharing [SIM `stack_dynamic_wpf.cir`, `stack_shock_wpf.cir`]
+
+Bounding events (much faster than anything that can reach a held stack, as in sim/charger-storage): 1 µs step
+1,000 → 2,200 V; 2,200 → 1,200 V in 10 ms (shock-like); 1,200 → 2,200 V in 2 ms. Worst C0G pattern = the string
+capacitor and the per-device capacitor of one position at −5 %, all others +5 %.
+
+| Case | Cold (margin) | Hot (margin) |
+|---|---|---|
+| Healthy, worst C0G pattern, any event | 646 V (0.61) | 1,033 V (0.39) — 1 µs step |
+| Healthy, Monte Carlo 40 runs (all 3.3 nF ± 5 %, cut-off, leakage) | 814 V (0.51) | 1,044 V (0.39) |
+| Device 2 shorted, 1 µs step | 1,633 V (0.02) | 1,615 V (0.05) |
+| Device 2 shorted, 10 ms fall / 2 ms rise straight after that step | 1,600 / **2,087 V (fails)** | 1,280 V |
+| Device 3 / 4 shorted, any event | 1,021 / 802 V | 1,061 / 844 V |
+
+**Realistic sequence** (`stack_shock_wpf.cir`: charge to 2,200 V in 1 s, shock 2,200 → 1,200 V in 10 ms, recharge
+in 1 s, worst C0G pattern): healthy ≤ 554 V; device 2 shorted ≤ 1,161 V cold / 1,280 V hot; device 3 ≤ 1,023 V;
+device 4 ≤ 836 V — never above the static value. The 2,087 V case needs a 1 µs step and a 2 ms recharge within half
+a second of each other with a device already shorted; the charger cannot do either. Reported in R3.7 (item 8), not
+acted on. Release edge (turn-on from 2,200 V): ≤ 179 V on any device (`discharge_wpf.cir`).
+
+### R3.4 Hold, release and "held" readback across −20…+70 °C [SIM `held_threshold_wpf.cir`, `hold_held_wpf.cir`]
+
+Thresholds (gate magnitude at which a line falls below 1.2 V), 47 kΩ + 1 MΩ pull-ups on sheet 09, semiconductors at
+the stated temperature:
+
+| Corner | Threshold, each sensor | Margin over the 2N170D2's worst cut-off at 70 °C (4.44 V) | One zener shorted | One zener open |
+|---|---|---|---|---|
+| Low (70 °C, 4.09 V zener, CTR 10,000 %) | **4.72 V** | **0.28 V** | that sensor 0.71 V; HOLD_OK still needs 4.72 V | that line never low (4.10 V) → never "held" |
+| Nominal (25 °C) | 5.47 V | 1.03 V | 1.15 V; HOLD_OK 5.47 V | never "held" |
+| High (−20 °C, 4.52 V, aged CTR 250 %) | **5.98 V** | — | 1.40 V; HOLD_OK 5.98 V | never "held" |
+
+Hold pump, release and both lines (clock stopped **low**; "held" = both lines < 1.2 V; requirement HELD_N ≤ 1.0 V
+while held; "conducting" = gate above the smallest cut-off at that temperature, 1.78 / 2.0 / 2.22 V):
+
+| Case | Held after power-up | Hold, worst point | Highest HELD_N while held | Conducting after stop | "Not held" after stop |
+|---|---|---|---|---|---|
+| −20 °C, aged, 3.1 V, 1.35 / 1.5 / 1.65 kHz, pilot 2.0 V | 34 / 35 / 56 ms | −5.59 / −5.52 / −4.30 V | **4.92 / 4.97 / 4.99 V — fails** | 1.3–1.4 ms | 1.3 ms |
+| −20 °C, **new** sensors (CTR 500 %), 3.1 V, 1.5 kHz | 33 ms | −5.52 V | **4.95 V — fails** | 1.3 ms | 1.3 ms |
+| −20 °C, aged, 3.1 V, 1.5 kHz, pilot 0.5 V | 31 ms | −5.87 V | **2.88 V — fails** | 7.4 ms | 6.9 ms |
+| −20 °C, aged, **3.2 V**, 1.5 / 1.35 kHz | 29 / 30 ms | −6.04 / −5.91 V | **0.78 V** / 2.19 V (fails) | 1.7 ms | 1.6 ms |
+| −20 °C, aged, **3.3 V**, 1.5 kHz | 27 ms | −6.23 V | **0.63 V** | 1.9 ms | 1.9 ms |
+| −20 °C, aged, **2.9 V**, 1.5 kHz | never (pilot not pinched off; gate −1.25 V) | | | | |
+| 25 °C, nominal, 3.3 V, 1.5 kHz, pilot 1.2 V | 27 ms | −5.87 V | 0.59 V | 4.0 ms | 4.0 ms |
+| 70 °C, new sensors, 3.2 V, 1.35 kHz, pilot 0.5 V | 18 ms | −6.04 V | 0.55 V | **20.9 ms** | 18.3 ms |
+| 70 °C, aged, 3.1 V, 1.65 kHz, pilot 2.0 V | 24 ms | −6.33 V | 0.60 V | 2.1 ms | 2.1 ms |
+| 25 °C, fresh, 3.5 V, 1.65 kHz, pilot 0.5 V | 19 ms | −6.33 V | 0.55 V | **22.0 ms** | 19.0 ms |
+| −20 °C, sensor 2 zener **shorted** | never "held" (gate sags to −3.92 V) | | sensor 1 line 4.99 V | | |
+| −20 °C, sensor 2 zener **open** | never "held" | −5.57 V | sensor 2 line 4.99 V | | |
+| 70 °C, sensor 2 zener **shorted** | never "held" (gate −4.43 V) | | sensor 1 line 4.95 V | | |
+
+- **Release ≤ 25 ms with the clock stopped low: met** (worst 22.0 ms conducting, 19.0 ms "not held").
+- **Held at −20 °C, 3.1 V, aged sensors: not met** in this model (problem 6 in R3.7). The aged-cold threshold
+  (5.98 V) is 0.46 V above the hold level (−5.52 V). At 3.2 V it is met only near 1.5 kHz; at 3.3 V it is met.
+- **Each held sensor with its zener shorted or open: fails to "not held" and is visible at the next self-test.**
+- The 1 ms clock gap never released a held path where the path held (HELD_N ≤ 0.61 V during it).
+
+### R3.4a Discharge and resistor pulse stress [SIM `discharge_wpf.cir`]
+
+From 2,200 V to below 60 V (always-connected loads included, the capacitor's own 10 MΩ left out):
+
+| Case | Time | Peak current per path | Dump resistor (each): peak power / energy | Bottom device: peak / energy |
+|---|---|---|---|---|
+| One path, nominal | 1.63 s | 0.49 A | 354 W / 80.0 J | 63 W / 0.35 J |
+| One path, slowest (R + 10 %, cold TCR, C + 5 %) | 1.98 s | 0.42 A | 304 W / 84.0 J | 59 W / 0.32 J |
+| One path, fastest (R − 10 %, hot, C − 5 %) | 1.32 s | 0.57 A | 415 W / 75.9 J | 72 W / 0.39 J |
+| Both paths, nominal / slowest | 0.82 / 0.99 s | 0.49 / 0.42 A | 354 / 304 W, 40 / 42 J | 0.18 J |
+| One path, R − 10 % with C + 5 % (most energy per resistor) | 1.54 s | 0.54 A | 391 W / 83.9 J | 70 W / 0.41 J |
+| One path, device 2 shorted | 1.63 s | 0.49 A | 355 W / 80.2 J | 96 W / 0.35 J |
+| One path, **release failed** (gate decays through 1.01 MΩ only) | **4.68 s** | 0.23 A | 78 W / 44.6 J | 41 W / **26.6 J** |
+
+Limit 3 s: met by one path alone except when its release has also failed (then path B, held by the other
+controller, must release too — as in v0.2). Dump resistors: ≤ 84 J of the EY's 400 J single-impulse rating; 733 V
+across each at the start against 550 V working (unchanged open question for Ohmite). Every high-value resistor
+dissipates microwatts to milliwatts during a dump: R6107 (10 MΩ per device) ≤ 0.14 W peak (with a shorted
+neighbour), R1107 (string) ≤ 43 mW, R6101 (22 MΩ) ≤ 11 mW, R1115 (100 kΩ) ≤ 0.18 W for microseconds (≤ 14 µJ),
+R1121 (100 MΩ) ≤ 3 µW — negligible against the 1–2 W ratings; no pulse rating is published to compare with.
+Standing loss per stack at 2,200 V: string 0.24 W + per-device resistors 0.12 W.
+### R3.5 Datasheets consulted, and what each says about the items the design authority could not verify
+
+| Part | Document (as opened 27 Nov 2026) | What was checked | Finding |
+|---|---|---|---|
+| IXTT2N170D2 | IXYS **DS100418B(02/12)**, from the datasheets.com mirror (no Littelfuse-hosted copy found) | ratings, pinout, **Fig. 12** (normalised BV_DSX and V_GS(off) vs T_J) | V_DSX 1,700 V (T_J 25–150 °C); BV_DSX ≥ 1,700 V; V_GS(off) −2.0…−4.0 V; I_DSX(off) ≤ 25 µA / 500 µA (125 °C); R_DS(on) ≤ 6.5 Ω; C_iss 3,650 pF; terminals 1 G, 2/4 D (tab), 3 S — **pinout confirmed**. **Fig. 12 (typical curves, my reading):** BV_DSX ≈ 0.98 at −20 °C (≈ 0.985 at −40 °C) → **1,666 V cold**, *better* than the assumed 0.94 / 1,598 V; but \|V_GS(off)\| ≈ 0.89 at −20 °C and **≈ 1.11 at 70 °C**, *worse* than the assumed 1.06 → worst cut-off magnitude **4.44 V** at 70 °C, not 4.24 V. No avalanche rating. FBSOA point 204 W at 1,700 V / 120 mA / 5 s (T_C 75 °C) |
+| GP02-40 | Vishay **doc 88635, revision 09-Aug-2022** | ratings, Fig. 4 (reverse leakage vs % V_RRM) | V_RRM 4,000 V; I_R ≤ 5 µA (25 °C) / ≤ 50 µA (100 °C) at rated V; typical (Fig. 4) ≈ 1.3–3 µA at 100 °C, almost flat with voltage; C_J 3 pF; DO-41. **Marked "Not for New Designs"** — see R3.8 |
+| CRHV2512 (22 MΩ, 100 MΩ) | Vishay **doc 68002, revision 12-Nov-2024** | range, voltage, VCR | 2512: 10 MΩ–1 GΩ (1 %), 3,000 V max working (or √(P·R)), 1 W at 70 °C, VCR 10 ppm/V, TCR ±100 ppm/K. **No pulse/surge rating stated** (only "short time overload < 0.5 % ΔR", level not given). Ordering codes built from the document's scheme, not seen in a listing |
+| HVCR2512 (10 MΩ) | Stackpole SEI-HVCR — **not re-opened** (vendor URL returns a 404 page; distributor copy timed out) | — | 3,000 V working and 10 MΩ in the standard list, as read for the v0.2 capture [UNVERIFIED this session] |
+| 4.7 MΩ HV 2512 (change order F-5) | CRHV 68002 (above); HVCR list as read for v0.2 | is the value orderable? | **Not found**: HVCR list starts at 10 MΩ, CRHV2512 at 10 MΩ; CRHV1210 4M70 exists (1,750 V) but its 3.2 mm body is short for 733–880 V. Resolved by W-1 (2 × 10 MΩ) |
+| C2220Y332JGGACAUTO | **DigiKey listing** only; KEMET C1035 datasheet **not opened** (expired TLS certificate on content.kemet.com) | rating, construction | 3,300 pF ± 5 %, 2,000 V, C0G, 2220, floating-electrode, flexible termination, AEC-Q200, ≤ 2.7 mm thick [distributor, UNVERIFIED]. C0G capacitance change with DC voltage is negligible for class-I ceramics (general property, **not checked in KEMET's data**). The previously drawn C2220C332JGGACTU was **not** found in any listing |
+| MMBFJ270 | onsemi **MMBFJ270/D Rev 2, May 2022** | ratings, pinout | V_DG −30 V, V_GS 30 V, V_GS(off) 0.5–2.0 V, I_DSS 2–15 mA. **Pin numbers are not printed**: the package drawing puts D and S on the two-lead side and G alone, consistent with 1 D / 2 S / 3 G (as the MMBFJ177) [human check needed] |
+| MMSZ4687T1G | onsemi **MMSZ4678T1/D Rev 13, Aug 2021** | V_Z, leakage, **temperature coefficient** | 4.09 / 4.30 / 4.52 V at 50 µA; I_R ≤ 4 µA at 2 V; **Fig. 1: typical TC ≈ 0 mV/K at 4.3 V** (≈ +0.8 mV/K for the old 4.7 V part), so ngspice ignoring the zener `tbv1` no longer matters |
+| TLP187, BSS138, BAT54S, BAV199, SMF15CA, EY152KE | unchanged from v0.2 (datasheets as listed in §2–§7) | — | — |
+
+**Creepage at 2,200 V (note only; no layout).** Voltages across each part are the simulated worst cases of R3.2/R3.3.
+- TO-268 (IXTT2N170D2): drain is the tab; gate and source are the two outer leads (lead pitch 5.45 mm, from the
+  standard TO-268 outline; the TO-268 dimension table was not read in DS100418B). Tab-to-source sees ≈ 550 V
+  normally and up to ≈ 1.3 kV after a single fault (static) or 1.6 kV transiently. The package's own tab-to-lead
+  distance (a few mm) is below plain-board creepage for 1.3–1.6 kV; coating or potting will be needed. Gate–source
+  ≤ 18.5 V (TVS).
+- DO-41 (GP02-40) on 12.7 mm pitch: anode–cathode normally < 1 V, up to the steering voltage after a device short
+  (≈ 0.45–0.6 kV [SIM]); ≈ 10 mm between pads.
+- 2512 chips (HVCR/CRHV): ≈ 4.5 mm between terminations [EST]; up to 880 V (string pair, one open) and
+  ≈ 1.3 kV (per-device 10 MΩ across a device after a neighbour's short) → coating needed for the latter.
+- 2220 C0G: ≈ 4.5 mm terminal gap [EST]; up to ≈ 1.3–1.6 kV after a fault → coating (surface arc-over is a known
+  limit of HV MLCCs above ≈ 1 kV; KEMET guidance not read).
+- The whole stack (top to `HV_RTN`) is 2,200 V: group distances between the top device, dump resistors and
+  low-voltage nodes are a layout requirement (§B12), not settled here.
+### R3.6 Part-failure table for the new and changed parts (stack A shown; stack B identical with its own references)
+
+"Discharges by default?" = does the path still empty the capacitor when nothing holds it (no clock, no power)?
+"Visible?" = which check finds the fault: **ST** = switch-on / daily self-test (the path cannot be held, or a
+held line reads "not held"), **T-7** = per-sensor read-back during the self-test discharge (each of the four HELD
+lines proven separately, §B14.5), **τ** = discharge time-constant fit when each path is released alone,
+**charge** = charge time-out. Device voltages are the simulated worst case at 2,200 V across −20…+70 °C with
+tolerance spread (static, R3.2), against 1,666 V (cold) / 1,700 V (hot).
+
+| Part (A / B) | Fault | Discharges by default? | Worst device voltage | Visible? |
+|---|---|---|---|---|
+| Q1101–Q1104 (IXTT2N170D2) | any one D–S short | yes (that device conducts; with no hold all conduct) | see R3.2 table: ≤ 1,168 V cold / 1,267 V hot (Q1102 worst; a Q1101 short makes the whole path conduct) | no, latent while the other three share; a second short is then a cascade risk. τ unchanged (4.5 kΩ dominates). **Latent** |
+| Q1101–Q1104 | open | path A no; path B yes (fault 7) | ≤ 646 V | τ (path A alone does not discharge) |
+| Q1101 | G–S short | yes, A conducts | — | ST (cannot hold A) |
+| R1107–R1110 ‖ R6115–R6118 (string pair) | one resistor of a pair open | yes | ≤ 896 V | **latent** (that tap shifts by ≈ 1/5 of the voltage) |
+| string pair | element shorted | yes | ≤ 1,353 V (cold, one run; 855 V hot) | latent |
+| *as change order: single 4.7 MΩ* | *open* | *yes* | ***2,156–2,175 V — above the rating*** | *latent; the device then breaks down* |
+| C1101–C1104 | short | yes | as element short, ≤ 886 V | latent |
+| C1101–C1104 | open | yes | dynamic only: see R3.3 | latent |
+| R6107–R6110 (per-device 10 MΩ) | open | yes | ≤ 1,219 V | latent |
+| R6107–R6110 | short | yes (that device bypassed) | ≤ 1,274 V | latent (as a device short) |
+| C1137–C1140 (per-device 3.3 nF) | short | yes | ≤ 1,277 V | latent (as a device short) |
+| C1137–C1140 | open | yes | static unaffected; fast edges see the device's own capacitance (R3.3) | latent |
+| R1115–R1117 (100 kΩ feed) | open | yes | ≤ 1,107 V (gate then held only by 100 MΩ to its source → device conducts, as a short) | latent |
+| R1115–R1117 | short | yes | ≤ 625 V | none needed (feed resistance only) |
+| D1127–D1129 (GP02-40) | open | yes | ≤ 625 V (22 MΩ still feeds the gate) | latent |
+| D1127–D1129 | short | yes | ≤ 614 V; a **second** fault (a device short above it) then drags the tap as in v0.2 (≈ 2.1 kV, CS cfg 1) | latent |
+| R6101–R6103 (22 MΩ bypass) | open | yes | ≤ 1,104 V | latent |
+| R6101–R6103 | short | yes | ≤ 622 V (diode bypassed: the v0.2 feed) | latent |
+| R1121–R1123 (100 MΩ G–S) | open | yes | ≤ 619 V | none |
+| R1121–R1123 | short | yes (device conducts at VGS = 0) | ≤ 1,277 V (= a device short) | latent |
+| D1101–D1104 (gate TVS) | short | yes (device conducts) | ≤ 1,284 V; bottom TVS short: A conducts | upper: latent; D1101: ST |
+| D1101–D1104 | open | yes | ≤ 618 V, but the gate–source voltage then reached 73 V in a hot run (V_GSM ±30 V): gate rupture likely, after which the device is a short (≤ 1,284 V) | latent (clamp lost) |
+| R1194 (470 Ω pump output) | open | yes: no bias reaches the gate, A conducts | — | ST ("not held") |
+| R1194 | short | yes | — | none; the cold power-up lock-out of sim/rev3 §2 can return at > 1.6 kHz (fails to "not held") |
+| Q1112 (MMBFJ270 pilot) | open / never conducts | yes, slowly: release only through R1127 + R1128 (1.01 MΩ), path B meanwhile | — | τ / late "not held" in T-7 |
+| Q1112 | always on | yes, A conducts | — | ST |
+| D1125 / D1133 (MMSZ4687) | **short** | yes | — | **ST: the shorted sensor's LED pulls ≈ 1.2 mA from the pump, the gate sags to −3.9 V (cold) / −4.4 V (hot) and the other sensor reads "not held"** [SIM R3.5]. Fails safe and visible (better than the change order's "the other sensor decides") |
+| D1125 / D1133 | open | yes | — | ST: that line never reads "held" |
+| R1137 / R1196 (3.9 kΩ) | open | yes | — | ST (that line "not held") |
+| R1137 / R1196 | short | yes | — | not visible; threshold ≈ 0.2–0.4 V lower on that sensor only (other sensor unchanged) |
+| R1138 / R1197 (22 kΩ shunt) | open | yes | — | not visible; that sensor's threshold falls ≈ 0.3 V and leakage can reach the LED — the other sensor still decides |
+| R1138 / R1197 | short | yes | — | ST (that line "not held") |
+| U1101 / U1105 | Darlington C–E short | yes | — | T-7 (that line stays low when A is released alone) |
+| U1101 / U1105 | LED or output open, not fitted, aged | yes | — | ST ("not held") |
+| TP1107 / TP1108 | short to neighbour | yes | — | ST / T-7 |
+| `HOLD_A_HELD2_N` wire | open | yes | — | ST (47 kΩ pull-up on 09 reads "not held") |
+
+No single fault of a new part stops a path from discharging by default. Every single fault that raises a device
+above its simulated fault-free level is latent (not seen by a self-test); with W-1 none of them exceeds the rating
+in this model (worst margin in R3.2). The zener short, previously the latent fault F-2/I-4, is now visible.
+### R3.7 Problems with the change order and the evidence behind it (for the design authority)
+
+1. **F-5 single 4.7 MΩ string elements make a single open resistor an overstress** [SIM R3.2]. With the gate
+   feeds steered, an open bottom element (R1107) lets tap T1 float up to the stack top; every upper device then
+   conducts and the bottom device is asked to block **2,156–2,175 V** (cold rating 1,666 V; ratio 1.29). An
+   open R1108 gives 1,257 V. This is the same class of fault as I-3 (a tap losing its reference) and was not in the
+   CS Q1 case list (string *short* only). **Departure W-1** (below) fixes it on this sheet.
+2. **F-5 part not available as specified**: no 4.7 MΩ high-voltage 2512 chip was found (HVCR list and CRHV2512
+   both start at 10 MΩ). W-1 uses the existing HVCR2512 10 MΩ.
+3. **F-2 GP02-40 is "Not for New Designs"** (Vishay 88635 rev 09-Aug-2022). It is drawn as ordered, with a
+   `Verify` field. A replacement must be a 2–4 kV, ≤ 0.25 A rectifier whose **hot reverse leakage stays below
+   ≈ 50 µA at 70 °C**: device-short sharing degrades about 2.2 V per µA of steering-diode leakage (R3.2 table:
+   1,161 / 1,172 / 1,278 / 1,631 V at 0 / 5 / 50 / 200 µA, hot, device 2 shorted).
+4. **F-1 temperature factors**: Fig. 12 gives BV_DSX ≈ 0.98 at −20 °C (1,666 V, better than assumed) but
+   \|V_GS(off)\| ≈ 1.11 at 70 °C (worse than the 1.06 assumed). With a true 70 °C sensor model the lowest held
+   threshold is **4.72 V** [SIM R3.4], so the margin over the worst cut-off (4.44 V) is **0.28 V**, not the 0.71 V
+   of sim/rev3 §1. Still positive, but thin; it rests on typical-curve readings.
+5. **The −20 °C results in `sim/rev3` and `sim/charger-storage` were not at −20 °C for the semiconductors.** In
+   ngspice 42 `reset` returns the circuit to the netlist temperature (27 °C), and those netlists set `option temp`
+   before `reset`. Checked with one BAT54 at 1 mA: 0.323 V after "−20 °C" + `reset` (the same as 27 °C); 0.263 V
+   with `option temp=70` given after `reset`. My netlists set `option temp=$tc` after `reset`.
+6. **With that corrected, the aged cold case fails** [SIM R3.4]: at −20 °C, 3.1 V clock, capacitors at 70 %,
+   both sensors read "held" only on the ripple peaks (HELD_N swings to 4.9 V) at 1.35, 1.5 and 1.65 kHz — with
+   aged *and* with new sensors (CTR 500 %). Hold worst point −5.5 V against an aged-cold threshold of 5.98 V. At a
+   3.2 V clock it holds at 1.5 kHz (HELD_N ≤ 0.78 V) but not at 1.35 kHz; at 3.3 V it holds; at 2.9 V the release
+   pilot is never pinched off and the path never holds. Fails safe (no charging) but unusable in the cold. Not
+   fixable by a value on this sheet: bigger pump capacitors (4.7 µF) or a 220 Ω output resistor bring back the
+   power-up lock-out; a 47 kΩ LED shunt only lowers the swing to 4.4 V. **Needs a decision** (raise and specify
+   the hold-clock amplitude at the pump ≥ 3.2 V over temperature on sheet 09, or redesign the pump), then a cold
+   measurement. This is the "unsettled" item; my answer is that it is not met in this model.
+7. **F-10's description of a shorted zener is incomplete** (in the safe direction): the other sensor does not
+   simply "decide" — the shorted string loads the pump (≈ 1.2 mA), the gate sags to −3.9 V (cold) / −4.4 V (hot)
+   and the path reads "not held", so the fault is visible at the next self-test. At 70 °C the sagged gate (−4.43 V)
+   sits at the worst cut-off (4.44 V): the bottom device may conduct slightly, but the path reads "not held" and
+   the charger is not enabled.
+8. **Dynamic bounding case with a shorted device**: a 1 µs 1,000 → 2,200 V step on a stack with device 2 shorted
+   puts 1,633 V on the bottom device (margin 0.02); with the network not yet settled, the following
+   bounding events reach 2,087 V (above the rating). These steps are far faster than anything that can reach a held stack (the
+   charger needs seconds); the realistic shock-and-recharge sequence (`stack_shock_wpf.cir`) never exceeds the
+   static value (≤ 1,280 V). Reported, not acted on.
+9. Smaller points: the 100 kΩ gate-feed resistors R1115–R1120 now see < 1 V normally and ≤ 7 V in a fault
+   (the diode takes the stress), so their v0.2 pulse-rating `Verify` is withdrawn; R1121–R1126 (100 MΩ) see ≤ 18 V
+   while the TVS is intact, so a high-voltage chip is not needed there electrically — kept as ordered (surface
+   leakage at 100 MΩ favours the larger body).
+
+### R3.8 Departures from the change order
+
+| # | Change order | Drawn | Why |
+|---|---|---|---|
+| W-1 | F-5: R1107–R1114 4.7 MΩ HV chip | **each element 2 × 10 MΩ HVCR2512 in parallel** (R1107–R1114 + new **R6115–R6122**), 5.0 MΩ per element, 20 MΩ per string | one open 4.7 MΩ element puts 2,156–2,175 V on one device [SIM]; with a pair, one open resistor gives ≤ 896 V. Also no 4.7 MΩ HV 2512 part was found. Costs 0.02 W more standing loss per stack at 2,200 V (string 0.24 W instead of 0.26 W: lower, since 20 MΩ > 18.8 MΩ) and slightly softer sharing (≤ +54 V in the device-short Monte Carlo against the 4.7 MΩ string) |
+| W-2 | F-7: keep C1101–C1108 (C2220C332JGGACTU) | MPN changed to **C2220Y332JGGACAUTO** (same value, voltage, dielectric, case) for all 16 3.3 nF parts | the old code was not found in any listing; the AUTO code is the change order's own candidate for C1137–C1144 |
+| W-3 | F-2: "GP02-40" | drawn as **GP02-40-E3/54** (ordering form of the datasheet's example code) with a `Verify` flag | part is "Not for New Designs" (problem 3) |
+
+### R3.9 What still needs measurement or better models
+
+- The hold level at a true −20 °C with the real clock buffer, pump capacitors and diodes (problem 6); the 1.35–1.65
+  kHz window; the clock amplitude actually delivered at the pump input over temperature.
+- IXTT2N170D2 V_GS(off) spread at 70 °C (Fig. 12 is a typical curve), BV_DSX at −20 °C (typical curve), and its
+  behaviour in avalanche (no rating) — every single-fault margin here is to the *rating*, not to breakdown.
+- Steering-diode reverse leakage at 70 °C for whichever part replaces GP02-40 (≤ 50 µA assumed as a bound).
+- HVCR/CRHV pulse capability (not published) — simulated pulse dissipation is tiny (R3.3), but surge ratings matter
+  for a dump into a shorted stack and for ESD/handling.
+- KEMET C2220Y332JGGACAUTO datasheet: floating-electrode rating, surface arc-over guidance, ageing (C0G: none).
+- Creepage/coating at 1.3–1.6 kV across single parts after a fault (R3.5).
+- Thermal: the "release failed" case puts ≈ 27 J into the bottom device over ≈ 4.5 s at ≤ 41 W peak
+  [SIM]; needs the maker's SOA at mid voltages and a board thermal model.
+- All models are hand-built; no maker SPICE model exists for the depletion devices. The simulator needed
+  continuation (DC sweeps) and a 20 µs step limit to give converged answers; an unsettled pseudo-transient fallback
+  and a kinked leakage source both produced plausible-looking wrong numbers during this work (fixed; see R3.2).
+
+### R3.10 Build, cross-check and files
+
+- `bash tools/build.sh`: **BUILD OK** — 0 ERC errors; sheet 11 now 230 parts; netlist round trip matches the pin
+  table. Nothing new needed an accepted ERC warning.
+- `python3 tools/xcheck.py`: `HOLD_A_HELD2_N` and `HOLD_B_HELD2_N` are listed as **single-sheet nets** — expected:
+  their far end (pull-ups and the four-line AND on 09_interlock, WP-D) is not yet drawn in this worktree, where sheet
+  09 is still at issue 2 (its `HOLD_x_HELD_N` pull-ups still read 10 kΩ). Names are as contract issue 3 §5.4; not
+  renamed.
+- Files changed: `hardware/aed-main/specs/11_hv_storage.toml`, `hardware/lib/src/aed_storage.toml` (IXTT2N170D2
+  replaces IXTT10N100D2), the generated `hardware/lib/aed_storage.kicad_sym`, `hardware/aed-main/11_hv_storage.kicad_sch`
+  and the regenerated PDF, this file, and the new folder `hardware/aed-main/sim/rev3-wpf/` (netlists, models,
+  `gen_ctl.py`, `run.sh`, `notes.md`).
+- Simulation bookkeeping: on a heavily loaded machine the 70 °C half of `stack_static_wpf` was run as two parallel
+  processes with the same cases (the second half with Monte Carlo seed 20261130); the committed `stack_static_wpf.ctl`
+  runs everything in one process with seed 20261128, so a re-run reproduces the cases and the same order of
+  results, not every last volt of the hot fault rows.

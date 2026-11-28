@@ -400,3 +400,46 @@ fn saved_design_table_is_current() {
          `cargo run -p aed-waveform --example design_table > crates/aed-waveform/DESIGN_TABLE.md`"
     );
 }
+
+/// D-63, change order FW-8: the firmware's longest phases must stay below
+/// the LOWEST value of each hardware cap (phase 1 10.75 ms, phase 2
+/// 7.31 ms, overall 23.77 ms; HARDWARE_DESIGN.md §B13.3, calculated and
+/// simulated bands) with at least 0.5 ms margin, and so must every plan the
+/// planner produces. Fails with the old 12 / 8 / 20 ms maxima.
+#[test]
+fn firmware_phase_maxima_and_every_plan_fit_inside_the_hardware_caps() -> Result<(), String> {
+    const P1_CAP_MIN_US: u32 = 10_750;
+    const P2_CAP_MIN_US: u32 = 7_310;
+    const TOTAL_CAP_MIN_US: u32 = 23_770;
+    const MARGIN_US: u32 = 500;
+    let cfg = WaveformConfig::default();
+    assert!(
+        cfg.phase1_max.0 + MARGIN_US <= P1_CAP_MIN_US,
+        "phase-1 maximum {}",
+        cfg.phase1_max.0
+    );
+    assert!(
+        cfg.phase2_max.0 + MARGIN_US <= P2_CAP_MIN_US,
+        "phase-2 maximum {}",
+        cfg.phase2_max.0
+    );
+    assert!(
+        cfg.max_total.0 + MARGIN_US <= TOTAL_CAP_MIN_US,
+        "total maximum {}",
+        cfg.max_total.0
+    );
+    for mode in MODES {
+        for ohms in all_ohms() {
+            let (plan, _) = planned(mode, ohms)?;
+            assert!(
+                plan.phase1.0 + MARGIN_US <= P1_CAP_MIN_US,
+                "{mode:?} {ohms} Ω phase 1"
+            );
+            assert!(
+                plan.phase2.0 + MARGIN_US <= P2_CAP_MIN_US,
+                "{mode:?} {ohms} Ω phase 2"
+            );
+        }
+    }
+    Ok(())
+}

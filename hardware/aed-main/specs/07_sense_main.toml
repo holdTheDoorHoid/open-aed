@@ -1,6 +1,7 @@
 # 07_sense_main - main controller's capacitor-voltage chain, output-node sense inputs, capacitor NTC, LOWV_OK.
 # NOT FOR CONSTRUCTION — unreviewed design.
-# Source: docs/HARDWARE_DESIGN.md §B9.1, §B9.2, §B14; contract.md issue 2 §5.4, §5.6, §5.7, §8 (sheet 07).
+# Source: docs/HARDWARE_DESIGN.md v0.3 §B9.1, §B9.2, §B14; contract.md issue 3 §5.4, §5.6, §5.7, §8 (sheet 07).
+# Revision 0.3 (capture-notes/rev3-changes.md WP-C C-1): R718 1 GOhm from VREF_M to VCAPM_IN (open tap reads a fault).
 # References 701-799. Work package WP-C. Arithmetic: hardware/aed-main/capture-notes/WP-C.md.
 # The high-voltage divider string itself (10 x 4.02 MOhm HVCR2512 + 2 x 80.6 kOhm) and its tap clamp
 # (10 kOhm + 3.6 V to GND) are on 11_hv_storage; this sheet receives only VCAP_M_TAP (1:998.5).
@@ -79,6 +80,8 @@ R701 100 kOhm meets R7 (reader may be unpowered while the capacitor is charged):
 R701 + C701 (10 nF C0G): 1.6 ms time constant, -3 dB 159 Hz. Lag during a charge: 205 V/s x 1.6 ms = 0.3 V (within the 1 ms loop's 0.2 V overshoot budget, §B4.4).
 U704 OPA333: Vos 10 uV max, 0.05 uV/K; IB 200 pA max at 25 C, 150 pA typ over temperature (SBOS351E 6.6) -> 1 nA assumed worst case x 150 kOhm source = 0.15 mV = 0.15 V of capacitor voltage. Output swing to the negative rail is the limit near 0 V: readings below about 10 mV (10 V) are not linear [UNVERIFIED at this load].
 R702 1 MOhm to 3V3_MAIN at the follower output: a failed-open follower output reads FULL SCALE (over-voltage, LOWV_OK low = not permitted) rather than 0 V. The follower sinks 3.3 uA at the LOWV threshold.
+Rev 0.3 (I-23): R718 1 GOhm from VREF_M to VCAPM_IN. Tap wire open -> C701 charges from VREF_M with 1 G x 10 nF = 10 s; LOWV_OK falls when VCAPM_IN passes 54.7 mV: 10 s x ln(2.5/(2.5-0.0547)) = 0.22 s [CALC] (0.16-0.37 s simulated over the comparator band, LR §5.2), and the reading keeps rising toward 2,500 V (refused).
+Wire intact: 2.5 nA x 150.3 k (R701 + the 50.3 k tap source on 11) = +0.38 mV = +0.38 V of reading at 0 V, +0.08 V at 1,950 V [CALC; LR §5.2 simulated +0.22 / -0.07 V with its bias-current assumption]; a fixed offset and gain term removed by the factory calibration. CRHV TCR 100 ppm/K x 45 K moves it by < 0.002 V.
 """
 
 [[group]]
@@ -106,7 +109,7 @@ note = """
 U703 -IN = buffered tap through R704 10 k / C704 100 nF (1 ms). +IN = threshold from VREF_M: R705 46.4 k / R706 1.00 k (0.1 %) = 52.74 mV, hysteresis R707 1.62 M from the output.
 Output HIGH (LOWV_OK) while tap < threshold. Thresholds [CALC]: OK -> not OK at tap 54.70 mV = 54.6 V; not OK -> OK at 52.71 mV = 52.6 V (2 V hysteresis).
 Band [CALC, worst case]: LMV761 Vos +-1 mV over temperature (SNOS998I 6.6), follower 0.16 mV, resistors 0.1 % + 25 ppm/K, VREF 0.1 %, divider ratio +-1.5 % uncalibrated -> 50.4 V to 57.0 V. Requirement: OK only below 60 V -> fits with 3 V margin; S refuses a test permit above 50 V on its own chain (§13 fault 32).
-Default: unpowered or off -> output low via the 100 kOhm pull-down on 09 = NOT OK (R11). An open VCAP_M_TAP reads 0 V = "OK": see capture notes, contract issue C-3.
+Default: unpowered or off -> output low via the 100 kOhm pull-down on 09 = NOT OK (R11). An open VCAP_M_TAP now reads high (R718, group tap): LOWV_OK falls within about 0.2-0.4 s (closes issue-2 contract issue C-3 / I-23).
 SDB (shutdown, active low) tied to V+ (always on).
 """
 
@@ -150,6 +153,19 @@ manufacturer = "Murata"
 datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H103JA01%23"
 description = "Tap filter (C0G: no leakage or dielectric absorption to speak of)"
 between = ["VCAPM_IN", "GND"]
+
+[[part]]
+ref = "R718"
+group = "tap"
+lib_id = "Device:R"
+value = "1G 1%"
+footprint = "Resistor_SMD:R_1206_3216Metric"
+mpn = "CRHV1206AF1G00FKE5"
+manufacturer = "Vishay"
+datasheet = "https://www.vishay.com/docs/68002/crhv.pdf"
+description = "Open-tap detector (rev 0.3, I-23): 1 GOhm thick film, 1206, 1,500 V working; drives an open VCAP_M_TAP reading up so LOWV_OK falls"
+fields = { DocRef = "§B9.1 open tap wire (v0.3)", Verify = "1 GOhm 1 % 100 ppm/K in 1206: CRHV doc 68002 (rev. 12-Nov-2024) lists 2 M-1 G at 1-20 % and marks the TCR 'reference only, consult factory'; ordering code decoded from that sheet (A 3-sided, F nickel barrier, 1G00, F 1 %, K 100 ppm, E Sn100, 5 = reel of 500)" }
+between = ["VREF_M", "VCAPM_IN"]
 
 [[part]]
 ref = "U704"

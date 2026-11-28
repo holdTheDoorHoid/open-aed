@@ -2,7 +2,9 @@
 # BRIDGE_3V3 with hold-up, power-on reset and rail-ready, Ioff command buffers, sequence state latches, leg lockouts and
 # lead, latched non-retriggerable 25 ms cap, fault latch, relay coil timing (latched coil cap, start window), the
 # fixed turn-off order, and open-drain status to both controllers. Discrete logic only (contract §9), on BRIDGE_3V3.
-# Sources: docs/HARDWARE_DESIGN.md §B13, §B14, §B7.2, §13, §F-4/F-8; hardware/aed-main/contract.md issue 2 §5.7.
+# Revision 0.3 (contract issue 3, capture-notes/rev3-changes.md WP-D D-7...D-17): high-side kill latch, fast idle input,
+# LSD_OK, per-phase caps, relay-contact bounce fix, 'seen at rest' latch, comparator BTOK. Capture notes 'Revision 0.3'.
+# Sources: docs/HARDWARE_DESIGN.md v0.3 §B13, §B14, §B7.2, §13, §F-4/F-8; hardware/aed-main/contract.md issue 3 §5.7.
 # Arithmetic, truth tables, failure table and assumptions: hardware/aed-main/capture-notes/WP-D.md.
 # Datasheets were fetched 2026-11-27 from the manufacturer's site (TI, onsemi, Vishay); URLs on each part.
 # Generated once by a throwaway script; this file is the source of truth (edit it directly).
@@ -10,7 +12,7 @@
 [sheet]
 name = "12_bridge_logic"
 title = "Shock sequencer (D-59): BRIDGE_3V3 hold-up, order and lockouts, latched 25 ms cap, fault latch, relay coil timing, turn-off order, status"
-source = "docs/HARDWARE_DESIGN.md §B13, §B14; contract.md issue 2 §5.7"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B13, §B14; contract.md issue 3 §5.7"
 date = "2026-11-27"
 comments = ["Consent starts the sequence; this logic completes it within a latched 25 ms cap and locks out until the rail cycles (D-59)", "Every internal node is pulled toward the state that blocks a shock. Capture notes: capture-notes/WP-D.md"]
 
@@ -34,6 +36,8 @@ global = [
   "TEST_MODE",
   "OC_DET_N",
   "IDLE_I_DET_N",
+  "IDLE_FAST_N",
+  "LSD_OK",
   "K_REST_N",
   "G_HA",
   "G_HB",
@@ -75,7 +79,7 @@ reason = "Contract §5.7 coil enable; pull-down and coil boost on 14_patient_int
 
 [[erc_accepted]]
 type = "pin_not_driven"
-match = "K_REST_N|Symbol U1210 Pin 1"
+match = "K_REST_F|Symbol U1210 Pin 1"
 until_sheet = "14_patient_interface"
 reason = "K_REST_N is driven only by the relay's force-guided auxiliary contact on 14 (WP-H) with its pull-up on 04 (WP-B); nothing on this sheet may drive it (contract §5.7: Ioff buffer, no pull)."
 
@@ -106,7 +110,7 @@ RDY = RST_N delayed 20.2-24.1 ms [CALC] by 221 k / 100 nF C0G and a TLV7031 at 0
 id = "inputs"
 title = "Command and status inputs: 100 k pull-downs, Ioff Schmitt buffers on BRIDGE_3V3"
 note = """
-Contract §5.7: CMD_HA, CMD_LA, CMD_HB, CMD_LB, RELAY_CMD, BTEST_CMD, WIN_OPEN, TEST_MODE: 100 k to GND here and Ioff buffers on BRIDGE_3V3 (SN74LVC2G17, Ioff <= 10 uA: the main controller's 3.3 V commands cannot power BRIDGE_3V3 when the rail is off). OC_DET_N, IDLE_I_DET_N: 100 k to GND here, so an open or unpowered sheet-13 comparator reads FAULT; buffered by an inverting SN74LVC2G14 (OC_F, IDLE_RAW high = fault). K_REST_N: no pull here (pull-up on 04); SN74LVC2G14 gives K_AT_REST (= not K_REST_N) and K_LEFT (= K_REST_N).
+Contract §5.7: CMD_HA, CMD_LA, CMD_HB, CMD_LB, RELAY_CMD, BTEST_CMD, WIN_OPEN, TEST_MODE: 100 k to GND here and Ioff buffers on BRIDGE_3V3 (SN74LVC2G17, Ioff <= 10 uA: the main controller's 3.3 V commands cannot power BRIDGE_3V3 when the rail is off). OC_DET_N, IDLE_I_DET_N and (rev 0.3) IDLE_FAST_N: 100 k to GND here, so an open or unpowered sheet-13 comparator reads FAULT; buffered by inverting Schmitt gates (OC_F, IDLE_RAW, IDLE_FST high = fault, each with a pull-up). IDLE_ANY = IDLE_RAW OR IDLE_FST (U1269) replaces IDLE_RAW in the idle latch and the start health check (D-8). LSD_OK (rev 0.3): 100 k to GND (low = fault). K_REST_N: no pull here (pull-up on 04); rev 0.3 D-14: read through 10 k / 1 nF (K_REST_F, 10 us; contract issue 3 §5.7) so contact blips under about 10 us are ignored; SN74LVC2G14 gives K_AT_REST (= not K_REST_N) and K_LEFT (= K_REST_N).
 Pairs share a package only where a double failure is harmless: (HA, HB) both stuck high cannot conduct without a low side; (LA, LB) are separated in time by the state machine; (WIN, TM) stuck high = test mode = patient relay blocked.
 """
 
@@ -134,7 +138,7 @@ On a rail collapse the same order runs from the BRIDGE_3V3 hold-up (>= 2.5 ms): 
 id = "high_side"
 title = "High-side enables G_HA, G_HB with the 10 us leg lockout (§B13.3 rule 2)"
 note = """
-G_HA = HA AND RUN_H AND LA_OFF10: G_HA is blocked while G_LA is on and for 9-20 us after it goes off [CALC] (LA_OFF10: 10 k / 1.5 nF C0G charged at once through a BAS116 when G_LA rises, SN74LVC1G14). Same for G_HB against G_LB. The lockouts watch the gated enables, not the raw commands (review R-23).
+G_HA_P = HA AND RUN_H AND LA_OFF10 (U1222), then G_HA_I = G_HA_P AND HSK_N (U1266, rev 0.3 D-7: the high-side kill latch, group hsk). G_HA is blocked while G_LA is on and for 9-20 us after it goes off [CALC] (LA_OFF10: 10 k / 1.5 nF C0G charged at once through a BAS116 when G_LA rises, SN74LVC1G14). Same for G_HB against G_LB (G_HB_P, U1223, U1267). The lockouts and leads stay on G_HA_I / G_HB_I (after the kill gate), so they time what really reaches sheet 13. The lockouts watch the gated enables, not the raw commands (review R-23).
 Outputs to sheet 13 through 1 k (pull-downs there). The high side may be enabled before a sequence (the 100 us lead): no current can flow without a low side.
 """
 
@@ -151,10 +155,10 @@ HA_ON50: G_HA on >= 41-77 us [CALC] (10 k / 6.8 nF, emptied at once through a BA
 id = "start"
 title = "Start conditions sampled at the CMD_LB rising edge (START_OK, §B13.1 step 8, §B13.3 rules 5, 9)"
 note = """
-START_OK = [NOT OC AND NOT idle current AND NOT FLT] AND [RDY AND WIN AND BR5_OK] AND [LB_LOCK AND MODE_OK].
-MODE_OK = shock mode: XFER (relay left rest, with K_EN on, for >= 10.0 ms) AND KWIN_N (coil on for less than 45.7-51.8 ms)
-          OR test mode: TM AND K_AT_REST (patient relay at rest) AND BTOK (test relay enabled >= 2.08 ms).
-XFER: AND(K_LEFT, K_EN_I) -> 110 k / 100 nF -> TLV7031 at 0.640: 10.0-12.0 ms [CALC] (emptied at once through a BAS116 when either input drops). BTOK: BTEST_EN_I -> 36 k / 100 nF -> SN74LVC1G17: 2.08-4.35 ms [CALC].
+START_OK = [NOT OC AND NOT idle current (IDLE_ANY) AND NOT FLT] AND [RDY AND WIN AND RAIL_OK] AND [LB_LOCK AND MODE_OK]; RAIL_OK = BR5_OK AND LSD_OK (rev 0.3 D-9).
+MODE_OK = shock mode: XFER (relay left rest, with K_EN on and the contact SEEN AT REST when K_EN rose (K_WAS_REST, U1277, rev 0.3 D-15), for >= 10 ms) AND KWIN_N (coil on for less than 45.7-51.8 ms)
+          OR test mode: TM AND K_AT_REST (patient relay at rest) AND BTOK (test relay enabled >= 4.74 ms, rev 0.3 D-16).
+XFER: AND3(K_LEFT, K_EN_I, K_WAS_REST) -> 110 k / 100 nF -> TLV7031 at 0.640: 10.42-12.17 ms [SIM LR §1.3] (emptied through a BAS116 when an input drops, and fully through Q1201 2N7002 + 10 ohm while the contact is back at rest, D-14: 11.0-11.3 ms after the last release for bounces >= 15 us [SIM rev3-wpd]). BTOK (rev 0.3 D-16): BTEST_EN_I -> 49.9 k thin film / 100 nF C0G -> TLV7031 at 0.640 (56.2 k / 100 k): 4.74-5.52 ms [SIM LR §1.3], above the test relay's 3 ms operate time.
 Every intermediate node has a 100 k pull-down: a dead gate refuses the start.
 """
 
@@ -162,11 +166,12 @@ Every intermediate node has a 100 k pull-down: a dead gate refuses the start.
 id = "faults"
 title = "Fault latch FLT and the latched 25 ms cap (§B13.3 rules 4 and 6, R-4)"
 note = """
-FLT_PRE_N = NOT( RDY AND ( OC_F OR IDLE_F OR SEQ_UV OR CAP_F ) ):
-  IDLE_F = IDLE_RAW AND LA_OFF10 AND LB_OFF10 (>= 5 A while neither low side has been enabled for 9 us; R-14).
-  SEQ_UV = NOR(BR5_OK, ACT_N, DONE) = rail below 4.5 V during a running sequence.
+FLT_PRE_N = NOT( RDY AND ( OC_F OR IDLE_F OR SEQ_UV OR CAP_F OR PCF ) ):
+  IDLE_F = IDLE_ANY AND LA_OFF10 AND LB_OFF10 (>= 5 A slow path or >= 3 A fast path while neither low side has been enabled for 9 us; R-14, rev 0.3 D-8).
+  SEQ_UV = NOR(RAIL_OK, ACT_N, DONE) = rail below 4.5 V or LSD_OK low during a running sequence (rev 0.3 D-9).
+  PCF = per-phase cap fault (group phase_caps, rev 0.3 D-10...D-12); TRIG = TRIG_A OR CAP_F OR PCF (U1252 now SN74LVC1G332).
   CAP_F = NOR(CAPC_N, DONE) = cap expired before the planned end.
-Cap: ACT (a latch) charges 249 k / 100 nF C0G +-2 % (emptied only when ACT is cleared by RST_N, through a BAS116); TLV7031 against 0.6345 x BRIDGE_3V3 (57.6 k / 100 k). Expiry 23.7-26.5 ms after the start [CALC] (spec 25 ms +-15 % = 21.3-28.8 ms). Non-retriggerable and not extendable: the RC is driven by the ACT latch, which nothing but a power-on reset clears; nothing a controller does can restart or stretch it. CAPC_N is high while not expired; power-on reset holds it low = expired.
+Cap: ACT (a latch) charges 249 k / 100 nF C0G +-2 % (emptied only when ACT is cleared by RST_N, through a BAS116); TLV7031 against 0.6345 x BRIDGE_3V3 (57.6 k / 100 k). Expiry 23.77-26.22 ms after the start [SIM LR §2] (spec 25 ms +-15 % = 21.3-28.8 ms). Rev 0.3 D-13: unchanged; with the per-phase caps it is a backstop (tested on its own by T-9). Non-retriggerable and not extendable: the RC is driven by the ACT latch, which nothing but a power-on reset clears; nothing a controller does can restart or stretch it. CAPC_N is high while not expired; power-on reset holds it low = expired.
 Fault-path nodes have pull-UPs (a dead gate reads 'fault'); FLT_PRE_N has a pull-DOWN (a dead NAND sets FLT).
 """
 
@@ -177,7 +182,7 @@ note = """
 K_EN = RELAY_CMD AND NOT TEST_MODE AND KCAP_N AND RUN_D1M AND RDY (KA_N = NAND3, then NOR with TM). RDY is added to rule 7 so that the coil timer's start latch KON can never miss the first K_EN edge while RST_N holds it cleared (a RELAY_CMD already high at rail-up would otherwise leave the coil uncapped). In test mode the coil can never be energised: the bridge cannot reach the pads (§B14.2).
 Coil timer: KON (latched at the FIRST K_EN rise) charges 953 k / 100 nF C0G +-2 %; a three-resistor divider (115 k / 66.5 k / 121 k) gives 0.400 and 0.620 x BRIDGE_3V3. KWIN_N (start window) closes 45.7-51.8 ms after the coil was energised; KCAP_N (coil cap) cuts K_EN 87.1-97.6 ms after [CALC]. Latest possible coil-off = 51.8 (latest start) + 26.5 (cap) + 1.63 (coil delay) = 80.0 ms < 87.0 ms: a started sequence always ends before the coil cap; 97.6 ms < the G17's 100 ms rating (§B7.2). Same RC for both thresholds, so their ratio is set by 0.1 % resistors only.
 Both comparators are held low by power-on reset = window closed / coil cut (fail to 'no coil').
-Output to sheet 14 through 1 k (pull-down there).
+Output to sheet 14 through 1 k (pull-down there). Rev 0.3 (D-17): K_EN now drives only the coil driver (economiser) on 14; the coil supply is K_SUPPLY_EN from the main controller.
 """
 
 [[group]]
@@ -191,7 +196,26 @@ Only in test mode; output to sheet 13 through 1 k (pull-down there). BTEST_EN_I 
 id = "status"
 title = "Open-drain status to both controllers (§B13.7): SEQ_ACT_*_N, SEQ_DONE_*_N, BR_FAULT_N"
 note = """
-One SN74LVC2G07 per controller, so each controller's view has its own part. SEQ_ACT = ACT, SEQ_DONE = NOT RUN_L (planned end or fault), BR_FAULT = FLT. Pull-ups on 04 (3V3_MAIN) and 05 (3V3_SUP); with BRIDGE_3V3 off the outputs are released (Ioff) = 'not active / not done / no fault' (contract §5.7).
+One SN74LVC2G07 per controller, so each controller's view has its own part. SEQ_ACT = ACT, SEQ_DONE = NOT RUN_L (planned end or fault), BR_FAULT = FLT, which since rev 0.3 (D-17) also reports the per-phase caps and LSD_OK low (contract issue 3 §5.7). Pull-ups on 04 (3V3_MAIN) and 05 (3V3_SUP); with BRIDGE_3V3 off the outputs are released (Ioff) = 'not active / not done / no fault' (contract §5.7).
+"""
+
+[[group]]
+id = "hsk"
+title = "High-side kill latch (rev 0.3 D-7, I-8): an over-current or idle-current fault removes G_HA and G_HB at once"
+note = """
+OCI = OC_F OR IDLE_F (U1263); HSK_PRE_N = NAND(OCI, RDY) (U1264) presets the SN74LVC1G74 U1265 (D and CLK tied low, CLR_N = RST_N): HSK_N (its Q_N) falls and stays low until the next rail cycle. G_HA_I = G_HA_P AND HSK_N, G_HB_I = G_HB_P AND HSK_N (U1266, U1267). Path from OC_DET_N / IDLE_FAST_N to G_H*: 5 or 7 gates, <= 33 / 46 ns [CALC, SCES datasheets' 3.3 V maxima], about 47 / 60 ns with the 1 k into sheet 13's input threshold, instead of the 20-36 us RUN_D20 delay (bridge sim change 1: a shorted low side otherwise destroys the opposite high side). Planned ends, cap expiry, LSD_OK and rail collapse keep the low-side-first order through RUN_D20.
+Defaults: OCI pulled UP (dead OR = fault), HSK_PRE_N pulled DOWN (dead NAND = kill), HSK_N pulled DOWN (dead latch = high sides blocked), G_HA_P / G_HB_P pulled down. All of these fail to 'no high side' = no shock, found by the daily bridge test (F-8.3, T-8).
+Self-test cannot set this latch (the test current, about 0.3 A, is below the 3 A and 80 A comparators): its stuck-clear failure is hidden (design §B14.5 'still hidden').
+"""
+
+[[group]]
+id = "phase_caps"
+title = "Per-phase hardware time caps (rev 0.3 D-10...D-12, D-63): phase 1 10.75-11.92 ms, phase 2 7.31-8.10 ms"
+note = """
+Phase 1: ACT (the start latch) charges 113 k thin film / 100 nF C0G +-2 %; TLV7031 U1271 against 0.6345 x BRIDGE_3V3 (57.6 k / 100 k): P1C_N falls 11.43 ms nominal after the start. P1F = NOR(P1C_N, P1D): acts only while phase 1 is not yet latched done.
+Phase 2: latch U1272 (SN74LVC1G74, CLK = G_LA_I, D = 1, CLR_N = RST_N) sets P2S at the FIRST phase-2 enable edge, non-retriggerable; P2S charges 76.8 k / 100 nF C0G +-2 %; U1273 at 0.6345: P2C_N falls 7.77 ms nominal after the phase-2 start. P2F = NOR(P2C_N, DONE): acts only until the planned end.
+PCF = P1F OR P2F -> TRIG -> FLT: fault latch, normal turn-off order, BR_FAULT_N. Bands [SIM rev3-wpd/timers_rev3.cir, -20...+70 C and tolerances]: 10.93-11.92 ms and 7.44-8.10 ms; with the change order's wider spread (LR §2: -5.4/+4.3 %) 10.75-11.92 ms and 7.31-8.10 ms. Firmware's longest phases 10.0 ms and 6.7 ms: >= 0.6 ms margin.
+Defaults: P1C_N, P2C_N pulled down and held low by the comparators' power-on reset (= expired); P2S pulled UP (a dead latch starts the phase-2 timer at rail-up; it expires 7-14 ms later, before RDY at >= 20.7 ms, and every start is then refused); P1F, P2F, PCF pulled UP (dead gate = fault). RDY gates every trigger into FLT, so the power-up states cannot set a fault before the rail is ready.
 """
 
 [[part]]
@@ -841,7 +865,7 @@ datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc2g14.pdf"
 description = "relay auxiliary contact: both senses (datasheet SCES200P)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
-  1    ~          K_REST_N           # 1A
+  1    ~          K_REST_F           # 1A
   2    GND        GND                # GND
   3    ~          K_AT_REST          # 2A
   4    ~          K_LEFT             # 2Y
@@ -1004,6 +1028,129 @@ manufacturer = "any"
 datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
 description = "100k 1 %, 100 ppm/K: K_AT_REST pull-down: dead buffer reads 'relay not at rest' (no test sequence)"
 between = ["K_AT_REST", "GND"]
+
+[[part]]
+ref = "R6210"
+group = "inputs"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: IDLE_FAST_N default (contract issue 3 §5.7: 12, 100 k to GND): an open or unpowered fast comparator reads FAULT"
+fields = { DocRef = "contract issue 3 §5.7; rev3-changes D-8" }
+between = ["IDLE_FAST_N", "GND"]
+
+[[part]]
+ref = "U1268"
+group = "inputs"
+lib_id = "74xGxx:74LVC1G14"
+value = "SN74LVC1G14DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G14DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g14.pdf"
+description = "IDLE_FST = NOT IDLE_FAST_N: fast (3 A) idle-current input, high = fault (rev 0.3 D-8) (datasheet SCES218AA)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    NC         NC                 # NC
+  2    ~          IDLE_FAST_N        # A
+  3    GND        GND                # GND
+  4    ~          IDLE_FST           # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1290"
+group = "inputs"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1268"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6233"
+group = "inputs"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: IDLE_FST pull-up: dead buffer reads 'fault' (DEP-12; not in the change order)"
+between = ["IDLE_FST", "BRIDGE_3V3"]
+
+[[part]]
+ref = "U1269"
+group = "inputs"
+lib_id = "74xGxx:74LVC1G32"
+value = "SN74LVC1G32DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G32DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g32.pdf"
+description = "IDLE_ANY = IDLE_RAW OR IDLE_FST: either idle path (rev 0.3 D-8) (datasheet SCES219W)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          IDLE_RAW           # A
+  2    ~          IDLE_FST           # B
+  3    GND        GND                # GND
+  4    ~          IDLE_ANY           # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1291"
+group = "inputs"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1269"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6211"
+group = "inputs"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: IDLE_ANY pull-up: dead gate reads 'fault' (rev 0.3 D-8)"
+between = ["IDLE_ANY", "BRIDGE_3V3"]
+
+[[part]]
+ref = "R6224"
+group = "inputs"
+lib_id = "Device:R"
+value = "10k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "10k 1 %, 100 ppm/K: K_REST_N bounce filter, 10 us with C1284 (contract issue 3 §5.7; rev 0.3 D-14, LR §1.4)"
+between = ["K_REST_N", "K_REST_F"]
+
+[[part]]
+ref = "C1284"
+group = "inputs"
+lib_id = "Device:C"
+value = "1nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "1nF C0G 50 V 0603: K_REST_N bounce filter capacitor (rev 0.3 D-14)"
+between = ["K_REST_F", "GND"]
 
 [[part]]
 ref = "U1211"
@@ -1686,13 +1833,13 @@ footprint = "Package_TO_SOT_SMD:SOT-23-6"
 mpn = "SN74LVC1G11DBVR"
 manufacturer = "Texas Instruments"
 datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g11.pdf"
-description = "G_HA_I = HA AND RUN_H AND LA_OFF10 (datasheet SCES487J)"
+description = "G_HA_P = HA AND RUN_H AND LA_OFF10 (before the kill gate U1266) (datasheet SCES487J)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
   1    ~          HA                 # A
   2    GND        GND                # GND
   3    ~          RUN_H              # B
-  4    ~          G_HA_I             # Y
+  4    ~          G_HA_P             # Y
   5    VCC        BRIDGE_3V3         # VCC
   6    ~          LA_OFF10           # C
 """
@@ -1730,13 +1877,13 @@ footprint = "Package_TO_SOT_SMD:SOT-23-6"
 mpn = "SN74LVC1G11DBVR"
 manufacturer = "Texas Instruments"
 datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g11.pdf"
-description = "G_HB_I = HB AND RUN_H AND LB_OFF10 (datasheet SCES487J)"
+description = "G_HB_P = HB AND RUN_H AND LB_OFF10 (before the kill gate U1267) (datasheet SCES487J)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
   1    ~          HB                 # A
   2    GND        GND                # GND
   3    ~          RUN_H              # B
-  4    ~          G_HB_I             # Y
+  4    ~          G_HB_P             # Y
   5    VCC        BRIDGE_3V3         # VCC
   6    ~          LB_OFF10           # C
 """
@@ -1764,6 +1911,224 @@ manufacturer = "any"
 datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
 description = "1k 1 %, 100 ppm/K: series resistor of the board-crossing G_HB (pull-down on 13)"
 between = ["G_HB_I", "G_HB"]
+
+[[part]]
+ref = "U1263"
+group = "hsk"
+lib_id = "74xGxx:74LVC1G32"
+value = "SN74LVC1G32DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G32DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g32.pdf"
+description = "OCI = OC_F OR IDLE_F: over-current or idle-current fault (rev 0.3 D-7) (datasheet SCES219W)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          OC_F               # A
+  2    ~          IDLE_F             # B
+  3    GND        GND                # GND
+  4    ~          OCI                # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1285"
+group = "hsk"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1263"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6229"
+group = "hsk"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: OCI pull-up: dead gate reads 'fault' = high sides killed (DEP-12; not in the change order)"
+between = ["OCI", "BRIDGE_3V3"]
+
+[[part]]
+ref = "U1264"
+group = "hsk"
+lib_id = "74xGxx:74LVC1G00"
+value = "SN74LVC1G00DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G00DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g00.pdf"
+description = "HSK_PRE_N = NOT(OCI AND RDY): presets the kill latch (rev 0.3 D-7) (datasheet SCES212AC)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          OCI                # A
+  2    ~          RDY                # B
+  3    GND        GND                # GND
+  4    ~          HSK_PRE_N          # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1286"
+group = "hsk"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1264"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6230"
+group = "hsk"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: HSK_PRE_N pull-down: dead NAND sets the kill latch (DEP-12; not in the change order)"
+between = ["HSK_PRE_N", "GND"]
+
+[[part]]
+ref = "U1265"
+group = "hsk"
+lib_id = "aed_logic:SN74LVC1G74DCT"
+value = "SN74LVC1G74DCTR"
+footprint = "Package_SO:SSOP-8_2.95x2.8mm_P0.65mm"
+mpn = "SN74LVC1G74DCTR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g74.pdf"
+description = "HSK_N = high-side kill latch, low = killed; set by HSK_PRE_N, cleared only by RST_N (rev 0.3 D-7) (datasheet SCES794G)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    CLK        GND                # CLK
+  2    D          GND                # D
+  3    ~{Q}       HSK_N              # Q_N
+  4    GND        GND                # GND
+  5    Q          NC                 # Q
+  6    ~{CLR}     RST_N              # CLR_N
+  7    ~{PRE}     HSK_PRE_N          # PRE_N
+  8    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1287"
+group = "hsk"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1265"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6209"
+group = "hsk"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: HSK_N default: dead latch = high sides blocked (rev 0.3 D-7)"
+between = ["HSK_N", "GND"]
+
+[[part]]
+ref = "R6231"
+group = "hsk"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: G_HA_P pull-down: dead gate = no high side A (DEP-12; not in the change order)"
+between = ["G_HA_P", "GND"]
+
+[[part]]
+ref = "U1266"
+group = "hsk"
+lib_id = "74xGxx:74LVC1G08"
+value = "SN74LVC1G08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g08.pdf"
+description = "G_HA_I = G_HA_P AND HSK_N (rev 0.3 D-7) (datasheet SCES217AA)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          G_HA_P             # A
+  2    ~          HSK_N              # B
+  3    GND        GND                # GND
+  4    ~          G_HA_I             # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1288"
+group = "hsk"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1266"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6232"
+group = "hsk"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: G_HB_P pull-down: dead gate = no high side B (DEP-12; not in the change order)"
+between = ["G_HB_P", "GND"]
+
+[[part]]
+ref = "U1267"
+group = "hsk"
+lib_id = "74xGxx:74LVC1G08"
+value = "SN74LVC1G08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g08.pdf"
+description = "G_HB_I = G_HB_P AND HSK_N (rev 0.3 D-7) (datasheet SCES217AA)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          G_HB_P             # A
+  2    ~          HSK_N              # B
+  3    GND        GND                # GND
+  4    ~          G_HB_I             # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1289"
+group = "hsk"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1267"
+between = ["BRIDGE_3V3", "GND"]
 
 [[part]]
 ref = "R1254"
@@ -2547,7 +2912,7 @@ pins = """
 # pin  name-in-symbol  net   # datasheet pin
   1    ~          OC_F               # A
   2    GND        GND                # GND
-  3    ~          IDLE_RAW           # B
+  3    ~          IDLE_ANY           # B
   4    ~          HEALTH_A           # Y
   5    VCC        BRIDGE_3V3         # VCC
   6    ~          FLT                # C
@@ -2594,7 +2959,7 @@ pins = """
   3    ~          WIN                # B
   4    ~          START_B            # Y
   5    VCC        BRIDGE_3V3         # VCC
-  6    ~          BR5_OK             # C
+  6    ~          RAIL_OK            # C
 """
 
 [[part]]
@@ -2624,20 +2989,21 @@ between = ["START_B", "GND"]
 [[part]]
 ref = "U1238"
 group = "start"
-lib_id = "74xGxx:74LVC1G08"
-value = "SN74LVC1G08DBVR"
-footprint = "Package_TO_SOT_SMD:SOT-23-5"
-mpn = "SN74LVC1G08DBVR"
+lib_id = "74xGxx:74LVC1G11"
+value = "SN74LVC1G11DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC1G11DBVR"
 manufacturer = "Texas Instruments"
-datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g08.pdf"
-description = "XF_SRC = relay left rest while its coil is on (datasheet SCES217AA)"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g11.pdf"
+description = "XF_SRC = relay left rest AND its coil is on AND the contact was seen at rest when the coil started (rev 0.3 D-15, WP-H C-6) (datasheet SCES487J)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
   1    ~          K_LEFT             # A
-  2    ~          K_EN_I             # B
-  3    GND        GND                # GND
+  2    GND        GND                # GND
+  3    ~          K_EN_I             # B
   4    ~          XF_SRC             # Y
   5    VCC        BRIDGE_3V3         # VCC
+  6    ~          K_WAS_REST         # C
 """
 
 [[part]]
@@ -2819,12 +3185,12 @@ between = ["SHOCK_OK", "GND"]
 ref = "R1280"
 group = "start"
 lib_id = "Device:R"
-value = "36k"
+value = "49.9k"
 footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
-manufacturer = "any"
-datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
-description = "36k 1 %, 100 ppm/K: BTOK timing resistor"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "49.9k 0.1 %, 25 ppm/K thin film: BTOK timing resistor (rev 0.3 D-16, was 36 k thick film)"
 between = ["BTEST_EN_I", "BT_RC"]
 
 [[part]]
@@ -2853,26 +3219,26 @@ footprint = "Capacitor_SMD:C_1206_3216Metric"
 mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
 manufacturer = "Murata"
 datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
-description = "100nF C0G 50 V 1206: BTOK timing capacitor"
+description = "100nF C0G 50 V 1206: BTOK timing capacitor (C0G +-5 %; band of LR §1.3)"
 between = ["BT_RC", "GND"]
 
 [[part]]
 ref = "U1241"
 group = "start"
-lib_id = "74xGxx:74LVC1G17"
-value = "SN74LVC1G17DBVR"
+lib_id = "Comparator:TLV7031DBV"
+value = "TLV7031DBVR"
 footprint = "Package_TO_SOT_SMD:SOT-23-5"
-mpn = "SN74LVC1G17DBVR"
+mpn = "TLV7031DBVR"
 manufacturer = "Texas Instruments"
-datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g17.pdf"
-description = "BTOK: test relay enabled >= 2.08 ms (datasheet SCES351Y)"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv7031.pdf"
+description = "BTOK: test relay enabled >= 4.74-5.52 ms [SIM LR §1.3]; was an SN74LVC1G17 whose input leakage made it 1.88 ms (rev 0.3 D-16) (datasheet SLVSE13J)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
-  1    NC         NC                 # NC
-  2    ~          BT_RC              # A
-  3    GND        GND                # GND
-  4    ~          BTOK               # Y
-  5    VCC        BRIDGE_3V3         # VCC
+  1    ~          BTOK               # OUT
+  2    V-         GND                # V-
+  3    +          BT_RC              # IN+
+  4    -          BT_TH              # IN-
+  5    V+         BRIDGE_3V3         # V+
 """
 
 [[part]]
@@ -3074,6 +3440,162 @@ description = "100k 1 %, 100 ppm/K: START_OK pull-down: dead gate refuses the st
 between = ["START_OK", "GND"]
 
 [[part]]
+ref = "R6212"
+group = "start"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: LSD_OK default (contract issue 3 §5.7: 12, 100 k to GND): open or unpowered monitor reads 'supply low'"
+fields = { DocRef = "contract issue 3 §5.7; rev3-changes D-9" }
+between = ["LSD_OK", "GND"]
+
+[[part]]
+ref = "U1270"
+group = "start"
+lib_id = "74xGxx:74LVC1G08"
+value = "SN74LVC1G08DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G08DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g08.pdf"
+description = "RAIL_OK = BR5_OK AND LSD_OK: bridge rail >= 4.5 V and low-side drive supply >= 16.9 V (rev 0.3 D-9) (datasheet SCES217AA)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          BR5_OK             # A
+  2    ~          LSD_OK             # B
+  3    GND        GND                # GND
+  4    ~          RAIL_OK            # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1292"
+group = "start"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1270"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6213"
+group = "start"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: RAIL_OK default: dead gate = no start, and a fault if a sequence runs (rev 0.3 D-9)"
+between = ["RAIL_OK", "GND"]
+
+[[part]]
+ref = "U1277"
+group = "start"
+lib_id = "aed_logic:SN74LVC1G74DCT"
+value = "SN74LVC1G74DCTR"
+footprint = "Package_SO:SSOP-8_2.95x2.8mm_P0.65mm"
+mpn = "SN74LVC1G74DCTR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g74.pdf"
+description = "K_WAS_REST: the aux contact was AT REST when K_EN rose; cleared only by RST_N (rev 0.3 D-15, WP-H C-6) (datasheet SCES794G)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    CLK        K_EN_I             # CLK
+  2    D          K_AT_REST          # D
+  3    ~{Q}       NC                 # Q_N
+  4    GND        GND                # GND
+  5    Q          K_WAS_REST         # Q
+  6    ~{CLR}     RST_N              # CLR_N
+  7    ~{PRE}     BRIDGE_3V3         # PRE_N
+  8    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1299"
+group = "start"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1277"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6226"
+group = "start"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: K_WAS_REST default: no transfer accepted (rev 0.3 D-15)"
+between = ["K_WAS_REST", "GND"]
+
+[[part]]
+ref = "Q1201"
+group = "start"
+lib_id = "Transistor_FET:2N7002"
+value = "2N7002"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "2N7002LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/nds7002a-d.pdf"
+description = "XF_RC reset: on while the aux contact is back at rest, empties C1253 through 10 ohm (rev 0.3 D-14; VGS(th) 1.0-2.5 V, NDS7002A/D Rev. 11)"
+fields = { Verify = "drain leakage at VDS <= 3.3 V, 70 C must be <= 1 uA (datasheet gives only 1 uA at 60 V 25 C and 0.5 mA at 125 C): above about 2.5 uA XFER exceeds the firmware's 14 ms wait" }
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    G          K_AT_REST          # gate
+  2    S          GND                # source
+  3    D          XF_DIS             # drain
+"""
+
+[[part]]
+ref = "R6225"
+group = "start"
+lib_id = "Device:R"
+value = "10"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "10 1 %, 100 ppm/K: Q1201 drain resistor: limits the C1253 discharge current to 0.33 A peak (rev 0.3 D-14)"
+between = ["XF_DIS", "XF_RC"]
+
+[[part]]
+ref = "R6227"
+group = "start"
+lib_id = "Device:R"
+value = "56.2k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "56.2k 0.1 %, 25 ppm/K thin film: BTOK threshold top (0.640 x BRIDGE_3V3; rev 0.3 D-16)"
+between = ["BRIDGE_3V3", "BT_TH"]
+
+[[part]]
+ref = "R6228"
+group = "start"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "100k 0.1 %, 25 ppm/K thin film: BTOK threshold bottom (rev 0.3 D-16)"
+between = ["BT_TH", "GND"]
+
+[[part]]
 ref = "U1246"
 group = "faults"
 lib_id = "74xGxx:74LVC1G11"
@@ -3085,7 +3607,7 @@ datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g11.pdf"
 description = "IDLE_F = idle current with both low sides off (datasheet SCES487J)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
-  1    ~          IDLE_RAW           # A
+  1    ~          IDLE_ANY           # A
   2    GND        GND                # GND
   3    ~          LA_OFF10           # B
   4    ~          IDLE_F             # Y
@@ -3129,7 +3651,7 @@ datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g27.pdf"
 description = "SEQ_UV = rail collapse during a sequence (datasheet SCES488F)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
-  1    ~          BR5_OK             # A
+  1    ~          RAIL_OK            # A
   2    GND        GND                # GND
   3    ~          ACT_N              # B
   4    ~          SEQ_UV             # Y
@@ -3415,20 +3937,21 @@ between = ["TRIG_A", "BRIDGE_3V3"]
 [[part]]
 ref = "U1252"
 group = "faults"
-lib_id = "74xGxx:74LVC1G32"
-value = "SN74LVC1G32DBVR"
-footprint = "Package_TO_SOT_SMD:SOT-23-5"
-mpn = "SN74LVC1G32DBVR"
+lib_id = "74xGxx:74LVC1G332"
+value = "SN74LVC1G332DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-6"
+mpn = "SN74LVC1G332DBVR"
 manufacturer = "Texas Instruments"
-datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g32.pdf"
-description = "TRIG = any fault (datasheet SCES219W)"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g332.pdf"
+description = "TRIG = TRIG_A OR CAP_F OR PCF: any fault incl. the per-phase caps (rev 0.3 D-12) (datasheet SCES489F)"
 pins = """
 # pin  name-in-symbol  net   # datasheet pin
   1    ~          TRIG_A             # A
-  2    ~          CAP_F              # B
-  3    GND        GND                # GND
+  2    GND        GND                # GND
+  3    ~          CAP_F              # B
   4    ~          TRIG               # Y
   5    VCC        BRIDGE_3V3         # VCC
+  6    ~          PCF                # C
 """
 
 [[part]]
@@ -3497,6 +4020,399 @@ manufacturer = "any"
 datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
 description = "100k 1 %, 100 ppm/K: FLT_PRE_N pull-down: dead gate sets FLT"
 between = ["FLT_PRE_N", "GND"]
+
+[[part]]
+ref = "R6214"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "113k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "113k 0.1 %, 25 ppm/K thin film: phase-1 cap timing resistor (11.43 ms nominal; rev 0.3 D-10)"
+between = ["ACT", "P1_RC"]
+
+[[part]]
+ref = "C1282"
+group = "phase_caps"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "100nF C0G 50 V 1206: phase-1 cap timing capacitor, C0G +-2 % (Verify)"
+fields = { Verify = "C0G 100 nF +-2 % (G tolerance) 1206 50 V part code" }
+between = ["P1_RC", "GND"]
+
+[[part]]
+ref = "D1216"
+group = "phase_caps"
+lib_id = "aed_logic:BAS116LT1G"
+value = "BAS116LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAS116LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bas116lt1-d.pdf"
+description = "low-leakage diode: empties the phase-1 cap capacitor only when ACT is cleared (rev 0.3 D-10)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          P1_RC              # anode
+  2    NC         NC                 # not connected (style 8)
+  3    K          ACT                # cathode
+"""
+
+[[part]]
+ref = "R6215"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "57.6k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "57.6k 0.1 %, 25 ppm/K thin film: phase-1 cap threshold top (0.6345 x BRIDGE_3V3)"
+between = ["BRIDGE_3V3", "P1_TH"]
+
+[[part]]
+ref = "R6216"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "100k 0.1 %, 25 ppm/K thin film: phase-1 cap threshold bottom"
+between = ["P1_TH", "GND"]
+
+[[part]]
+ref = "U1271"
+group = "phase_caps"
+lib_id = "Comparator:TLV7031DBV"
+value = "TLV7031DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TLV7031DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv7031.pdf"
+description = "P1C_N: high until 10.75-11.92 ms after the start (rev 0.3 D-10) (datasheet SLVSE13J)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          P1C_N              # OUT
+  2    V-         GND                # V-
+  3    +          P1_TH              # IN+
+  4    -          P1_RC              # IN-
+  5    V+         BRIDGE_3V3         # V+
+"""
+
+[[part]]
+ref = "C1293"
+group = "phase_caps"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1271"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6217"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: P1C_N default: dead comparator = expired"
+between = ["P1C_N", "GND"]
+
+[[part]]
+ref = "U1272"
+group = "phase_caps"
+lib_id = "aed_logic:SN74LVC1G74DCT"
+value = "SN74LVC1G74DCTR"
+footprint = "Package_SO:SSOP-8_2.95x2.8mm_P0.65mm"
+mpn = "SN74LVC1G74DCTR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g74.pdf"
+description = "P2S: set by the first phase-2 enable edge (G_LA_I), cleared only by RST_N (rev 0.3 D-11) (datasheet SCES794G)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    CLK        G_LA_I             # CLK
+  2    D          BRIDGE_3V3         # D
+  3    ~{Q}       NC                 # Q_N
+  4    GND        GND                # GND
+  5    Q          P2S                # Q
+  6    ~{CLR}     RST_N              # CLR_N
+  7    ~{PRE}     BRIDGE_3V3         # PRE_N
+  8    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1294"
+group = "phase_caps"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1272"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6218"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: P2S pull-up: a dead latch starts the phase-2 timer at rail-up, which then refuses every start (rev 0.3 D-11)"
+between = ["P2S", "BRIDGE_3V3"]
+
+[[part]]
+ref = "R6219"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "76.8k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "76.8k 0.1 %, 25 ppm/K thin film: phase-2 cap timing resistor (7.77 ms nominal; rev 0.3 D-11)"
+between = ["P2S", "P2_RC"]
+
+[[part]]
+ref = "C1283"
+group = "phase_caps"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_1206_3216Metric"
+mpn = "Murata GRM C0G (NP0) MLCC, 50 V (example; exact code per value UNVERIFIED)"
+manufacturer = "Murata"
+datasheet = "https://www.murata.com/en-us/products/capacitor/ceramiccapacitor (series page, not opened)"
+description = "100nF C0G 50 V 1206: phase-2 cap timing capacitor, C0G +-2 % (Verify)"
+fields = { Verify = "C0G 100 nF +-2 % (G tolerance) 1206 50 V part code" }
+between = ["P2_RC", "GND"]
+
+[[part]]
+ref = "D1217"
+group = "phase_caps"
+lib_id = "aed_logic:BAS116LT1G"
+value = "BAS116LT1G"
+footprint = "Package_TO_SOT_SMD:SOT-23"
+mpn = "BAS116LT1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/bas116lt1-d.pdf"
+description = "low-leakage diode: empties the phase-2 cap capacitor only when P2S is cleared (rev 0.3 D-11)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    A          P2_RC              # anode
+  2    NC         NC                 # not connected (style 8)
+  3    K          P2S                # cathode
+"""
+
+[[part]]
+ref = "R6220"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "57.6k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "57.6k 0.1 %, 25 ppm/K thin film: phase-2 cap threshold top (0.6345 x BRIDGE_3V3)"
+between = ["BRIDGE_3V3", "P2_TH"]
+
+[[part]]
+ref = "R6221"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "Panasonic ERA-3AEB series thin film, 0.1 %, 25 ppm/K (example; exact code per value UNVERIFIED)"
+manufacturer = "Panasonic"
+datasheet = "https://industrial.panasonic.com/ww/products/pt/thin-film-chip-resistors (series page, not opened)"
+description = "100k 0.1 %, 25 ppm/K thin film: phase-2 cap threshold bottom"
+between = ["P2_TH", "GND"]
+
+[[part]]
+ref = "U1273"
+group = "phase_caps"
+lib_id = "Comparator:TLV7031DBV"
+value = "TLV7031DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "TLV7031DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/tlv7031.pdf"
+description = "P2C_N: high until 7.31-8.10 ms after the phase-2 start (rev 0.3 D-11) (datasheet SLVSE13J)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          P2C_N              # OUT
+  2    V-         GND                # V-
+  3    +          P2_TH              # IN+
+  4    -          P2_RC              # IN-
+  5    V+         BRIDGE_3V3         # V+
+"""
+
+[[part]]
+ref = "C1295"
+group = "phase_caps"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1273"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6222"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: P2C_N default: dead comparator = expired"
+between = ["P2C_N", "GND"]
+
+[[part]]
+ref = "U1274"
+group = "phase_caps"
+lib_id = "74xGxx:74LVC1G02"
+value = "SN74LVC1G02DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G02DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g02.pdf"
+description = "P1F = phase-1 cap expired before phase 1 was latched done (rev 0.3 D-12) (datasheet SCES213Y)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          P1C_N              # A
+  2    ~          P1D                # B
+  3    GND        GND                # GND
+  4    ~          P1F                # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1296"
+group = "phase_caps"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1274"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6234"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: P1F pull-up: dead gate reads 'fault' (DEP-12; not in the change order)"
+between = ["P1F", "BRIDGE_3V3"]
+
+[[part]]
+ref = "U1275"
+group = "phase_caps"
+lib_id = "74xGxx:74LVC1G02"
+value = "SN74LVC1G02DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G02DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g02.pdf"
+description = "P2F = phase-2 cap expired before the planned end (rev 0.3 D-12) (datasheet SCES213Y)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          P2C_N              # A
+  2    ~          DONE               # B
+  3    GND        GND                # GND
+  4    ~          P2F                # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1297"
+group = "phase_caps"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1275"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6235"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: P2F pull-up: dead gate reads 'fault' (DEP-12; not in the change order)"
+between = ["P2F", "BRIDGE_3V3"]
+
+[[part]]
+ref = "U1276"
+group = "phase_caps"
+lib_id = "74xGxx:74LVC1G32"
+value = "SN74LVC1G32DBVR"
+footprint = "Package_TO_SOT_SMD:SOT-23-5"
+mpn = "SN74LVC1G32DBVR"
+manufacturer = "Texas Instruments"
+datasheet = "https://www.ti.com/lit/ds/symlink/sn74lvc1g32.pdf"
+description = "PCF = P1F OR P2F: per-phase cap fault into TRIG (rev 0.3 D-12) (datasheet SCES219W)"
+pins = """
+# pin  name-in-symbol  net   # datasheet pin
+  1    ~          P1F                # A
+  2    ~          P2F                # B
+  3    GND        GND                # GND
+  4    ~          PCF                # Y
+  5    VCC        BRIDGE_3V3         # VCC
+"""
+
+[[part]]
+ref = "C1298"
+group = "phase_caps"
+lib_id = "Device:C"
+value = "100nF"
+footprint = "Capacitor_SMD:C_0603_1608Metric"
+mpn = "generic X7R MLCC 100nF 16 V 0603"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, dielectric, voltage and size stated in Value and Description"
+description = "100nF X7R 16 V 0603: decoupling of U1276"
+between = ["BRIDGE_3V3", "GND"]
+
+[[part]]
+ref = "R6223"
+group = "phase_caps"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "generic thick-film chip resistor, 1 %, 100 ppm/K, 0.1 W"
+manufacturer = "any"
+datasheet = "generic part (no single datasheet): value, tolerance, TCR and rating stated in Value and Description"
+description = "100k 1 %, 100 ppm/K: PCF pull-up: dead gate reads 'fault' (rev 0.3 D-12)"
+between = ["PCF", "BRIDGE_3V3"]
 
 [[part]]
 ref = "R1298"

@@ -45,6 +45,10 @@ pub struct MainStatus {
     /// delay old, so the supervisor does not compare the two then, for at
     /// most [`crate::Config::disarm_time_limit_ms`].
     pub emptying: bool,
+    /// True while the main controller has the charger commanded on. The
+    /// supervisor gives the REAL permit in a self-test only with this false
+    /// (D-62, change order FW-16).
+    pub charger_on: bool,
 }
 
 /// What the main controller's self-test asks of the supervisor (D-61).
@@ -58,6 +62,16 @@ pub enum TestRequest {
     /// Let go of the discharge path (path B) for a moment, so the main
     /// controller can time path B emptying the capacitor on its own.
     ReleasePathB,
+    /// Give the REAL shock permit for one self-test step (D-62, FW-16):
+    /// only with both controllers' readings empty and the charger off, for
+    /// at most [`crate::Config::real_test_permit_ms`].
+    RealPermit,
+    /// As [`TestRequest::RealPermit`], for the dry shock-mode run (D-62
+    /// step T-5): also only with the supervisor's OWN pad reading open.
+    RealPermitDryRun,
+    /// Run the over-voltage latch test (D-62 step T-6): `OVP_TEST` up, see
+    /// the trip, `OVP_TEST` down, see it stay, pulse `OVP_RST`, see it clear.
+    OvpTest,
 }
 
 /// What a controller concluded about a finished shock sequence from its own
@@ -102,6 +116,12 @@ pub enum SupervisorFault {
     /// given no permit and had not just withdrawn one: a consent path is
     /// shorted.
     SequenceWithoutPermit,
+    /// The over-voltage latch test failed (D-62 step T-6): no trip on
+    /// `OVP_TEST`, the latch did not hold, or `OVP_RST` did not clear it.
+    OvpTestFailed,
+    /// The hardware over-voltage latch tripped outside a test (I-22). The
+    /// supervisor resets it only once both readings are empty (FW-17).
+    OvpTripped,
 }
 
 /// The supervisor's report back to the main controller.
@@ -131,4 +151,7 @@ pub struct SupervisorReport {
     /// The supervisor's own verdict on the most recent shock sequence of
     /// this arming, from its own voltage reading, if it has one.
     pub shock_check: Option<ShockCheck>,
+    /// The over-voltage latch test (D-62 step T-6) has passed since the
+    /// main controller last asked for it.
+    pub ovp_test_ok: bool,
 }

@@ -78,7 +78,11 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     for (n, slot) in (0u32..).zip(table.iter_mut()) {
         let mut c = n;
         for _ in 0..8 {
-            c = if c & 1 == 1 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 == 1 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
         }
         *slot = c;
     }
@@ -171,14 +175,18 @@ pub fn parse(text: &str) -> Result<Record, ParseError> {
             }
             "event" => {
                 let (at, what) = rest.split_once(' ').ok_or_else(bad)?;
-                r.events.push((at.parse().map_err(|_| bad())?, what.to_string()));
+                r.events
+                    .push((at.parse().map_err(|_| bad())?, what.to_string()));
             }
             "end" => ended = true,
             _ => return Err(bad()),
         }
     }
     if !ended || r.version == 0 {
-        return Err(ParseError::BadLine(0, "no version or no end line".to_string()));
+        return Err(ParseError::BadLine(
+            0,
+            "no version or no end line".to_string(),
+        ));
     }
     Ok(r)
 }
@@ -198,7 +206,10 @@ impl Record {
 }
 
 fn deg(dc: Option<i16>) -> String {
-    dc.map_or_else(|| "unknown".to_string(), |t| format!("{:.1} °C", f64::from(t) / 10.0))
+    dc.map_or_else(
+        || "unknown".to_string(),
+        |t| format!("{:.1} °C", f64::from(t) / 10.0),
+    )
 }
 
 fn deg_text(s: Option<&str>) -> String {
@@ -209,7 +220,11 @@ fn deg_text(s: Option<&str>) -> String {
 #[must_use]
 pub fn pretty(r: &Record) -> String {
     let mut o = String::new();
-    let _ = writeln!(o, "Open AED record (format {}), timer at {} s", r.version, r.timer_s);
+    let _ = writeln!(
+        o,
+        "Open AED record (format {}), timer at {} s",
+        r.version, r.timer_s
+    );
     let _ = writeln!(o, "Ready: {}", if r.ready { "yes" } else { "NO" });
     if r.reasons.is_empty() {
         let _ = writeln!(o, "Reasons: none");
@@ -235,7 +250,8 @@ pub fn pretty(r: &Record) -> String {
         r.get("tests", "daily_failed").unwrap_or("?"),
         r.get("tests", "full_passed").unwrap_or("?"),
         r.get("tests", "full_failed").unwrap_or("?"),
-        r.number("tests", "missed_daily").unwrap_or(0) + r.number("tests", "missed_full").unwrap_or(0)
+        r.number("tests", "missed_daily").unwrap_or(0)
+            + r.number("tests", "missed_full").unwrap_or(0)
     );
     let _ = writeln!(
         o,
@@ -261,7 +277,12 @@ pub fn pretty(r: &Record) -> String {
         r.number("pads", "allowance_s").unwrap_or(0) as f64 / 86_400.0
     );
     for (name, max, min) in &r.points {
-        let _ = writeln!(o, "  sensor {name:<10} highest {:>9}, lowest {:>9}", deg(*max), deg(*min));
+        let _ = writeln!(
+            o,
+            "  sensor {name:<10} highest {:>9}, lowest {:>9}",
+            deg(*max),
+            deg(*min)
+        );
     }
     let _ = writeln!(o, "Heat record: {} periods", r.heat.len());
     for row in r.heat.iter().filter(|h| h.flags != 0) {

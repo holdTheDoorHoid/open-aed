@@ -2,7 +2,8 @@
 # fault light (D-26), supervisor capacitor NTC bias, Ioff receivers, and the default resistors the contract gives to
 # the supervisor's sheet. Everything here is powered from 3V3_SUP only; no part on this sheet touches 3V3_MAIN.
 # NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a). Nothing here is an instruction to build or power anything.
-# Sources: docs/HARDWARE_DESIGN.md §B2, §B10, §F; hardware/aed-main/contract.md (issue 2) §2, §5, §7, §8, §9;
+# Sources: docs/HARDWARE_DESIGN.md v0.3 §B2, §B10, §F; hardware/aed-main/contract.md (issue 3) §0, §2, §5, §7, §8, §9;
+# change order hardware/aed-main/capture-notes/rev3-changes.md (WP-B: B-3, B-4, B-6);
 # NXP MCXAP064M096F30 Rev. 5.2 (26 May 2026) Table 41 (pin assignments), Tables 8/9 (ratings), Table 23/24
 # (system oscillator), Table 42 (unused pins). Pin assignment, arithmetic and doubts:
 # hardware/aed-main/capture-notes/WP-B.md.
@@ -10,7 +11,7 @@
 [sheet]
 name = "05_supervisor_mcu"
 title = "Supervisor controller NXP MCXA153VLH: own crystal, SWD, own alarm sounder and fault light, capacitor NTC (supervisor)"
-source = "docs/HARDWARE_DESIGN.md §B2, §B10; contract.md issue 2 §5, §8"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B2, §B10; contract.md issue 3 §5, §8"
 comments = ["U501 GPIOs come out of reset with the input buffer disabled and no pull (Table 41 'Default - DIS'); every safe default comes from a resistor (contract §5)",
             "Pin assignment, alternate functions, reset states and arithmetic: hardware/aed-main/capture-notes/WP-B.md"]
 
@@ -22,7 +23,7 @@ global = [
   "SEQ_ACT_S_N", "SEQ_DONE_S_N", "OVP_TRIP",
   "CANCEL_S_N", "LINK_M2S", "LINK_S2M",
   "SBZ_SCLK", "SBZ_MOSI", "SBZ_MISO", "SBZ_CS_N", "SBZ_INT_N",
-  "HVS_SCLK", "HVS_DOUT", "HVS_PDRST_N",
+  "HVS_SCLK", "HVS_DOUT", "HVS_PDRST_N", "OVP_RST", "OVP_TEST",
   "NTC_CAP_S", "SUP_KEEP",
 ]
 
@@ -64,7 +65,6 @@ reason = "Contract 5.4/5.6: AD7171, its PDRST pull-down and the OVP comparator o
 type = "isolated_pin_label"
 match = "Global Label '(SBZ_SCLK|SBZ_MOSI|SBZ_MISO|SBZ_CS_N)'"
 reason = "Contract 5.8: MAX30009 and the SBZ_CS_N pull-up on 16_frontend_sup (WP-H, placeholder in this worktree)."
-
 
 # ====================================================================== groups
 [[group]]
@@ -115,6 +115,13 @@ id = "analog"
 title = "Supervisor capacitor NTC bias (contract 5.6)"
 note = """
 NTC_CAP_S (10 kOhm NTC on J1102, sheet 11, to GND): 10.0 kOhm 0.1 % bias to VDDA_S (= the ADC reference), then 1 kOhm + 100 nF at the ADC pin (P1_10, ADC0_A8). Half-scale at 25 C.
+"""
+
+[[group]]
+id = "ovp"
+title = "Over-voltage latch reset and self-test injection (issue 3: OVP_RST, OVP_TEST to sheet 08)"
+note = """
+OVP_RST (P3_12) and OVP_TEST (P3_13): push-pull GPIOs on 3V3_SUP, input buffer disabled and not driven from reset (Table 41 'Default - DIS'), so the 100 kOhm pull-downs on 08 hold both low = no reset edge, no injection. OVP_RST is AC-coupled on 08 into 100 nF (C812): driven straight from the pin, the first instant of each edge would be limited only by the pin's own output resistance (VOL <= 0.5 V at 4 mA, Table 11, i.e. up to ~125 Ohm; typical lower), above the 25 mA single-pin limit of Table 8. R518 220 Ohm limits it to <= 3.3 V / 220 Ohm = 15 mA [CALC]. It slows the edge into C812 to tau = 220 Ohm x 100 nF = 22 us, so a reset pulse must be >= 100 us (4.5 tau: the BSS138 gate on 08 reaches >= 3.2 V) instead of the contract's >= 10 us (capture notes, problem P-1). OVP_TEST drives 22 kOhm + a BAS116 on 08 (<= 0.12 mA): no series resistor needed. OVP_TEST left high latches OVP_TRIP, which forces both discharge paths on: a stuck pin fails towards "cannot charge", not towards a shock.
 """
 
 [[group]]
@@ -174,8 +181,8 @@ pins = """
   34   P3_27             NC                 # unused
   35   P3_15             LINK_S2M           # LPUART2_TXD; ALT2; link to 04
   36   P3_14             LINK_M2S_RX        # LPUART2_RXD, WUU0_IN25; ALT2; from U502 (Ioff Schmitt receiver of LINK_M2S)
-  37   P3_13             NC                 # unused
-  38   P3_12             NC                 # unused
+  37   P3_13             OVP_TEST           # GPIO out push-pull (issue 3); ALT0; IO supply VDD, pad SLOW, Default DIS, no ISP function; 100k to GND on 08; high = inject a trip
+  38   P3_12             OVP_RST_S          # GPIO out push-pull (issue 3); ALT0; IO supply VDD, pad SLOW, Default DIS, no ISP function; to OVP_RST via R518 220 Ohm
   39   P3_11             HVS_PDRST_N        # GPIO out; ALT0; 100k to GND on 08
   40   P3_10             HVS_SCLK           # LPSPI1_SCK; ALT2; AD7171 (08)
   41   P3_9              HVS_DOUT           # LPSPI1_SDI (GPIO interrupt for DOUT/RDY); ALT2; AD7171 (08)
@@ -719,6 +726,19 @@ datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip
 description = "220R 1% 0.1 W thick film 0603"
 fields = { DocRef = "red LED current (3.3 - 1.9 V) / 220 Ohm = 6.4 mA" }
 between = ["FAULT_LED_S", "FAULT_LED_A"]
+
+[[part]]
+ref = "R518"
+group = "ovp"
+lib_id = "Device:R"
+value = "220"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07220RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "220R 1% 0.1 W thick film 0603"
+fields = { DocRef = "OVP_RST edge current into C812 (100 nF on 08) <= 3.3 V / 220 Ohm = 15 mA < 25 mA pin limit (NXP Table 8); not in the change order, see WP-B.md rev 0.3 P-1" }
+between = ["OVP_RST_S", "OVP_RST"]
 
 [[part]]
 ref = "D501"

@@ -104,9 +104,15 @@ fn a_stuck_voltage_sensor_is_caught() {
         let r = run(&s).unwrap();
         assert_invariants(&r);
         if !r.shocks.is_empty() || r.final_state != RescueState::Fault {
-            fail(&r, &format!("sensor stuck at {stuck_at} V (main: {main_stuck}) not caught"));
+            fail(
+                &r,
+                &format!("sensor stuck at {stuck_at} V (main: {main_stuck}) not caught"),
+            );
         }
-        println!("stuck at {stuck_at} V (main {main_stuck}): fault {:?}", r.final_fault);
+        println!(
+            "stuck at {stuck_at} V (main {main_stuck}): fault {:?}",
+            r.final_fault
+        );
     }
 }
 
@@ -133,8 +139,16 @@ fn window_edges(config: &Config, waveform: &WaveformConfig) -> Vec<Edge> {
         // reading = V x (1 + 2 %) + 10 V must be >= plan - a (low edge).
         let high = (p + a + OFFSET_ERROR) / (1.0 - GAIN_ERROR) - 1.0;
         let low = (p - a - OFFSET_ERROR) / (1.0 + GAIN_ERROR) + 1.0;
-        out.push(Edge { mode, high: false, true_v: low });
-        out.push(Edge { mode, high: true, true_v: high });
+        out.push(Edge {
+            mode,
+            high: false,
+            true_v: low,
+        });
+        out.push(Edge {
+            mode,
+            high: true,
+            true_v: high,
+        });
     }
     out
 }
@@ -144,7 +158,11 @@ fn window_edges(config: &Config, waveform: &WaveformConfig) -> Vec<Edge> {
 fn energy_at_edge(edge: Edge, ohms: f64) -> (f64, f64) {
     let planner = BtePlanner::default();
     let plan = f64::from(planner.charge_voltage(edge.mode).0);
-    let mut s = rescue(if edge.mode == PatientMode::Adult { "adult-vf" } else { "child-vf" });
+    let mut s = rescue(if edge.mode == PatientMode::Adult {
+        "adult-vf"
+    } else {
+        "child-vf"
+    });
     s.pad_ohms = ohms;
     s.plant.charger_set_point_gain = edge.true_v / plan;
     // Sensors err towards the plan: low readings when the voltage is high.

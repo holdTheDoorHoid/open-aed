@@ -101,7 +101,8 @@ pub fn load_record(dir: &Path, name: &str, annotator: &str) -> Result<Record, Lo
     let plain = |s: &str| {
         !s.is_empty()
             && s.len() <= 64
-            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     };
     if !plain(name) || !plain(annotator) {
         return Err(LoadError::BadName(format!("{name}.{annotator}")));
@@ -114,10 +115,9 @@ pub fn load_record(dir: &Path, name: &str, annotator: &str) -> Result<Record, Lo
         .ok_or(LoadError::Signal(signal::SignalError::NoSignals))?;
     for s in &header.signals {
         if s.format != 212 {
-            return Err(LoadError::Signal(signal::SignalError::Unsupported(format!(
-                "format {}",
-                s.format
-            ))));
+            return Err(LoadError::Signal(signal::SignalError::Unsupported(
+                format!("format {}", s.format),
+            )));
         }
         if s.file_name != first.file_name || s.byte_offset != first.byte_offset {
             return Err(LoadError::Signal(signal::SignalError::Unsupported(
@@ -197,7 +197,9 @@ pub fn read_records_list(dir: &Path) -> Result<Vec<String>, LoadError> {
         .lines()
         .map(str::trim)
         .filter(|l| {
-            !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            !l.is_empty()
+                && l.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         })
         .map(str::to_string)
         .collect())

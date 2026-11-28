@@ -1,6 +1,6 @@
 # WP-G capture notes — sheet `13_hv_bridge` (output bridge power stage)
 
-27 November 2026. Contract issue 2. Spec: `hardware/aed-main/specs/13_hv_bridge.toml`; symbols:
+27 November 2026. Contract issue 2; **revision 0.3 (contract issue 3) at the end of this file**. Spec: `hardware/aed-main/specs/13_hv_bridge.toml`; symbols:
 `hardware/lib/src/aed_bridge.toml`.
 
 > **NOT FOR CONSTRUCTION — unreviewed design.** This sheet connects a capacitor charged to about 2,000 V to a
@@ -356,7 +356,7 @@ permit, §B14). OC/IDLE = the latches on sheet 12. "Blocks shocks" means a failu
 | Ref | Fails open | Fails short | Detected by / when |
 |---|---|---|---|
 | Q1301 QHA | phase 1 delivers nothing; phase 2 then runs from the full capacitor voltage: a monophasic pulse (25 Ω: ≈ 118 J in 2 ms; 175 Ω: ≈ 90 J [CALC]) instead of the biphasic 150 J; `I_SHOCK` shows it → fault reported after the shock | rest: HV_OUT_A at capacitor voltage (behind the open patient relay) → `OUT_A_TAP` high → firmware refuses to shock (fault 17). Shock (if missed): phase 2 = leg-A short → OC latch, pulse lost, ≈ 0.24 J into D_FW/R_S | OUT_A_TAP at every charge; ST |
-| Q1302 QLA | phase 2 lost: monophasic phase-1-only pulse (≈ 117–139 J of the 150 J [CALC]) | rest: nothing (HV_OUT_A at 0). Shock: current starts as soon as QHB turns on in the gap → idle latch / OC; or, if it shorts before phase 1, QHB turning on = fault 18 mirror | ST (current in the lead, §B14.3); IDLE |
+| Q1302 QLA | phase 2 lost: monophasic phase-1-only pulse (≈ 117–139 J of the 150 J [CALC]) | rest: nothing (HV_OUT_A at 0). **Shock: if it is shorted before phase 1, QHA turning on at phase-1 start shoots straight through it across the capacitor (same-side shoot-through, BR Q1: ≈ 240 A, 11–12 J in QHA as captured in rev 0.2; rev 0.3: 12.8–25.4 mJ, 99–139 °C pessimistic [SIM rev3-wpg S-1])**; if it shorts during the gap, QHB turning on does the same on leg B → idle latch / OC | ST (current in the lead, §B14.3); IDLE (rev 0.3: fast path + kill latch) |
 | Q1303 QHB | phase 2 lost (monophasic) | as QHA for leg B | OUT_B_TAP; ST |
 | Q1304 QLB | phase 1 lost; phase 2 runs from the full voltage: monophasic pulse as for QHA open | **fault 18 / finding F-1**: QHA turns on into it through its linear region; idle latch ends it within µs; QHA may overheat (130–300 °C est.) and fail short → R-14 cascade, ≤ 178 J monophasic | ST between rescues; IDLE in a shock |
 | R1301 R_S | no current: no shock; `I_SHOCK` 0 → fault | R_S bypassed: internal R ≈ 0.9 Ω → 25 Ω shock ≈ +17 % energy, peak 75 A; hard-short current limited only by L_S | open: ST. **short: not detected** (2 % change in the 50 V test current) — latent, **finding F-3** |
@@ -580,3 +580,283 @@ permit, §B14). OC/IDLE = the latches on sheet 12. "Blocks shocks" means a failu
   checked against manufacturer datasheets.
 - Nothing in `DECISIONS.md`, the contract or the design document was changed (not in this package's scope); the
   changes proposed above are for the integrator.
+
+---
+
+## Revision 0.3 (contract issue 3, change order `rev3-changes.md` WP-G)
+
+27 November 2026. Applies G-1 … G-8 to `specs/13_hv_bridge.toml` and checks the sheet **as drawn** by simulation
+in `sim/rev3-wpg/` (notes there: `sim/rev3-wpg/notes.md`). Every figure is [CALC] from datasheets or [SIM] from
+hand-built models; nothing was built or measured. Nothing here is an instruction to build, power or test anything,
+and nothing here is safe or ready for use on a person or animal. The sheet keeps its NOT FOR CONSTRUCTION notice.
+
+### R3.1 In plain language
+
+Revision 0.3 adds four protections to the output bridge and changes two settings.
+
+- **A shorted bottom switch is now caught within about 0.1 µs of the fault current reaching 3 A, and the top switch
+  is told to turn off at once** instead of 20–36 µs later. A second, much faster current detector watches the
+  current-measuring resistor directly; the logic sheet turns the top switches off at once; and on each top switch's
+  floating gate supply a small "carrier-loss" circuit empties the supply as soon as the drive signal stops. Simulated together, the top switch that has to survive the fault absorbs
+  **9–25 mJ** and stays inside its 150 °C rating by both of the project's temperature estimates in every case we
+  ran — but at the very worst combination of part tolerances the pessimistic estimate reaches the rating with no
+  margin left. Only the switch maker's data can say which estimate is right.
+- **The short-circuit trip is lowered from 90 to 80 A,** so the switch never has to interrupt more than about
+  100 A (its pulse rating is 107 A), and **a pair of film capacitors next to the bridge** holds the voltage down when
+  it does: the switch saw at most **2.77 kV against its 3.3 kV rating** with up to 1 µH of cable to the main
+  capacitor. Without them it would see up to 3.6 kV.
+- **The small supply for the bottom switches is now watched.** If it sags below about 17 V the logic ends the
+  sequence; the bottom switch is opened while its gate is still fully on, instead of drifting half-on for a
+  fraction of a millisecond.
+- **The new fast detector does not trip during a normal shock or while the charger runs** in the simulation, with a
+  margin of 1.7 A or more against its most sensitive setting.
+- Several details of the change order did not work as written and were changed on this sheet (R3.7); some
+  problems need the design authority (R3.8). The most important: **none of the new protection is checked by any self-test**,
+  so each part of it can fail silently and only show up when a second fault arrives.
+
+### R3.2 Changes applied (G-1 … G-8)
+
+| # | What | Designators | As ordered? |
+|---|---|---|---|
+| G-1 | Over-current trip 90 → 80 A | R1351 174 k → **196 k** (3.3 V × 10.0/206 = 160.2 mV = 80.1 A) | yes |
+| G-2 | `I_SHOCK` 24.0 mV/A; idle threshold re-scaled | R1355 10.0 k → **13.3 k**; R1358 237 k → **267 k** (119.1 mV = 4.96 A) | yes |
+| G-3 | Fast idle path → `IDLE_FAST_N` | R1365 100 Ω, C1345 100 pF, **R1364 10.0 kΩ pedestal (added)**, D1332 **BAT54 (single, to GND)**, U1317 OPA838IDBVR (gain 11), C1349 decoupling, R1366 **1.00 kΩ**, R1367 **100 Ω**, U1318 TLV3501AIDBVR, C6301 decoupling, R1368 **6.73 kΩ**, R1369 1.00 kΩ, C1346 100 nF | **four departures**, R3.7 P-1 … P-4 |
+| G-4 | `LSD_OK` monitor | R1360 100 k, R1361 12.1 k, C1343 100 pF, R1362 80.6 k, R1363 100 k, C1344 100 nF, U1316 TLV7031DBVR, C6302 decoupling (added) | yes (decoupling added) |
+| G-5 | Carrier-loss detector, both islands | A: D1333, R1373, C1350, R1374, R1375, Q1312, D1334, R1376, D1335, Q1313, R1377; B: D1336, R1378, C1351, R1379, R1380, Q1314, D1337, R1381, D1338, Q1315, R1382 | yes; R1377/R1382 in 0805 (failure table) |
+| G-6 | Local film capacitor HV_CAP_P–HV_RTN, 75 nF | C1347, C1348 940C30P15K-F in series through `HV_CAP_FM`; R1370, R1371 HVCR2512FTD10M0 10 MΩ | yes (footprint to be made) |
+| G-7 | RC snubber kept | C1301, C1302, R1304 unchanged | yes |
+| G-8 | Same-side shoot-through row in the failure table | §12 row Q1302 (QLA) amended; see R3.5 | yes |
+| — | Test points for the two new low-voltage nets | TP1306 `IDLE_FAST_N`, TP1307 `LSD_OK` | addition (§15 allows) |
+| — | Notes and descriptions | group notes `bridge`, `isense`; new groups `idfast`, `lsdmon`, `film`, `cla`, `clb`; R1352, R1356, R1359, U1313, TP1303 texts | — |
+
+Sheet now 215 parts (was 166): +49. New nets: `IDLE_FAST_N`, `LSD_OK` (global, contract issue 3), and locally
+`IDF_IN`, `IDF_FB`, `IDF_OUT`, `IDF_REF`, `LSD_SNS`, `LSD_TH`, `HV_CAP_FM`, `HSA_CLR/CLF/CLB/CLG/CLD`, `HSB_CL*`.
+The `NOT FOR CONSTRUCTION` notice is unchanged. New references follow the change order (R1364, the "unused" one,
+is now the pedestal; C6301/C6302 from the sheet's overflow block); C1349 (reserved in the order) is U1317's
+decoupling; R1372 stays unused.
+
+### R3.3 Thresholds and ratings of the new circuits [CALC]
+
+| Circuit | Setting | Nominal | Worst-case band | Basis |
+|---|---|---|---|---|
+| OC trip (G-1) | R1351 196 k / R1352 10.0 k | 160.2 mV = **80.1 A** | ≈ 74–86 A | as §8 with the new divider |
+| `I_SHOCK` (G-2) | INA240 × 20 × 20.0/33.3 | **24.0 mV/A** | gain ±0.2 %, divider 0.2 %, shunt ±2.3 % | saturated ≤ (5.5 − 0.2) × 0.6006 = 3.18 V < VDDA min 3.26 V |
+| slow idle (G-2) | R1358 267 k / R1359 10.0 k | 119.1 mV = **4.96 A** | ≈ 4.5–5.5 A | as §8 |
+| fast idle (G-3 as drawn) | pedestal 3.3 × 100/10,100 = 32.67 mV; reference 3.3 × 1.00/7.73 = 426.9 mV = 11 × 38.81 mV | 3.07 A (reference), **3.20 A rising** | **2.54–3.87 A** | TLV3501 ±6.8 mV/11 (±0.31 A), OPA838 ±0.23 mV (±0.12 A), 0.1 % parts (±0.11 A), rail ±1.5 % (±0.05 A), shunt (±0.07 A), hysteresis +0.14 A, bias 30 µV |
+| fast idle delay | 100 Ω/100 pF 10 ns + amplifier pole 6 ns + TLV3501 ≤ 12 ns | **≈ 30 ns** to `IDLE_FAST_N` | + ≈ 45 ns on sheet 12 | ≤ 0.1 µs shunt-to-sheet-12 (contract §5.7) |
+| fast idle linear range | output 0.36 V at 0 A … 3.1 V | linear to **125 A** (65.7 A → 1.80 V) | VOH ≥ VS+ − 0.2 V | no saturation in any planned shock |
+| `LSD_OK` (G-4) | 1.827 V × 112.1/12.1 | **16.93 V** | **16.48–17.29 V** | rail 19.5–22 V normal, ≈ 18.1 V at BRIDGE_5V 4.5 V [EST] |
+| carrier-loss detector (G-5) | 47 pF / 4.7 k ∥ (4.7 k + base) | holds through the 0.19 µs dead time | RECT < 1 V 1.1–1.3 µs after stop | `../rev3` §3 [SIM] |
+| local film (G-6) | 2 × 0.15 µF in series, 10 MΩ each | 75 nF (67.5–82.5 nF) | 1.1 kV each at 2.2 kV; 2.2 kV + spike on a survivor | 3,000 Vdc parts |
+
+`BRIDGE_3V3` load added by this revision ≈ 4.3 mA typical / 7.1 mA maximum (sheet 13 total ≈ 25–32 mA).
+
+### R3.4 Results of the revision-0.3 check [SIM] (details: `sim/rev3-wpg/notes.md`)
+
+**(1) Shorted low side, with the real fast path, kill latch and carrier-loss detector** (energy in the surviving
+high side QHA; junction pessimistic / physical estimate; start 55 °C; rating 150 °C):
+
+| | 1,950 V | 2,200 V |
+|---|---|---|
+| Diagonal (QLB shorted), 25–175 Ω, threshold anywhere in its band | 9.3–17.9 mJ, 84–114 / 59–63 °C | 11.1–23.0 mJ, 89–130 / 60–65 °C |
+| Same side (QLA shorted) | 12.8–21.3 mJ, 99–125 / 61–64 °C | 14.9–**25.4 mJ, 106–139** / 61–66 °C |
+| Worst single sensitivity (no shunt inductance, same side, 2,200 V, top of band) | — | **29.2 mJ, 150 / 67 °C** |
+
+Margin: ≥ 11 K (pessimistic) and ≥ 84 K (physical) in all nominal cases; **0 K pessimistic** at the worst single
+sensitivity, and a few kelvin over if several worst corners coincide [not run as one case]. Confidence medium-low
+(the switch's behaviour below 10 µs is not published). Against `../bridge`'s ideal-parts estimate (11–13 mJ): about
+2× at the top of the threshold band.
+
+**The 1 µs vs 2.7 µs disagreement is settled at ≈ 1 µs:** at circuit level, in this fault, the PNP starts emptying
+the gate 1.06–1.08 µs after the carrier stops whether the island is modelled at circuit level or with
+`../bridge`'s behavioural PNP; the gate rises by < 0.1 V, not "keeps rising". The detector's benefit is a faster
+gate fall (to 2 V in 4.0–4.5 µs instead of 7.4–7.8 µs), not an earlier start. Confidence medium.
+
+If part of the new protection has failed silently (latent; matters only with a shorted low side): fast path dead
+**50–104 mJ, 194–330 °C pessimistic / 75–96 °C physical**; detector inert 32–46 mJ, 130–165 / 67–73 °C; both dead,
+same side **≈ 11–12 J — destroyed**.
+
+**(2) Turn-off at the 80 A band with the 75 nF local film:** interrupted current 85–100 A (I_DM 107 A); peak switch
+voltage **2.47–2.77 kV with 0.5–1 µH of cable, ≥ 533 V (16 %) under 3.3 kV**. Film parts: ≤ 101 A (rating 216 A),
+≤ 673 V/µs (rating 1,440 V/µs; 821 V/µs with one part shorted), ≤ 1,278 V each, 2,485 V on the survivor if one
+shorts (3,000 V). Ringing film–cable 510–720 kHz, ±180–355 V, still ±35–145 V after 12–25 µs (lightly damped).
+**With the film string open: 3.13 kV at 0.5 µH and 3.59 kV at 1 µH — over the rating** (latent fault, R3.8).
+Confidence medium.
+
+**(3) False trips:** none — not in the lead, the gap or after phase 2, at 1,950 and 2,200 V, 25–175 Ω, with the
+shunt sense-loop inductance at 0.3 or 1 nH, with the charger running, with the OPA838 at its worst low swing, or
+in test mode. Worst margin **≥ 1.67 A above the most sensitive threshold (2.54 A)**, in the lead (the outputs'
+charging current through the shunt, ≤ 0.57 A, plus the sense-loop inductance). Confidence medium (method note in
+the sim notes: replay of the shunt waveform; in-circuit numerical spikes discounted).
+
+**(4) `LSD_OK`:** band 16.48–17.29 V [CALC]; nuisance margin ≈ 0.8 V [EST]. MGJ2-only collapse: the low side is
+opened 0.7–2.1 µs after `LSD_OK` falls, with its gate still at 15.8–16.9 V; linear time **2.1 µs + 25 µs partly on →
+0.1 µs**; QLB **182 → 130 °C** (pessimistic; 1 ms decay at 25 Ω); 100 µs collapse 175 → 136 °C. Rail crossing to
+low side open ≈ 5–6 µs on a slow ramp. A converter that only sags to 12–15 V and stays now ends the shock
+(without the monitor it was thermally harmless in the model). Confidence medium.
+
+### R3.5 Failure table: new parts (revision 0.3)
+
+Same conventions as §12. "Latent" = nothing on the device notices it; it matters only together with a second
+fault. "Blocks" = every sequence is refused or ends in a fault (`BR_FAULT_N`), which the firmware reports: a
+failure to shock, visible. Consequence figures in brackets are from S-1 [SIM] where a case was run.
+
+**Same-side shoot-through row for §12 (G-8).** Q1302 QLA *fails short* also means: at every phase-1 start QHA turns
+on above it, straight across the capacitor through R_S + L_S (≈ 240 A, 11–12 J in QHA as captured in rev 0.2, BR Q1).
+With rev 0.3 the fast path, the kill latch and the carrier-loss detector end it at 12.8–25.4 mJ (99–139 °C
+pessimistic, 61–66 °C physical) [SIM S-1]; the §12 row for Q1302 is amended accordingly. The mirror case (QLB shorted,
+QHB at phase 2) cannot arise: a shorted QLB is caught at phase-1 start.
+
+**Fast idle path (U1317, U1318 and their network)**
+
+| Ref | Fails open | Fails short | Detected by / when |
+|---|---|---|---|
+| R1365 100 Ω | `IDF_IN` pulled to 3.3 V by R1364 → amplifier saturates → `IDLE_FAST_N` low → blocks | pedestal lost (IDF_IN tied to SHUNT_KP): fast threshold rises to ≈ 19 A → fast path useless | open: visible (start refused). **short: latent** → shorted-low-side protection falls back to the slow path [S-1 "fast path dead"] |
+| R1364 10.0 kΩ (pedestal) | pedestal lost → threshold ≈ 19 A | `IDF_IN` at 3.3 V through 100 Ω → saturates → blocks (33 mA through R1365) | **open: latent** (as R1365 short); short: visible |
+| C1345 100 pF | no 10 ns filter: more sensitive to edge spikes; S-3 margin falls | IDF_IN = SHUNT_KN: no signal, no pedestal → never trips | open: latent (margin only); **short: latent** |
+| D1332 BAT54 | negative excursions reach the OPA838 input through 100 Ω (≤ 10 mA, its continuous limit) | IDF_IN = GND → never trips | open: latent; **short: latent** |
+| U1317 OPA838 | dead or output stuck low → never trips | output stuck high → blocks | **stuck low: latent**; stuck high: visible |
+| U1317 PD pin (solder open) | "pin must be driven" (SBOS867E): state undefined, may power down → output low → never trips | — | **latent** |
+| C1349 | decompensated amplifier without local decoupling may ring → nuisance trips | BRIDGE_3V3 shorted → sheet 12 rail lost → nothing starts | open: visible if it trips, otherwise latent; short: visible |
+| R1366 1.00 kΩ | open loop → output to a rail (high with any positive offset) → blocks | gain 1 → threshold ≈ 200 A → never trips | open: visible (most likely); **short: latent** |
+| R1367 100 Ω | follower, gain 1 → never trips | open loop → saturates → blocks | **open: latent**; short: visible |
+| U1318 TLV3501 | output low (12's pull-down) → blocks | output stuck high → never trips | low: visible; **stuck high: latent** |
+| C6301 | comparator noise / oscillation → nuisance trips | BRIDGE_3V3 short | visible |
+| R1368 6.73 kΩ | IDF_REF → 0 → trips always → blocks | IDF_REF = 3.3 V → never trips | open: visible; **short: latent** |
+| R1369 1.00 kΩ | IDF_REF → 3.3 V → never trips | IDF_REF → 0 → blocks | **open: latent**; short: visible |
+| C1346 100 nF | noisier threshold | IDF_REF → 0 → blocks | short: visible |
+
+**LSD_OK monitor (U1316)**
+
+| Ref | Fails open | Fails short | Detected by / when |
+|---|---|---|---|
+| R1360 100 kΩ | LSD_SNS → 0 → `LSD_OK` low → blocks | 20.7 V on U1316 IN+ (absolute limit 7 V) → part likely damaged, output state unknown | open: visible; **short: latent if the damaged output sits high** |
+| R1361 12.1 kΩ | LSD_SNS pulled to the rail (0.2 mA, inside the input's fault-tolerant range is NOT guaranteed above 7 V) → reads "good" always | LSD_SNS = 0 → blocks | **open: latent**; short: visible |
+| C1343 100 pF | ground-bounce filtering lost → possible nuisance trip at switching edges → sequence ends | LSD_SNS = 0 → blocks | visible (either way the device refuses) |
+| R1362 80.6 kΩ | LSD_TH → 0 → always "good" | LSD_TH = 3.3 V → blocks | **open: latent**; short: visible |
+| R1363 100 kΩ | LSD_TH → 3.3 V → blocks | LSD_TH = 0 → always "good" | open: visible; **short: latent** |
+| C1344 100 nF | noisier threshold | LSD_TH = 0 → always "good" | **short: latent** |
+| U1316 TLV7031 | output low → blocks | output stuck high → monitor lost | **stuck high: latent** → MGJ2-only failure behaves as in BR Q4 (158–181 °C) [S-4 mon = 0] |
+| C6302 | noise | BRIDGE_3V3 short | visible |
+| (not a part) −5 V rail | **not monitored**: if the −5 V side fails, the low sides are held off at 0 V instead of −5 V; dv/dt immunity 6.5 V → ≈ 1.5 V margin (Miller clamp still acts) | — | **latent** — raised, see R3.8 |
+
+**Local film capacitor (C1347, C1348, R1370, R1371)**
+
+| Ref | Fails open | Fails short | Detected by / when |
+|---|---|---|---|
+| C1347 / C1348 (or a lead / solder joint) | the whole 75 nF is gone: an over-current turn-off with 0.5–1 µH of cable reaches **3.2–3.7 kV, over the 3.3 kV rating** [S-2 "film open"] | the other part carries 2.2 kV + spike alone (S-2: see table) — within 3,000 V; its balancing resistor now 0.48 W | **open: latent and unsafe with a long cable** (R3.8); short: latent |
+| both C1347 and C1348 short (double fault) | — | HV_CAP_P shorted to HV_RTN on the board: the capacitor (≈ 160–190 J) discharges into the short and the cable | double fault; the reason there are two in series |
+| R1370 / R1371 10 MΩ | the other part's balancing resistor is then the only DC path: the unbalanced part takes up to the full DC voltage (film insulation ≥ 100,000 MΩ·µF) | the other capacitor carries the full voltage (as a shorted capacitor) | latent |
+
+**Carrier-loss detector, per island (A refs; B identical with D1336–R1382)**
+
+| Ref | Fails open | Fails short | Detected by / when |
+|---|---|---|---|
+| D1333 BAV70 (both halves) | no carrier copy → detector "sees" carrier loss all the time → Q1313 on while the carrier runs → HSA_RECT loaded by 100 Ω: gate ≈ 13 V instead of 18–19 V, R1377 ≈ 2 W while the high side is on | one half shorted: S1 or S2 drives CLR directly, the copy swings negative → Q1312 base reverse-biased via 10 k (VEB limit) | **latent** (slower, weaker high side; F-5 class: the self-test does not measure gate voltage) |
+| R1373 4.7 kΩ | as D1333 open | faster copy; hold still set by C1350/R1374 | open: latent (weak gate); short: none |
+| C1350 47 pF | dead time no longer bridged: Q1313 may blip on each 0.19 µs gap (10 kΩ × Ciss slows it) → small extra island load | CLF = KS → as D1333 open | latent |
+| R1374 4.7 kΩ | CLF discharges only through the base: release slower → detector acts later (towards the "detector dead" result) | CLF = KS → as D1333 open | latent |
+| R1375 10 kΩ | Q1312 never on → as D1333 open | more base current, none | latent |
+| Q1312 MMBT3904 | as R1375 open | C–E short: CLG held low → **detector inert** | **latent** → S-1 "detector dead" result |
+| D1334 BAT54 | no Baker clamp: saturation storage delays the release by ≈ 0.1–0.3 µs [EST] | B–C joined: CLG ≈ 0.7 V < 2N7002 V_th min → inert | latent |
+| R1376 10 kΩ | Q1313 gate never pulled up → **inert** | CLG = gate: while the carrier runs Q1312 shorts the QHA gate → high side never turns on → phase lost (blocks); Q1312 overloaded | open: latent; short: visible (self-test phase current) |
+| D1335 BZX84C15 | Q1313 gate can see up to 21 V (VGS limit 20 V) → slow damage | CLG = KS → inert | latent |
+| Q1313 2N7002 | **inert** | D–S short: HSA_RECT loaded by 100 Ω permanently → as D1333 open | latent |
+| R1377 100 Ω | **inert** | Q1313 empties C1315 directly (faster; 2N7002 pulse current from 1 nF only) | open: latent; short: none |
+
+**Test points TP1306, TP1307:** a probe on them is not a part fault.
+
+**Summary — what is now latent:** the new protection is entirely self-test-blind. A failed fast path, a failed
+(inert) carrier-loss detector, an `LSD_OK` comparator stuck at "good", and an open film capacitor all look
+exactly like a healthy device until a second fault (a shorted low side, an MGJ2 failure, a short at the pads with a
+long capacitor cable) arrives. The existing self-test (§B14.3, D-62 T-steps) exercises none of them.
+
+### R3.6 Datasheets consulted for revision 0.3
+
+Opened and read in this work (27 November 2026; copies kept outside the repository):
+
+| Part | Document | What was taken from it |
+|---|---|---|
+| OPA838 (U1317) | TI SBOS867E, "OPA838 1mA, 300MHz Gain Bandwidth, Voltage-Feedback Op Amp", Aug 2017, revised **Aug 2025** | DBV pinout (Fig 5-1, Table 5-1), OPA838IDBVR orderable (Package Option Addendum), 2.7–5.4 V, minimum gain 6 V/V, GBP 240 min / 300 typ MHz, SR 250 min V/µs, offset ±125 µV (25 °C) / −230…+220 µV (−40…85 °C), bias 3.7 µA max, input range VS− − 0.2 V typ (VS− over temperature) to VS+ − 1.3 V, **VOL VS− + 0.1 typ / + 0.2 V max over temperature**, VOH VS+ − 0.2 V min, overdrive recovery 50 ns, Iq ≤ 1.35 mA, PD "must be driven", enable > VS− + 1.5 V, abs max input VS± 0.5 V, **differential ±1 V**, 10 mA |
+| TLV3501 (U1318; existing U1313, U1315) | TI SBOS321E, Mar 2005, revised **Apr 2016** | offset ±6.5 mV max **at 25 °C only** (drift ±5 µV/°C typ), hysteresis 6 mV typ, VOS = mean of the two switching points, input range (V−) − 0.2 to (V+) − 0.2 V, delay 4.5/6.4 ns (20 mV overdrive) and **7.5/10 ns, 12 ns over temperature, at 5 mV overdrive**, Iq 3.2 typ / 5 mA max, SHDN enabled below V+ − 1.7 V |
+| TLV7031 (U1316) | TI SLVSE13J, Sep 2017, revised **Nov 2024** | offset ±8 mV, hysteresis 2–17 mV (7 typ, 25 °C), input range VEE to VCC + 0.1 V, inputs fault-tolerant to 7 V with VCC = 0, delay 3 µs at 100 mV overdrive, output held low below 1.6 V (POR), 335/900 nA, power-up 200 µs |
+| 940C30P15K-F (C1347, C1348) | Cornell Dubilier "Type 940, Polypropylene Capacitors, for Pulse, Snubber" catalogue (revision date not printed; PDF metadata 2010–2021) | 0.15 µF, 3,000 Vdc / 500 Vac, D 27.0 × L 46.0 mm, lead Ø 1.2 mm, ESR 8 mΩ typ, ESL 32 nH typ, **dV/dt 1,440 V/µs, I peak 216 A**, I rms 10.1 A (100 kHz, 70 °C), full voltage to 85 °C then linearly to 50 % at 105 °C, ±10 % (K), "-F" = insulated stranded wire leads (41 mm), insulation ≥ 100,000 MΩ·µF, life 60,000 h at rated Vdc and 70 °C. **Mass not stated** |
+
+Not opened in this work (values used as read by others, or from the earlier capture) — **unverified here**:
+
+| Part | Used | Source of the figure |
+|---|---|---|
+| Stackpole HVCR2512FTD10M0 (R1370, R1371) | 3,000 V working, 10 MΩ in range | WP-F's reading of sei-hvcr.pdf rev 9/22/2025; the URL refused this work's fetch (HTTP 403). **Power rating not checked** |
+| onsemi MMBT3904LT1G (Q1312/Q1314), BAV70LT1G (D1333/D1336), 2N7002LT1G (Q1313/Q1315, NDS7002A/D: V_th 1.0–2.5 V as read by WP-D for sheet 09), BAT54LT1G (D1332, D1334/D1337), BZX84C15LT1G (D1335/D1338; same family document WP-G read for the earlier capture, Rev 24) | pinouts from KiCad's stock symbols (Q_NPN_BEC, Q_NMOS_GSD, BAV70, BZX84Cxx; BAT54 drawn with the BAT54W symbol, pins A–NC–K) | **unverified**: the BAT54 SOT-23 order (1 A, 3 K) carries a `Verify` field |
+| Murata MGJ2D052005SC | line regulation 1.2 %/%, load envelope (for the LSD_OK margin) | WP-G's earlier reading of an undated mirror (§2) |
+| Microchip MSC080SMA330B4N, GeneSiC GC05MPS33J, TI UCC5350, INA240 | unchanged from §2 and `sim/bridge` | as before |
+
+### R3.7 Problems with the change order, and what was changed on this sheet
+
+| # | Item | Problem (source) | Done here |
+|---|---|---|---|
+| P-1 | G-3 fast path, zero-current level | With the input at 0 V the OPA838's output cannot go below **VS− + 0.1 V typ, + 0.2 V max over temperature** (SBOS867E §6.6 VOL). The ordered threshold sits at 66.4 mV, so at zero current the comparator would read "current" — `IDLE_FAST_N` permanently low and **every sequence refused** | **R1364 10.0 kΩ pedestal** from BRIDGE_3V3 into `IDF_IN`: 32.7 mV at zero current → amplifier output 0.36 V (≥ 0.16 V above the worst VOL); threshold re-set by **R1368 48.7 kΩ → 6.73 kΩ** (3.07 A falling / 3.20 A rising nominal). Pedestal and reference are both ratiometric to BRIDGE_3V3. Uses the "unused" R1364 |
+| P-2 | G-3 gain resistors 10.0 k / 1.00 k | OPA838 bias current up to 3.7 µA (−40…85 °C) through Rf∥Rg = 909 Ω = **3.4 mV input error ≈ 1.7 A**, half the threshold | **R1366 1.00 kΩ, R1367 100 Ω** (gain still 11): the inverting input sees 91 Ω against 99 Ω at the non-inverting input; error ≈ 30 µV |
+| P-3 | G-3 clamp "BAT54S as D1331" | the upper diode, reverse-biased by 3.3 V from BRIDGE_3V3, injects its (hot) leakage into a 99 Ω node: µA × 99 Ω is a sizeable part of a 6 mV threshold | **D1332 = single BAT54 to GND** (the positive excursion is bounded by D1303 and the OPA838's own input limits through 100 Ω) |
+| P-4 | G-3 band "2.6–3.5 A" | TLV3501's ±6.5 mV is specified **at 25 °C only** (drift typ only); worst-case sum with 0.1 % parts, ±1.5 % rail, shunt ±2.3 %, OPA838 −230/+220 µV, 6 mV hysteresis: **2.54–3.87 A** | band re-stated; S-1 run at 2.54/3.0/3.5/3.87 A. Raising the gain to ≈ 31 would narrow it to ≈ 2.7–3.6 A but saturates the amplifier in every shock — not done (R3.8 item 4) |
+| P-5 | G-3 delay "≤ 7 ns comparator" | TLV3501 at 5 mV overdrive: 7.5 typ / 10 ns max (25 °C), 12 ns over temperature | delay ≈ 10 ns RC + 6 ns amplifier + ≤ 12 ns ≈ 30 ns: still ≤ 0.1 µs |
+| P-6 | G-4 band "16.5–17.3 V" | TLV7031 offset ±8 mV and hysteresis 2–17 mV (SLVSE13J) | 16.48–17.29 V [CALC] — agrees; decoupling C6302 added |
+| P-7 | G-6 film part | 940C30P15K-F is **27 mm × 46 mm, axial, with 41 mm insulated stranded leads ("-F")**, two of them; mass not stated. Lead inductance (≈ 40–60 nH each [EST]) adds to the 32 nH ESL | simulated with 10 and 60 nH extra per part: 75 nF still holds the spike (S-2). Footprint marked to be made |
+| P-8 | G-3/G-4/G-5 BRIDGE_3V3 load "≈ 4.5 mA" | OPA838 ≤ 1.35 mA, TLV3501 ≤ 5 mA (3.2 typ), pedestal 0.33 mA, references 0.45 mA, TLV7031 < 1 µA | **≈ 4.3 mA typ, 7.1 mA max** added; sheet 13 total ≈ 25–32 mA (WP-D's hold-up sizing) |
+| P-9 | G-5 R1377/R1382 size | a discharge FET stuck on with the carrier running puts ≈ 2 W into the 100 Ω | drawn in 0805; still not rated for continuous operation in that fault (failure table) |
+| P-10 | "BAT54" in G-5 | KiCad has no plain BAT54 (SOT-23 single) symbol | drawn with the stock BAT54W symbol (same A–NC–K pin order), MPN BAT54LT1G, SOT-23; `Verify` field |
+
+### R3.8 Problems for the design authority (not fixable inside this sheet)
+
+1. **No self-test reaches the new protection (and none reached the old comparators or the kill latch).** A failed
+   fast path, an inert carrier-loss detector, an `LSD_OK` comparator stuck at "good" and an open film capacitor
+   are all latent (R3.5), and S-1 shows what a second fault then costs (fast path dead: 50–104 mJ, 194–330 °C
+   pessimistic; both dead, same side: ≈ 11–12 J, destroyed). Nothing using only the existing contract nets can
+   exercise them: `BTEST_EN` and the test relay give 0.29 A at 60 V, far below every threshold, and any injection
+   tied to `BTEST_EN` would latch a fault in every bridge test. **Proposed (contract change):** three supervisor
+   lines `ITEST_OC`, `ITEST_IDF`, `ITEST_IDS` (05 → 13, 100 kΩ to GND on 13, active high), each through a
+   BAS116 and a resistor into one comparator input (≈ 1.2 kΩ into `OC_SNS` → ≈ 200 mV ≡ 100 A; ≈ 22 kΩ into
+   `IDF_IN` → ≈ 12 mV ≡ 6 A; ≈ 15 kΩ into `IDLE_SNS` → ≈ 170 mV ≡ 7 A) [CALC, not simulated], the same pattern as
+   `OVP_TEST` on sheet 08. In TEST_MODE with the rail up and no command, each line alone must set the fault latch
+   (`BR_FAULT_N` low); with `CMD_HA` held high at ≤ 60 V, raising one must make `OUT_A_TAP` fall although
+   `CMD_HA` stays high — that proves the kill latch, the carrier stop and the PNP turn-off. A fourth injection
+   (BAS116 + resistor pulling `LSD_TH` above `LSD_SNS`) would prove `LSD_OK`. Leakage of the BAS116s into the fast
+   path in normal operation: ≤ 5 nA × 99 Ω, negligible. The carrier-loss detector itself would still be seen only
+   by the turn-off time of `OUT_x_TAP` (gate < 2 V in ≈ 4 µs with it, ≈ 7.5 µs without), which needs a ≥ 1 MS/s
+   capture on sheet 07 — capability unknown.
+2. **An open film capacitor is latent and takes the switch over its rating with a long cable** (S-2: 3.13 kV at
+   0.5 µH, **3.59 kV at 1 µH**). Either a cable-inductance limit (≤ 0.2 µH keeps 2.73 kV with the film open) goes
+   into `docs/requirements/storage-capacitor.md`, or the film branch is made redundant (a second series pair in
+   parallel — four 27 × 46 mm parts; C1349/R1372 were reserved but C1349 is now used for decoupling). Owner/
+   design-authority decision on board volume.
+3. **`HV_CAP_FM` falls into net class `HV` (0.5 mm track) by the `*HV_*` pattern, but it carries the film's
+   ≈ 100 A ringing current.** It should be `HV_PULSE`; `hierarchy.toml` is not this package's file.
+4. **Gain-31 option for the fast path (P-4).** Narrower band (worst corner ≈ 3.6 A) at the price of the amplifier
+   saturating during every shock (overload recovery is specified only at 2× overdrive, 50 ns). Not taken; decision
+   for the design authority if the S-1 worst corner (R3.4) is judged too thin.
+5. **Standing load on the capacitor:** R1370 + R1371 add 20 MΩ (0.24 W at 2.2 kV, ≈ 0.2 W at 2 kV); CS's
+   "board standing load 3.90 MΩ" (rev3-changes S-12) should include it (→ ≈ 3.3 MΩ on the board).
+6. **Layout requirement L-1:** the GND pins of U1317/U1318 (and U1313/U1315) must be taken at the shunt's
+   HV_RTN Kelvin terminal `SHUNT_KN`; the OPA838 tolerates only VS− − 0.2 V at its input, and a remote ground with
+   25 nH of return path saw tens of volts of bounce in the model.
+7. **Film–cable ringing** (S-2): 510–720 kHz, Q ≈ 20–30, ±350 V at a trip with 1 µH, and at every hard phase
+   edge. Not over a rating; an RC damper (a few ohms in series with a larger film) would remove it. Needs a decision
+   with point 2 because it is the same board area.
+8. **`LSD_OK` ends a shock when the gate supply only sags** (S-4) — conservative, as ordered; the −5 V rail is
+   not monitored (a failed −5 V side leaves the low sides held off at 0 V; dv/dt margin 6.5 V → ≈ 1.5 V [CALC]).
+9. **Contract §5.7 text** for `IDLE_FAST_N` says "band ≈ 2.6–3.5 A": the drawn circuit's band is 2.54–3.87 A.
+
+### R3.9 What only the switch maker's data or a measurement can settle
+
+- **Which junction estimate is right** for 3–5 µs linear-mode events: Microchip's Zθ below ≈ 7 µs (or a
+  low-voltage-scaled pulse measurement by a qualified lab). It decides whether the S-1 worst corner (150 °C
+  pessimistic, 67 °C physical) is a real limit, and whether a silently failed fast path (194–330 °C pessimistic,
+  75–96 °C physical) would destroy the switch.
+- Turn-off of 86–100 A at 2.5–2.8 kV (no RBSOA published) — unchanged from `../bridge`.
+- The switch's saturation current at kilovolts (sets the same-side shoot-through current; sensitivity −6 %).
+- The WSK2512's sense-loop inductance (0–1 nH changed the S-1 energy by −40 %/+15 % and the S-3 margin by ≈ 0.4 A)
+  and the real stray/cable inductances.
+- The made-to-order gate transformers' output resistance and their behaviour when the drive stops (not modelled).
+- The MGJ2's actual output at 4.5 V input and its ripple (the `LSD_OK` nuisance margin is ≈ 0.8 V).
+- The 2N7002/MMBT3904/BAV70/BAT54 parts' real switching behaviour (generic models; detector timing 1.1–1.3 µs).
+- The film capacitors' behaviour under the repetitive ringing (rms within the 10.1 A rating on paper).

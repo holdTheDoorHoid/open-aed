@@ -4,7 +4,7 @@
 //! supervisor alongside; the chest channel carries a scripted state that a
 //! fake sensor reports. Every name states the rule it checks.
 
-use super::mock::{BoardChest, Bench};
+use super::mock::{Bench, BoardChest};
 use crate::prompts::Prompt;
 use crate::rescue::{AbortReason, RescueState};
 use crate::{Config, ConfigError, Event};
@@ -34,8 +34,19 @@ fn count_events(b: &Bench, pred: impl Fn(&Event) -> bool) -> usize {
     b.rescue.events().iter().filter(|e| pred(&e.event)).count()
 }
 
+/// These tests check the chest logic itself; the D-67 blanking while the
+/// charger runs (FW-13) would hide most of what they script on this slowly
+/// charging mock board, so it is off here and tested on its own
+/// (`compression_readings_are_blanked_while_charging_*`).
+fn chest_cfg() -> Config {
+    Config {
+        blank_compressions_while_charging: false,
+        ..super::cfg()
+    }
+}
+
 fn chest_bench() -> Bench {
-    Bench::with_chest(Config::default())
+    Bench::with_chest(chest_cfg())
 }
 
 fn now(b: &Bench) -> Millis {
@@ -59,7 +70,10 @@ fn compressions_throughout_the_analysis_never_lead_to_a_countdown_even_on_a_shoc
     assert!(!b.state_sequence().contains(&S::Countdown));
     assert!(b.has_event(|e| *e == Event::AnalysisInconclusive || *e == Event::AnalysisTimedOut));
     let took = b.board.now - start;
-    assert!((12_000..=12_100).contains(&took), "the time limit still holds: {took} ms");
+    assert!(
+        (12_000..=12_100).contains(&took),
+        "the time limit still holds: {took} ms"
+    );
     assert_eq!(b.shocks_fired(), 0);
     assert!(b.board.requests.is_empty());
     b.assert_no_violations();
@@ -91,7 +105,10 @@ fn the_analysis_is_reset_when_the_chest_stops_being_still_and_restarts_clean_whe
     assert_eq!(b.rescue.counters().analyses_held, 1);
     assert!(b.has_event(|e| *e == Event::AnalysisHeld(ChestState::Compressing)));
     b.run_ms(2_000);
-    assert!(b.rescue.last_decision().is_none(), "nothing fed while compressing");
+    assert!(
+        b.rescue.last_decision().is_none(),
+        "nothing fed while compressing"
+    );
     b.board.rhythm = RhythmDecision::Shockable;
     b.board.chest = BoardChest::HandsOff;
     let off_at = b.board.now;
@@ -138,7 +155,7 @@ fn without_compression_sensing_not_sure_still_drives_the_reminder() {
     // The earlier behaviour, unchanged, when sensing is switched off.
     let config = Config {
         chest_sensing: false,
-        ..Config::default()
+        ..chest_cfg()
     };
     let mut b = Bench::with_chest(config);
     b.board.rhythm = RhythmDecision::Indeterminate;
@@ -156,7 +173,7 @@ fn chest_sensing_switched_off_falls_back_to_heart_signal_only() {
     // behaviour, kept so the effect is measurable).
     let config = Config {
         chest_sensing: false,
-        ..Config::default()
+        ..chest_cfg()
     };
     let mut b = Bench::with_chest(config);
     b.board.rhythm = RhythmDecision::Shockable;
@@ -184,14 +201,24 @@ fn compressions_during_the_countdown_hold_the_shock_back_and_analyse_again_once(
     let t = b.board.now;
     b.board.chest = BoardChest::Compressing;
     b.run_ms(20);
-    assert!(b.state().is_analysing(), "back to analysing: {:?}", b.state());
+    assert!(
+        b.state().is_analysing(),
+        "back to analysing: {:?}",
+        b.state()
+    );
     assert!(b.board.request.is_none());
     assert_eq!(b.rescue.counters().hands_on_aborts, 1);
     assert_eq!(b.rescue.counters().analyses, analyses + 1);
     assert!(b.has_event(|e| *e == Event::ShockAborted(AbortReason::HandsOnChest)));
     let said = prompts_between(&b, t + 1, b.board.now + 1);
-    assert_eq!(said, [Prompt::MovementShockDelayed, Prompt::AnalysingDoNotTouch]);
-    assert!(b.rescue.emptying() || b.board.cap_v < 50.0, "the charge is emptied first");
+    assert_eq!(
+        said,
+        [Prompt::MovementShockDelayed, Prompt::AnalysingDoNotTouch]
+    );
+    assert!(
+        b.rescue.emptying() || b.board.cap_v < 50.0,
+        "the charge is emptied first"
+    );
     // Hands off again: the new analysis advises the shock, which is given.
     b.run_ms(1_500);
     b.board.chest = BoardChest::HandsOff;
@@ -212,7 +239,12 @@ fn a_second_hands_on_abort_in_the_same_cycle_goes_to_cpr_without_a_shock() {
     b.board.chest = BoardChest::Unknown;
     reach(&mut b, S::Cpr, 1_000);
     assert_eq!(b.shocks_fired(), 0);
-    let said = prompts_between(&b, t, b.board.now + 1);
+    // The first countdown number may be spoken on the tick after the state
+    // change (it is, since the v0.3 charge control), so it is not compared.
+    let said: Vec<Prompt> = prompts_between(&b, t, b.board.now + 1)
+        .into_iter()
+        .filter(|p| !matches!(p, Prompt::Countdown(_)))
+        .collect();
     assert_eq!(said, [Prompt::MovementNoShock, Prompt::StartCpr]);
     assert_eq!(b.rescue.counters().hands_on_aborts, 2);
     b.assert_no_violations();
@@ -224,7 +256,7 @@ fn unknown_chest_while_charging_after_the_advice_holds_the_shock_back() {
     // state lasts the whole charge.
     let config = Config {
         charge_during_analysis: false,
-        ..Config::default()
+        ..chest_cfg()
     };
     let mut b = Bench::with_chest(config);
     reach(&mut b, S::Charging, 30_000);
@@ -247,8 +279,9 @@ fn compressions_while_delivering_withdraw_the_request() {
     b.board.chest = BoardChest::Compressing;
     b.run_ms(10);
     assert!(b.board.request.is_none());
-    assert!(b.has_event(|e| *e
-        == Event::Shock(crate::ShockOutcome::Withdrawn(AbortReason::HandsOnChest))));
+    assert!(b.has_event(
+        |e| *e == Event::Shock(crate::ShockOutcome::Withdrawn(AbortReason::HandsOnChest))
+    ));
     assert_eq!(b.shocks_fired(), 0);
 }
 
@@ -260,7 +293,11 @@ fn no_shock_is_ever_requested_while_the_chest_channel_is_not_still() {
     // A request already raised in the same instant can still fire: the
     // mock's sensing latency is one sample plus one tick (10 ms).
     for start_ms in (0..14_000u32).step_by(250) {
-        for kind in [BoardChest::Compressing, BoardChest::Unknown, BoardChest::Saturated] {
+        for kind in [
+            BoardChest::Compressing,
+            BoardChest::Unknown,
+            BoardChest::Saturated,
+        ] {
             let mut b = chest_bench();
             b.run_to_analysing();
             b.run_ms(start_ms);
@@ -294,7 +331,10 @@ fn missing_impedance_samples_hold_the_analysis_then_degrade_to_heart_signal_only
     // Held until the channel counts as failed (5 s), then heart signal only.
     let t = b.board.now;
     reach(&mut b, S::Countdown, 20_000);
-    assert!(b.board.now - t >= 4_800, "held while the channel might recover");
+    assert!(
+        b.board.now - t >= 4_800,
+        "held while the channel might recover"
+    );
     assert!(b.has_event(|e| *e == Event::ChestSensingFailed(ImpedanceSignal::Missing)));
     assert!(!b.rescue.chest_sensing_active());
     reach(&mut b, S::Cpr, 10_000);
@@ -302,7 +342,8 @@ fn missing_impedance_samples_hold_the_analysis_then_degrade_to_heart_signal_only
 }
 
 #[test]
-fn a_saturated_or_out_of_range_channel_with_pads_on_also_degrades_and_a_good_channel_is_used_again() {
+fn a_saturated_or_out_of_range_channel_with_pads_on_also_degrades_and_a_good_channel_is_used_again()
+{
     for bad in [BoardChest::Saturated, BoardChest::OutOfRange] {
         let mut b = chest_bench();
         b.board.rhythm = RhythmDecision::NonShockable;
@@ -323,7 +364,7 @@ fn a_saturated_or_out_of_range_channel_with_pads_on_also_degrades_and_a_good_cha
 fn compressions_pauses_and_a_period_summary_are_recorded_during_cpr() {
     let config = Config {
         cpr_period_ms: 30_000,
-        ..Config::default()
+        ..chest_cfg()
     };
     let mut b = Bench::with_chest(config);
     b.board.rhythm = RhythmDecision::NonShockable;
@@ -344,7 +385,12 @@ fn compressions_pauses_and_a_period_summary_are_recorded_during_cpr() {
             rate_per_min,
             on_chest_permille,
             longest_pause_ms,
-        } => Some((compressions, rate_per_min, on_chest_permille, longest_pause_ms)),
+        } => Some((
+            compressions,
+            rate_per_min,
+            on_chest_permille,
+            longest_pause_ms,
+        )),
         _ => None,
     });
     let (n, rate, on_chest, longest) = summary.expect("a summary at the end of CPR");
@@ -352,7 +398,10 @@ fn compressions_pauses_and_a_period_summary_are_recorded_during_cpr() {
     assert!((105..=115).contains(&rate), "rate {rate}");
     assert!((800..=900).contains(&on_chest), "on chest {on_chest}");
     // Measured between compression events (one every 545 ms here).
-    assert!((4_000..=5_200).contains(&longest), "longest pause {longest}");
+    assert!(
+        (4_000..=5_200).contains(&longest),
+        "longest pause {longest}"
+    );
     assert!(count_events(&b, |e| matches!(e, Event::CprPause(ms) if *ms >= 4_000)) == 1);
 }
 
@@ -397,7 +446,7 @@ fn continue_cpr_is_said_after_the_configured_time_without_compressions_and_not_w
     // Switched off.
     let config = Config {
         no_compression_prompt_ms: 0,
-        ..Config::default()
+        ..chest_cfg()
     };
     let mut b = Bench::with_chest(config);
     b.board.rhythm = RhythmDecision::NonShockable;
@@ -409,16 +458,31 @@ fn continue_cpr_is_said_after_the_configured_time_without_compressions_and_not_w
 
 #[test]
 fn chest_sensing_settings_that_contradict_each_other_are_refused() {
-    let c = Config::default();
+    let c = chest_cfg();
     assert!(c.chest_sensing);
     assert_eq!(c.no_compression_prompt_ms, 15_000);
     assert_eq!(c.hands_on_reanalyses, 1);
     for bad in [
-        Config { impedance_stale_ms: 0, ..c },
-        Config { chest_channel_fail_ms: 50, ..c },
-        Config { chest_channel_recover_ms: 0, ..c },
-        Config { no_compression_prompt_ms: 2_000, ..c },
-        Config { pause_record_ms: 0, ..c },
+        Config {
+            impedance_stale_ms: 0,
+            ..c
+        },
+        Config {
+            chest_channel_fail_ms: 50,
+            ..c
+        },
+        Config {
+            chest_channel_recover_ms: 0,
+            ..c
+        },
+        Config {
+            no_compression_prompt_ms: 2_000,
+            ..c
+        },
+        Config {
+            pause_record_ms: 0,
+            ..c
+        },
     ] {
         assert_eq!(bad.validate(), Err(ConfigError::ChestSensingTimes));
     }
@@ -430,7 +494,7 @@ fn chest_sensing_settings_that_contradict_each_other_are_refused() {
 fn after_cpr_with_the_chest_confirmed_still_the_analysis_starts_a_fresh_window_not_a_full_reset() {
     let config = Config {
         cpr_period_ms: 20_000,
-        ..Config::default()
+        ..chest_cfg()
     };
     let mut b = Bench::with_chest(config);
     b.board.rhythm = RhythmDecision::NonShockable;
@@ -441,7 +505,11 @@ fn after_cpr_with_the_chest_confirmed_still_the_analysis_starts_a_fresh_window_n
     let resets = b.resets.get();
     let restarts = b.restarts.get();
     reach(&mut b, S::AnalysingCharging, 30_000);
-    assert_eq!(b.restarts.get(), restarts + 1, "fresh window on the running filters");
+    assert_eq!(
+        b.restarts.get(),
+        restarts + 1,
+        "fresh window on the running filters"
+    );
     assert_eq!(b.resets.get(), resets, "no full reset");
     assert_eq!(b.rescue.counters().fresh_windows, 1);
     assert!(b.has_event(|e| *e == Event::FreshAnalysisWindow));
@@ -496,7 +564,11 @@ fn a_failed_sensing_channel_or_unknown_chest_keeps_the_full_reset() {
     let restarts = b.restarts.get();
     reach(&mut b, S::Countdown, 20_000);
     assert!(!b.rescue.chest_sensing_active());
-    assert_eq!(b.restarts.get(), restarts, "no fresh window when sensing failed");
+    assert_eq!(
+        b.restarts.get(),
+        restarts,
+        "no fresh window when sensing failed"
+    );
     // "Cannot tell" throughout: never a fresh window.
     let mut b = chest_bench();
     b.board.rhythm = RhythmDecision::NonShockable;
@@ -513,7 +585,7 @@ fn without_compression_sensing_every_analysis_starts_with_a_full_reset() {
         Bench::new(),
         Bench::with_chest(Config {
             chest_sensing: false,
-            ..Config::default()
+            ..chest_cfg()
         }),
     ] {
         b.board.rhythm = RhythmDecision::NonShockable;
@@ -547,7 +619,7 @@ fn pads_attached_and_after_a_shock_keep_the_full_reset() {
 fn the_filters_are_kept_running_through_cpr_and_while_compressions_hold_the_analysis() {
     let config = Config {
         cpr_period_ms: 20_000,
-        ..Config::default()
+        ..chest_cfg()
     };
     let mut b = Bench::with_chest(config);
     b.board.rhythm = RhythmDecision::NonShockable;
@@ -556,11 +628,18 @@ fn the_filters_are_kept_running_through_cpr_and_while_compressions_hold_the_anal
     b.board.chest = BoardChest::Compressing;
     b.run_ms(10_000);
     // 250 samples a second through CPR.
-    assert!((2_490..=2_510).contains(&(b.tracked.get() - before)), "{}", b.tracked.get() - before);
+    assert!(
+        (2_490..=2_510).contains(&(b.tracked.get() - before)),
+        "{}",
+        b.tracked.get() - before
+    );
     reach(&mut b, S::AnalysingCharging, 30_000);
     let before = b.tracked.get();
     b.run_ms(2_000);
-    assert!((490..=510).contains(&(b.tracked.get() - before)), "held analysis tracks too");
+    assert!(
+        (490..=510).contains(&(b.tracked.get() - before)),
+        "held analysis tracks too"
+    );
     // Pads off: nothing to track.
     b.board.pad_ohms = 10_000;
     reach(&mut b, S::AttachPads, 5_000);

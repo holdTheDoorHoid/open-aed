@@ -1,0 +1,132 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* discharge_wpf.cir — emptying the 100 uF storage capacitor through the revision 0.3 discharge paths AS DRAWN
+* (two instances of stack_drawn.inc: path A and path B), and the pulse stress of every resistor in a path.
+* Always connected: bleeder 8 x 2.49 M (19.92 M), main sense string 40.24 M, supervisor string 39.84 M. The
+* capacitor's own 10 M internal bleed (D-65) is left OUT (conservative for discharge time).
+* Release model (as charger-storage/discharge.cir): the bottom gate is a behavioural source, held at -5.9 V (cold
+* hold level, sim/rev3) until trel (0.2 s, so the held stack has settled from the uic start), then rising towards 0 V with time constant taug: normal release 20 us
+* (BSS138 ~5 ohm x 3.3 uF [EST]); failed release 3.33 s (only R1127 + R1128 1.01 M x 3.3 uF).
+* Peaks and energies are measured from the release (0.2 s): the uic start (all stack nodes at 0 V with the full
+* capacitor voltage applied in one step) is an artefact of the method, not a real event.
+* Dump resistors: Ohmite EY152KE 1.5 k 10 %, TCR -1,200 ppm/K [DS as read in WP-F §7] through rmult.
+.include ../charger-storage/models/datasheet_models.lib
+.include models/wpf_models.lib
+.include stack_drawn.inc
+.param vc0=2200 cap=100u rmult=1.0 pathb=0 taug=20u trel=200m tf=1 leakt=68meg ilk=5u sha=0
+C1101 hvp 0 {cap} ic={vc0}
+RBLEED hvp 0 19.92meg
+RSM hvp 0 40.24meg
+RSS hvp 0 39.84meg
+BGA ga 0 V={ time < trel ? -5.9 : -5.9*exp(-(time-trel)/taug) }
+BGB gb 0 V={ (pathb > 0.5 && time >= trel) ? -5.9*exp(-(time-trel)/taug) : -5.9 }
+XA hvp ga 0 STACKWPF params: tf={tf} leakt={leakt} ilk={ilk} rm={rmult} sh2={sha}
+XB hvp gb 0 STACKWPF params: tf={tf} leakt={leakt} ilk={ilk} rm={rmult}
+.control
+set noaskquit
+option reltol=1e-4 method=gear
+foreach cs 1 2 3 4 5 6 7 8 9
+  alterparam sha = 0
+  set tmx = 50u
+  alterparam tf = 1
+  alterparam leakt = 68meg
+  alterparam ilk = 5u
+  alterparam vc0 = 2200
+  if $cs = 1
+    set nm = "one_path_nominal"
+    alterparam pathb = 0
+    alterparam taug = 20u
+    alterparam rmult = 1.0
+    alterparam cap = 100u
+    set tend = 4.2
+  end
+  if $cs = 2
+    set nm = "one_path_slowest(R+10%,cold+5.4%,C+5%)"
+    alterparam rmult = 1.159
+    alterparam cap = 105u
+    alterparam tf = 0.89
+    alterparam leakt = 262meg
+    alterparam ilk = 0.5u
+    set tend = 5.2
+  end
+  if $cs = 3
+    set nm = "one_path_fastest(R-10%,hot-5.4%,C-5%)"
+    alterparam rmult = 0.851
+    alterparam cap = 95u
+    alterparam tf = 1.11
+    alterparam leakt = 17.7meg
+    alterparam ilk = 50u
+    set tend = 4.2
+  end
+  if $cs = 4
+    set nm = "both_paths_nominal"
+    alterparam pathb = 1
+    alterparam rmult = 1.0
+    alterparam cap = 100u
+    set tend = 3.2
+  end
+  if $cs = 5
+    set nm = "both_paths_slowest"
+    alterparam rmult = 1.159
+    alterparam cap = 105u
+    alterparam tf = 0.89
+    alterparam leakt = 262meg
+    alterparam ilk = 0.5u
+    set tend = 3.2
+  end
+  if $cs = 6
+    set nm = "one_path_RELEASE_FAILED(1.01M_x_3.3uF)"
+    set tmx = 10u
+    alterparam pathb = 0
+    alterparam taug = 3.33
+    alterparam rmult = 1.0
+    alterparam cap = 100u
+    set tend = 10.2
+  end
+  if $cs = 7
+    set nm = "one_path_fastest_dump_resistor_stress(R-10%,C+5%)"
+    alterparam taug = 20u
+    alterparam rmult = 0.9
+    alterparam cap = 105u
+    set tend = 4.2
+  end
+  if $cs = 8
+    set nm = "one_path_nominal_device2_SHORTED"
+    set tmx = 10u
+    alterparam rmult = 1.0
+    alterparam cap = 100u
+    alterparam sha = 1
+    set tend = 4.2
+  end
+  if $cs = 9
+    set nm = "one_path_from_1950V"
+    alterparam vc0 = 1950
+    set tend = 4.2
+  end
+  reset
+  save v(hvp) v(xa.it) v(xa.pr) v(xa.pdm) v(xa.vdm) v(xa.p6107) v(xa.pb2) v(xa.pg2) v(xa.ps1) v(xa.pgs2) v(xa.pd1)
+  tran 2u $tend 0 $tmx uic
+  meas tran t60 when v(hvp)=60 fall=1
+  meas tran ipk max v(xa.it) from=0.2
+  meas tran ppr max v(xa.pr) from=0.2
+  meas tran epr integ v(xa.pr) from=0.2
+  meas tran pdm max v(xa.pdm) from=0.2
+  meas tran ed1 integ v(xa.pd1) from=0.2
+  meas tran vhs find v(xa.vdm) at=0.19
+  meas tran vdm max v(xa.vdm) from=0.2 to=0.25
+  meas tran p6 max v(xa.p6107) from=0.2
+  meas tran e6 integ v(xa.p6107) from=0.2
+  meas tran pb max v(xa.pb2) from=0.2
+  meas tran eb integ v(xa.pb2) from=0.2
+  meas tran pg max v(xa.pg2) from=0.2
+  meas tran eg integ v(xa.pg2) from=0.2
+  meas tran ps max v(xa.ps1) from=0.2
+  meas tran pgs max v(xa.pgs2) from=0.2
+  let t60r = t60 - 0.2
+  echo "DUMP $nm | t_to_60V_s=$&t60r peak_A_per_path=$&ipk | dump resistor R1101: peak_W=$&ppr energy_J=$&epr | worst device peak_W=$&pdm, bottom device energy_J=$&ed1 | held (before release) max Vds=$&vhs V, release edge (first 50 ms) max Vds=$&vdm V"
+  echo "PULSE $nm | R6107 10M: peak_W=$&p6 J=$&e6 | R6101 22M: peak_W=$&pb J=$&eb | R1115 100k: peak_W=$&pg J=$&eg | R1107 10M: peak_W=$&ps | R1121 100M: peak_W=$&pgs"
+end
+quit
+.endc
+.end

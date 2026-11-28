@@ -19,8 +19,8 @@ use aed_types::{RhythmAnalyzer, RhythmDecision, ECG_SAMPLE_RATE_HZ};
 
 use crate::condition::{quantize, to_microvolts, Resampler};
 use crate::truth::{
-    amplitude_uv, beat_rate_bpm, build_timeline, estimated_rate_bpm, classify_truth, clean_runs, CleanRun, Db, Label,
-    Timeline, TruthClass,
+    amplitude_uv, beat_rate_bpm, build_timeline, classify_truth, clean_runs, estimated_rate_bpm,
+    CleanRun, Db, Label, Timeline, TruthClass,
 };
 use crate::wfdb::{adc_rails, load_record, LoadError, SignalCheck};
 
@@ -88,13 +88,16 @@ pub fn prepare(db: Db, dir: &Path, name: &str) -> Result<Prepared, LoadError> {
         None
     } else if (fs - f64::from(fs_int)).abs() < 1e-9 && fs_int > 0 {
         Some(
-            Resampler::new_default(fs_int, ECG_SAMPLE_RATE_HZ)
-                .map_err(|e| LoadError::Signal(crate::wfdb::signal::SignalError::Unsupported(format!("{e:?}"))))?,
+            Resampler::new_default(fs_int, ECG_SAMPLE_RATE_HZ).map_err(|e| {
+                LoadError::Signal(crate::wfdb::signal::SignalError::Unsupported(format!(
+                    "{e:?}"
+                )))
+            })?,
         )
     } else {
-        return Err(LoadError::Signal(crate::wfdb::signal::SignalError::Unsupported(
-            format!("sampling rate {fs}"),
-        )));
+        return Err(LoadError::Signal(
+            crate::wfdb::signal::SignalError::Unsupported(format!("sampling rate {fs}")),
+        ));
     };
     let mut channels = Vec::new();
     for (spec, raw) in rec.header.signals.iter().zip(rec.samples.iter()) {
@@ -246,7 +249,13 @@ pub fn run_segment_with(samples: &[i16], after: &[i16], settings: Settings) -> A
 /// afresh with the start's guard (decision D-47). A cold start, or an empty
 /// `pre`, is exactly [`run_segment_with`].
 #[must_use]
-pub fn run_segment_from(pre: &[i16], start: Start, samples: &[i16], after: &[i16], settings: Settings) -> AnalysisRun {
+pub fn run_segment_from(
+    pre: &[i16],
+    start: Start,
+    samples: &[i16],
+    after: &[i16],
+    settings: Settings,
+) -> AnalysisRun {
     let mut a = Analyzer::with_settings(settings);
     if let Start::Warm { guard_samples } = start {
         if !pre.is_empty() {
@@ -269,7 +278,11 @@ pub fn run_segment_from(pre: &[i16], start: Start, samples: &[i16], after: &[i16
         match d {
             Some(RhythmDecision::Shockable) => {
                 let need = (COUNTDOWN_S * FS as f64).round() as usize;
-                let rest = samples.get(i + 1..).unwrap_or(&[]).iter().chain(after.iter());
+                let rest = samples
+                    .get(i + 1..)
+                    .unwrap_or(&[])
+                    .iter()
+                    .chain(after.iter());
                 let mut fed = 0_usize;
                 let mut cancelled = false;
                 for x in rest.take(need) {
@@ -466,11 +479,17 @@ pub fn evaluate_record_with(p: &Prepared, settings: Settings, start_mode: Start)
                             run: run_segment_from(
                                 match start_mode {
                                     Start::Cold => &[],
-                                    Start::Warm { .. } => slice_s(&chan.samples, start - WARM_PRE_ROLL_S, start),
+                                    Start::Warm { .. } => {
+                                        slice_s(&chan.samples, start - WARM_PRE_ROLL_S, start)
+                                    }
                                 },
                                 start_mode,
                                 s,
-                                slice_s(&chan.samples, start + len, (start + len + COUNTDOWN_S).min(run.end)),
+                                slice_s(
+                                    &chan.samples,
+                                    start + len,
+                                    (start + len + COUNTDOWN_S).min(run.end),
+                                ),
                                 settings,
                             ),
                         });
@@ -489,11 +508,15 @@ pub fn evaluate_record_with(p: &Prepared, settings: Settings, start_mode: Start)
                 idx += 1;
             }
             let run = runs.get(idx).filter(|r| r.start <= t0 && t_end <= r.end);
-            let amplitude = amplitude_uv(slice_s(&chan.samples, t_end - 4.0, t_end), FS).unwrap_or(0.0);
+            let amplitude =
+                amplitude_uv(slice_s(&chan.samples, t_end - 4.0, t_end), FS).unwrap_or(0.0);
             let (class, label) = match run {
                 Some(r) => {
                     let rate = beat_rate_bpm(&p.timeline.beats, t0, t_end);
-                    (classify_truth(&r.label, Some(amplitude), rate), Some(r.label.clone()))
+                    (
+                        classify_truth(&r.label, Some(amplitude), rate),
+                        Some(r.label.clone()),
+                    )
                 }
                 None => (None, None),
             };
@@ -516,7 +539,15 @@ pub fn evaluate_record_with(p: &Prepared, settings: Settings, start_mode: Start)
         channel_info: p
             .channels
             .iter()
-            .map(|c| (c.lead.clone(), c.gain, c.gain_is_default, c.clipped_i16, c.rail_samples))
+            .map(|c| {
+                (
+                    c.lead.clone(),
+                    c.gain,
+                    c.gain_is_default,
+                    c.clipped_i16,
+                    c.rail_samples,
+                )
+            })
             .collect(),
         checks: p.checks.clone(),
         timeline: p.timeline.clone(),
@@ -553,16 +584,27 @@ mod tests {
     }
 
     #[test]
-    fn a_warm_start_decides_three_quarters_of_a_second_sooner_and_without_pre_roll_is_a_cold_start() {
+    fn a_warm_start_decides_three_quarters_of_a_second_sooner_and_without_pre_roll_is_a_cold_start()
+    {
         let pre = sine(5.0, 500.0, 2.0);
         let seg = sine(5.0, 500.0, 12.0);
         let warm = run_segment_from(&pre, Start::DEVICE_WARM, &seg, &[], Settings::DEFAULT);
         assert_eq!(warm.outcome, Outcome::Shock);
-        assert_eq!(warm.decided_at_s, Some(6.248), "62 samples of guard, not 250");
+        assert_eq!(
+            warm.decided_at_s,
+            Some(6.248),
+            "62 samples of guard, not 250"
+        );
         let no_pre = run_segment_from(&[], Start::DEVICE_WARM, &seg, &[], Settings::DEFAULT);
         assert_eq!(no_pre.decided_at_s, Some(7.0));
         // A warm start with a full second's guard is a cold start.
-        let slow = run_segment_from(&pre, Start::Warm { guard_samples: FS }, &seg, &[], Settings::DEFAULT);
+        let slow = run_segment_from(
+            &pre,
+            Start::Warm { guard_samples: FS },
+            &seg,
+            &[],
+            Settings::DEFAULT,
+        );
         assert_eq!(slow.decided_at_s, Some(7.0));
     }
 
@@ -571,7 +613,11 @@ mod tests {
         let vf = sine(5.0, 500.0, 12.0);
         let r = run_segment_with(&vf, &sine(5.0, 500.0, 3.0), Settings::DEFAULT);
         assert_eq!(r.outcome, Outcome::Shock);
-        assert_eq!(r.cancelled_in_countdown, Some(false), "VF goes on: not cancelled");
+        assert_eq!(
+            r.cancelled_in_countdown,
+            Some(false),
+            "VF goes on: not cancelled"
+        );
         // A signal that turns into clipped junk right after "shock advised"
         // cancels it (a change to a flat line would not be seen this fast:
         // the 4 s window makes that blind for about 3 s, finding F-4).

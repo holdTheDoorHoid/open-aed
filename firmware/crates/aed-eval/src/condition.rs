@@ -158,7 +158,11 @@ impl Resampler {
                 let offset = k as f64 - (span - 1.0);
                 let t = offset - frac;
                 let x = 2.0 * fc * t;
-                let sinc = if x.abs() < 1e-12 { 1.0 } else { (PI * x).sin() / (PI * x) };
+                let sinc = if x.abs() < 1e-12 {
+                    1.0
+                } else {
+                    (PI * x).sin() / (PI * x)
+                };
                 let r = t / span;
                 let w = if r.abs() >= 1.0 {
                     0.0
@@ -253,7 +257,9 @@ mod tests {
     use super::*;
 
     fn sine(hz: f64, fs: f64, n: usize, phase: f64) -> Vec<f64> {
-        (0..n).map(|i| (2.0 * PI * hz * i as f64 / fs + phase).sin()).collect()
+        (0..n)
+            .map(|i| (2.0 * PI * hz * i as f64 / fs + phase).sin())
+            .collect()
     }
 
     /// Output error versus the exact sine at the output times, ignoring the edges.

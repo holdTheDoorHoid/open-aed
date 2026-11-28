@@ -54,6 +54,8 @@ fn latch(status: SequenceStatus, test: bool) -> Latch {
         test,
         in_status_us: 0,
         consent_absent_us: 0,
+        phase1_done: false,
+        phase2_us: None,
     }
 }
 
@@ -176,6 +178,8 @@ fn over_current_comes_before_the_cap_which_comes_before_completion() {
     ] {
         let l = Latch {
             in_status_us: if cap { T.time_cap_us } else { 0 },
+            // Past phase 1, so the overall cap (not the phase-1 cap) applies.
+            phase1_done: true,
             ..latch(SequenceStatus::Active, false)
         };
         let i = LatchInputs {
@@ -237,7 +241,10 @@ fn the_permit_duration_cap_locks_out_a_rail_held_without_a_sequence() {
             t += DT;
         }
         assert_eq!(l.status, SequenceStatus::LockedOut, "test {test}");
-        assert!((T.permit_cap_us - DT..=T.permit_cap_us).contains(&t), "{t} µs");
+        assert!(
+            (T.permit_cap_us - DT..=T.permit_cap_us).contains(&t),
+            "{t} µs"
+        );
     }
 }
 
@@ -330,7 +337,10 @@ fn pads_reading_open_while_the_relay_is_on_the_bridge_does_not_withdraw_consent(
     to_delivering(&mut b);
     assert!(b.run_until(200, |b| b.board.relay == RelayPosition::Bridge));
     assert!(b.board.permit, "permit withdrawn when the pads read open");
-    assert!(b.board.request.is_some(), "request withdrawn when the pads read open");
+    assert!(
+        b.board.request.is_some(),
+        "request withdrawn when the pads read open"
+    );
     assert!(b.run_until_state(RescueState::Cpr, 1_000));
     assert_eq!(b.shocks_fired(), 1);
     assert_eq!(outcome(&b), Some(ShockOutcome::Delivered));
@@ -375,7 +385,7 @@ fn front_ends_that_do_not_recover_in_time_lead_to_attach_pads_not_a_fault() {
 fn recovery_time_is_configurable() {
     let config = Config {
         front_end_recovery_ms: 3_000,
-        ..Config::default()
+        ..super::cfg()
     };
     let mut b = Bench::with(config, super::mock::FakePlanner::default());
     b.board.front_end_recovery_ms = 2_800;
@@ -415,14 +425,19 @@ fn cancel_before_the_sequence_starts_withdraws_and_after_it_starts_does_nothing(
 #[test]
 fn chest_movement_before_the_rail_rises_still_withdraws_the_request() {
     // D-37 holds up to the moment the pads leave the front ends.
-    let mut b = Bench::with_chest(Config::default());
+    let mut b = Bench::with_chest(super::cfg());
     b.board.relay_transfer_us = 4_000;
     b.board.rhythm = RhythmDecision::Shockable;
     assert!(b.run_until_state(RescueState::Countdown, 60_000));
     // The supervisor refuses (its own pad reading out of range), so the
     // request waits with the rail down.
     b.board.sup_pad_ohms = Some(300);
-    assert!(b.run_until_state(RescueState::Delivering, 5_000));
+    assert!(
+        b.run_until_state(RescueState::Delivering, 5_000),
+        "{:?} {:?}",
+        b.state_sequence(),
+        b.rescue.fault()
+    );
     b.board.set_chest(BoardChest::Compressing);
     b.run_ms(100);
     assert_eq!(b.shocks_fired(), 0);
@@ -432,29 +447,78 @@ fn chest_movement_before_the_rail_rises_still_withdraws_the_request() {
     );
 }
 
-type Case = (&'static str, fn(&mut Bench), ShockOutcome, Option<FaultKind>);
+type Case = (
+    &'static str,
+    fn(&mut Bench),
+    ShockOutcome,
+    Option<FaultKind>,
+);
 
 #[test]
 fn each_way_a_sequence_can_go_wrong_has_its_own_outcome() {
     let cases: Vec<Case> = std::vec![
-        ("relay stays at rest", |b| b.board.relay_stuck_front = true, ShockOutcome::RelayDidNotTransfer, None),
-        ("bridge never starts", |b| b.board.bridge_no_start = true, ShockOutcome::NotStarted, None),
-        ("timer stuck: cap", |b| b.board.timer_stuck = true, ShockOutcome::TimeCapTripped, Some(FaultKind::DeliveryFault)),
-        ("over-current", |b| b.board.output_fault = true, ShockOutcome::OverCurrentTripped, Some(FaultKind::DeliveryFault)),
-        ("capacitor did not fall", |b| b.board.residual = 1.0, ShockOutcome::NotDelivered, None),
-        ("fell to nothing", |b| b.board.residual = 0.01, ShockOutcome::ResidualImplausible, Some(FaultKind::DeliveryFault)),
-        ("supervisor refuses (its own pad reading out of range)", |b| b.board.sup_pad_ohms = Some(300), ShockOutcome::TimedOut, None),
-        ("permit cap of the hardware is shorter than the start", |b| {
-            b.board.relay_transfer_us = 30_000;
-            b.board.latch_timing.permit_cap_us = 20_000;
-        }, ShockOutcome::RefusedByInterlock, None),
+        (
+            "relay stays at rest",
+            |b| b.board.relay_stuck_front = true,
+            ShockOutcome::RelayDidNotTransfer,
+            None
+        ),
+        (
+            "bridge never starts",
+            |b| b.board.bridge_no_start = true,
+            ShockOutcome::NotStarted,
+            None
+        ),
+        // D-63: a stuck phase timer is now cut by the phase-1 cap.
+        (
+            "timer stuck: cap",
+            |b| b.board.timer_stuck = true,
+            ShockOutcome::PhaseCapTripped,
+            Some(FaultKind::DeliveryFault)
+        ),
+        (
+            "over-current",
+            |b| b.board.output_fault = true,
+            ShockOutcome::OverCurrentTripped,
+            Some(FaultKind::DeliveryFault)
+        ),
+        (
+            "capacitor did not fall",
+            |b| b.board.residual = 1.0,
+            ShockOutcome::NotDelivered,
+            None
+        ),
+        (
+            "fell to nothing",
+            |b| b.board.residual = 0.01,
+            ShockOutcome::ResidualImplausible,
+            Some(FaultKind::DeliveryFault)
+        ),
+        (
+            "supervisor refuses (its own pad reading out of range)",
+            |b| b.board.sup_pad_ohms = Some(300),
+            ShockOutcome::TimedOut,
+            None
+        ),
+        (
+            "permit cap of the hardware is shorter than the start",
+            |b| {
+                b.board.relay_transfer_us = 30_000;
+                b.board.latch_timing.permit_cap_us = 20_000;
+            },
+            ShockOutcome::RefusedByInterlock,
+            None
+        ),
     ];
     let mut seen = Vec::new();
     for (name, setup, expect, fault) in cases {
         let mut b = Bench::new();
         b.run_to_countdown();
         setup(&mut b);
-        assert!(b.run_until(5_000, |b| outcome(b).is_some()), "{name}: no outcome");
+        assert!(
+            b.run_until(5_000, |b| outcome(b).is_some()),
+            "{name}: no outcome"
+        );
         assert_eq!(outcome(&b), Some(expect), "{name}");
         b.run_ms(2_000);
         if let Some(f) = fault {
@@ -489,7 +553,9 @@ fn a_permit_line_stuck_on_is_found_at_switch_on() {
     assert!(b.run_until(3_000, |b| b.rescue.self_test_result().is_some()));
     assert_eq!(
         b.rescue.self_test_result(),
-        Some(Err(crate::selftest::SelfTestFailure::InterlockPassedRequestAlone))
+        Some(Err(
+            crate::selftest::SelfTestFailure::InterlockPassedRequestAlone
+        ))
     );
 }
 
@@ -526,13 +592,19 @@ fn the_switch_on_self_test_exercises_the_interlock_without_moving_the_relay() {
         .events()
         .iter()
         .any(|e| e.event == Event::SupervisorTestPermitted));
-    assert!(b.board.requests.is_empty(), "no shock request in the self-test");
+    assert!(
+        b.board.requests.is_empty(),
+        "no shock request in the self-test"
+    );
 }
 
 #[test]
 fn a_stuck_bridge_switch_is_found_at_switch_on() {
     for step in BridgeTestStep::ALL {
-        for o in [BridgeTestOutcome::DoesNotTurnOn, BridgeTestOutcome::DoesNotTurnOff] {
+        for o in [
+            BridgeTestOutcome::DoesNotTurnOn,
+            BridgeTestOutcome::DoesNotTurnOff,
+        ] {
             let mut b = Bench::new();
             b.board.bridge_switch_fault = Some((step, o));
             assert!(b.run_until(3_000, |b| b.rescue.self_test_result().is_some()));
@@ -560,7 +632,10 @@ fn a_relay_that_does_not_rest_on_the_front_ends_is_found_at_switch_on() {
 #[test]
 fn a_failed_open_discharge_path_is_found_at_switch_on() {
     use crate::selftest::SelfTestFailure as F;
-    for (a, expect) in [(true, F::DischargePathASlow), (false, F::DischargePathBSlow)] {
+    for (a, expect) in [
+        (true, F::DischargePathASlow),
+        (false, F::DischargePathBSlow),
+    ] {
         let mut b = Bench::new();
         if a {
             b.board.path_a_broken = true;
@@ -589,7 +664,10 @@ fn mode_switch_contacts_that_disagree_are_recorded_and_shown_not_ready_and_the_p
     assert!(b.run_until(2_000, |b| b.rescue.self_test_result().is_some()));
     b.run_ms(1_000);
     assert!(b.rescue.mode_contacts_disagree());
-    assert!(!b.board.ready, "ready indicator on with the contacts disagreeing");
+    assert!(
+        !b.board.ready,
+        "ready indicator on with the contacts disagreeing"
+    );
     assert!(b.has_event(|e| *e
         == Event::ModeContactsDisagree {
             primary: PatientMode::Child,

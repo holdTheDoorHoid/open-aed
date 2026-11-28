@@ -255,8 +255,14 @@ pub fn build(case: &Case, s: &RefSettings) -> Reference {
             if y[lo..hi].iter().any(|&w| w > v) || y[k - 1] >= v {
                 continue;
             }
-            let pre = y[k.saturating_sub(side)..k].iter().copied().fold(f64::INFINITY, f64::min);
-            let post = y[k + 1..(k + side + 1).min(m)].iter().copied().fold(f64::INFINITY, f64::min);
+            let pre = y[k.saturating_sub(side)..k]
+                .iter()
+                .copied()
+                .fold(f64::INFINITY, f64::min);
+            let post = y[k + 1..(k + side + 1).min(m)]
+                .iter()
+                .copied()
+                .fold(f64::INFINITY, f64::min);
             if v - pre >= s.min_pp && v - post >= s.min_pp {
                 // Merge peaks closer than the shortest interval: keep the larger.
                 if let Some(last) = peaks.last_mut() {
@@ -321,7 +327,8 @@ pub fn build(case: &Case, s: &RefSettings) -> Reference {
                 q += 1;
             }
             if q - r >= s.min_run {
-                let mut gaps: Vec<usize> = (r + 1..q).map(|j| peaks[j].0 - peaks[j - 1].0).collect();
+                let mut gaps: Vec<usize> =
+                    (r + 1..q).map(|j| peaks[j].0 - peaks[j - 1].0).collect();
                 gaps.sort_unstable();
                 let med = gaps[gaps.len() / 2];
                 let a = peaks[r].0.saturating_sub(med / 2);

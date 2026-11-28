@@ -31,15 +31,16 @@
 pub mod campaign;
 pub mod hw;
 pub mod plant;
+pub mod record;
 pub mod report;
 pub mod runner;
 pub mod scenario;
 pub mod standby;
 pub mod thermal;
-pub mod record;
 
 pub use plant::{
-    ConsentLine, Fault, Plant, PlantConfig, SensorModel, ShockEnd, ShockRecord, TestSequenceRecord,
+    ConsentLine, Fault, HwCorner, HwTiming, Plant, PlantConfig, SensorModel, ShockEnd, ShockRecord,
+    TestSequenceRecord,
 };
 pub use runner::{run, Rule, RunResult, ShockTiming, Simulation, Violation};
 pub use scenario::{by_name, catalogue, Action, Expect, Noise, Responder, Scenario, Trigger};

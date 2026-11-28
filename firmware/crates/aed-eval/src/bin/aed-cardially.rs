@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use aed_eval::cardially::eval::{build_report, evaluate_with, records_csv, Meta};
-use aed_eval::eval::Start;
 use aed_eval::cardially::{dataset_dir, load, unpaired};
+use aed_eval::eval::Start;
 use aed_eval::split::sha256_hex;
 use aed_rhythm::Settings;
 
@@ -28,24 +28,43 @@ fn usage() {
 
 fn git(args: &[&str]) -> Option<String> {
     let dir = env!("CARGO_MANIFEST_DIR");
-    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn commit_text() -> String {
     let Some(hash) = git(&["rev-parse", "--short", "HEAD"]) else {
         return "unknown (git not available)".into();
     };
-    let rhythm = git(&["status", "--porcelain", "--", "../aed-rhythm", "../aed-types"]).unwrap_or_default();
+    let rhythm = git(&[
+        "status",
+        "--porcelain",
+        "--",
+        "../aed-rhythm",
+        "../aed-types",
+    ])
+    .unwrap_or_default();
     if rhythm.is_empty() {
         format!("`{hash}` (no uncommitted changes in `aed-rhythm` or `aed-types`)")
     } else {
-        format!("`{hash}` (**uncommitted changes in the analyser**: {})", rhythm.lines().collect::<Vec<_>>().join("; "))
+        format!(
+            "`{hash}` (**uncommitted changes in the analyser**: {})",
+            rhythm.lines().collect::<Vec<_>>().join("; ")
+        )
     }
 }
 
 fn today() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let days = (secs / 86_400) as i64;
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -60,7 +79,8 @@ fn today() -> String {
 }
 
 fn main() -> ExitCode {
-    let mut data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../data/mendeley/cardially");
+    let mut data =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../data/mendeley/cardially");
     let mut out: Option<PathBuf> = None;
     let mut csv: Option<PathBuf> = None;
     let mut threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
@@ -109,9 +129,15 @@ fn main() -> ExitCode {
                     p.off_grid,
                     p.conflicts,
                     p.clock_breaks,
-                    p.shock_delivered_s(1).map_or(String::new(), |t| format!("{t:.2}")),
+                    p.shock_delivered_s(1)
+                        .map_or(String::new(), |t| format!("{t:.2}")),
                     it.duplicate_of.as_deref().unwrap_or(""),
-                    p.events.iter().map(|e| format!("{:.2}s {}", e.t_s, e.text)).collect::<Vec<_>>().join("|").replace(',', ";")
+                    p.events
+                        .iter()
+                        .map(|e| format!("{:.2}s {}", e.t_s, e.text))
+                        .collect::<Vec<_>>()
+                        .join("|")
+                        .replace(',', ";")
                 ),
                 Err(e) => println!("{},error: {},,,,,,,,,,", it.key(), e.replace(',', ";")),
             }
@@ -120,13 +146,18 @@ fn main() -> ExitCode {
     }
     let results: Vec<_> = {
         let next = std::sync::atomic::AtomicUsize::new(0);
-        let slots: std::sync::Mutex<Vec<(usize, aed_eval::cardially::eval::RecordResult)>> = std::sync::Mutex::new(Vec::new());
+        let slots: std::sync::Mutex<Vec<(usize, aed_eval::cardially::eval::RecordResult)>> =
+            std::sync::Mutex::new(Vec::new());
         std::thread::scope(|s| {
             for _ in 0..threads.max(1) {
                 s.spawn(|| loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(it) = items.get(i) else { break };
-                    let start = if warm { Start::DEVICE_WARM } else { Start::Cold };
+                    let start = if warm {
+                        Start::DEVICE_WARM
+                    } else {
+                        Start::Cold
+                    };
                     let r = evaluate_with(it, Settings::DEFAULT, start);
                     if let Ok(mut v) = slots.lock() {
                         v.push((i, r));
@@ -163,7 +194,10 @@ fn main() -> ExitCode {
             eprintln!("cannot write {}: {e}", p.display());
             return ExitCode::FAILURE;
         }
-        eprintln!("Per-recording results written to {} (do not commit it).", p.display());
+        eprintln!(
+            "Per-recording results written to {} (do not commit it).",
+            p.display()
+        );
     }
     ExitCode::SUCCESS
 }

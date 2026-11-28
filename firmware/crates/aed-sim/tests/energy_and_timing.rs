@@ -27,7 +27,10 @@ fn one_shock(mode: PatientMode, ohms: f64) -> aed_sim::RunResult {
 fn check_mode(mode: PatientMode) {
     let target = WaveformConfig::target_joules(mode);
     let tolerance = WaveformConfig::default().energy_tolerance;
-    println!("{mode:?} mode, target {target} J, tolerance ±{:.0}% (MODEL figures)", tolerance * 100.0);
+    println!(
+        "{mode:?} mode, target {target} J, tolerance ±{:.0}% (MODEL figures)",
+        tolerance * 100.0
+    );
     println!("| Ω | from V | delivered J | error | peak A | phase 1 ms | phase 2 ms | left V |");
     for ohms in [25.0, 50.0, 80.0, 125.0, 175.0] {
         let r = one_shock(mode, ohms);
@@ -79,8 +82,16 @@ fn timing_measurements_are_reported() {
     );
     // Loose sanity bounds only: these are measurements, not requirements.
     let cfg = adult.config;
-    assert!(t.countdown_ms.abs_diff(cfg.countdown_ms) <= 50, "countdown {}", t.countdown_ms);
-    assert!(t.charge_ms <= 8_000, "charge took {} ms (requirement: under 8 s)", t.charge_ms);
+    assert!(
+        t.countdown_ms.abs_diff(cfg.countdown_ms) <= 50,
+        "countdown {}",
+        t.countdown_ms
+    );
+    assert!(
+        t.charge_ms <= 8_000,
+        "charge took {} ms (requirement: under 8 s)",
+        t.charge_ms
+    );
     assert!(t.analysis_ms <= cfg.analysis_time_limit_ms);
     assert!(pads_to_shock < 30_000);
 }

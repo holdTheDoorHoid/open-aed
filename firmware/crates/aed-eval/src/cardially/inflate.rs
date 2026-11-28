@@ -47,7 +47,11 @@ struct Bits<'a> {
 
 impl<'a> Bits<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0, bit: 0 }
+        Self {
+            data,
+            pos: 0,
+            bit: 0,
+        }
     }
 
     fn get(&mut self, n: u32) -> Result<u32, InflateError> {
@@ -83,7 +87,9 @@ impl Huffman {
     fn new(lengths: &[u8]) -> Result<Self, InflateError> {
         let mut counts = [0_u16; 16];
         for &l in lengths {
-            let slot = counts.get_mut(usize::from(l)).ok_or(InflateError::Corrupt("code length"))?;
+            let slot = counts
+                .get_mut(usize::from(l))
+                .ok_or(InflateError::Corrupt("code length"))?;
             *slot += 1;
         }
         counts[0] = 0;
@@ -104,8 +110,12 @@ impl Huffman {
         let mut symbols = vec![0_u16; lengths.len()];
         for (sym, &l) in lengths.iter().enumerate() {
             if l != 0 {
-                let o = offs.get_mut(usize::from(l)).ok_or(InflateError::Corrupt("code length"))?;
-                let slot = symbols.get_mut(usize::from(*o)).ok_or(InflateError::Corrupt("table"))?;
+                let o = offs
+                    .get_mut(usize::from(l))
+                    .ok_or(InflateError::Corrupt("code length"))?;
+                let slot = symbols
+                    .get_mut(usize::from(*o))
+                    .ok_or(InflateError::Corrupt("table"))?;
                 *slot = sym as u16;
                 *o += 1;
             }
@@ -140,13 +150,16 @@ const LEN_BASE: [u16; 29] = [
     3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
     163, 195, 227, 258,
 ];
-const LEN_EXTRA: [u8; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+const LEN_EXTRA: [u8; 29] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+];
 const DIST_BASE: [u16; 30] = [
-    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049,
-    3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 const DIST_EXTRA: [u8; 30] = [
-    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
 ];
 
 fn codes(
@@ -167,12 +180,20 @@ fn codes(
             return Ok(());
         } else {
             let i = usize::from(sym - 257);
-            let base = *LEN_BASE.get(i).ok_or(InflateError::Corrupt("length code"))?;
-            let extra = *LEN_EXTRA.get(i).ok_or(InflateError::Corrupt("length code"))?;
+            let base = *LEN_BASE
+                .get(i)
+                .ok_or(InflateError::Corrupt("length code"))?;
+            let extra = *LEN_EXTRA
+                .get(i)
+                .ok_or(InflateError::Corrupt("length code"))?;
             let len = usize::from(base) + b.get(u32::from(extra))? as usize;
             let d = usize::from(dist.decode(b)?);
-            let dbase = *DIST_BASE.get(d).ok_or(InflateError::Corrupt("distance code"))?;
-            let dextra = *DIST_EXTRA.get(d).ok_or(InflateError::Corrupt("distance code"))?;
+            let dbase = *DIST_BASE
+                .get(d)
+                .ok_or(InflateError::Corrupt("distance code"))?;
+            let dextra = *DIST_EXTRA
+                .get(d)
+                .ok_or(InflateError::Corrupt("distance code"))?;
             let distance = usize::from(dbase) + b.get(u32::from(dextra))? as usize;
             if distance > out.len() {
                 return Err(InflateError::Corrupt("distance before start"));
@@ -203,7 +224,9 @@ fn fixed_tables() -> Result<(Huffman, Huffman), InflateError> {
 }
 
 fn dynamic_tables(b: &mut Bits<'_>) -> Result<(Huffman, Huffman), InflateError> {
-    const ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+    const ORDER: [usize; 19] = [
+        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+    ];
     let nlen = b.get(5)? as usize + 257;
     let ndist = b.get(5)? as usize + 1;
     let ncode = b.get(4)? as usize + 4;
@@ -224,7 +247,9 @@ fn dynamic_tables(b: &mut Bits<'_>) -> Result<(Huffman, Huffman), InflateError> 
         let (value, repeat) = match sym {
             0..=15 => (sym as u8, 1),
             16 => {
-                let prev = *lengths.get(i.wrapping_sub(1)).ok_or(InflateError::Corrupt("repeat at start"))?;
+                let prev = *lengths
+                    .get(i.wrapping_sub(1))
+                    .ok_or(InflateError::Corrupt("repeat at start"))?;
                 (prev, 3 + b.get(2)? as usize)
             }
             17 => (0, 3 + b.get(3)? as usize),
@@ -267,7 +292,9 @@ pub fn inflate_raw(data: &[u8], cap: usize) -> Result<(Vec<u8>, usize), InflateE
                 if len != !nlen {
                     return Err(InflateError::Corrupt("stored length"));
                 }
-                let body = data.get(p + 4..p + 4 + usize::from(len)).ok_or(InflateError::Truncated)?;
+                let body = data
+                    .get(p + 4..p + 4 + usize::from(len))
+                    .ok_or(InflateError::Truncated)?;
                 if out.len() + body.len() > cap {
                     return Err(InflateError::TooLarge);
                 }
@@ -340,23 +367,26 @@ mod tests {
 
     // zlib.compress(b"hello hello hello hello", 9): one fixed-Huffman block with a back-reference.
     const HELLO: [u8; 16] = [
-        0x78, 0xda, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0xc8, 0x40, 0x27, 0x01, 0x68, 0x03, 0x08, 0xb1,
+        0x78, 0xda, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0xc8, 0x40, 0x27, 0x01, 0x68, 0x03, 0x08,
+        0xb1,
     ];
 
     // zlib.compress(text, 9) where text is "{i*i % 97} {i*7 % 13} l\n" for i in 0..20:
     // one dynamic-Huffman block (generated with Python's zlib).
     const DYNAMIC: [u8; 83] = [
-        0x78, 0xda, 0x1d, 0x8c, 0xb9, 0x11, 0xc0, 0x40, 0x0c, 0x02, 0x73, 0x57, 0x41, 0x09, 0xa7, 0xe7,
-        0x24, 0xab, 0x27, 0xf7, 0x1f, 0x1b, 0x91, 0xb0, 0x33, 0x0c, 0xec, 0xc1, 0xc1, 0xf7, 0x18, 0x9a,
-        0x99, 0x30, 0xe6, 0xe0, 0xdd, 0xa6, 0xe0, 0x84, 0x5f, 0x0c, 0x11, 0x85, 0xd8, 0xc1, 0xc0, 0x76,
-        0x5e, 0x89, 0x24, 0x5e, 0x83, 0xed, 0x23, 0x70, 0x77, 0xca, 0xfb, 0x5e, 0xb2, 0x51, 0x44, 0xbb,
-        0xcc, 0x2e, 0x73, 0x98, 0xd4, 0xe5, 0x72, 0xcf, 0x95, 0x3b, 0x42, 0xee, 0x3e, 0x72, 0xff, 0xef,
-        0x3e, 0x19, 0xc5,
+        0x78, 0xda, 0x1d, 0x8c, 0xb9, 0x11, 0xc0, 0x40, 0x0c, 0x02, 0x73, 0x57, 0x41, 0x09, 0xa7,
+        0xe7, 0x24, 0xab, 0x27, 0xf7, 0x1f, 0x1b, 0x91, 0xb0, 0x33, 0x0c, 0xec, 0xc1, 0xc1, 0xf7,
+        0x18, 0x9a, 0x99, 0x30, 0xe6, 0xe0, 0xdd, 0xa6, 0xe0, 0x84, 0x5f, 0x0c, 0x11, 0x85, 0xd8,
+        0xc1, 0xc0, 0x76, 0x5e, 0x89, 0x24, 0x5e, 0x83, 0xed, 0x23, 0x70, 0x77, 0xca, 0xfb, 0x5e,
+        0xb2, 0x51, 0x44, 0xbb, 0xcc, 0x2e, 0x73, 0x98, 0xd4, 0xe5, 0x72, 0xcf, 0x95, 0x3b, 0x42,
+        0xee, 0x3e, 0x72, 0xff, 0xef, 0x3e, 0x19, 0xc5,
     ];
 
     #[test]
     fn dynamic_huffman_block() {
-        let want: String = (0..20_u32).map(|i| format!("{} {} l\n", i * i % 97, i * 7 % 13)).collect();
+        let want: String = (0..20_u32)
+            .map(|i| format!("{} {} l\n", i * i % 97, i * 7 % 13))
+            .collect();
         assert_eq!(inflate_zlib(&DYNAMIC, 1000).unwrap(), want.as_bytes());
     }
 
@@ -370,7 +400,10 @@ mod tests {
 
     #[test]
     fn fixed_huffman_with_backreference() {
-        assert_eq!(inflate_zlib(&HELLO, 100).unwrap(), b"hello hello hello hello");
+        assert_eq!(
+            inflate_zlib(&HELLO, 100).unwrap(),
+            b"hello hello hello hello"
+        );
         let mut bad = HELLO;
         bad[15] ^= 1;
         assert_eq!(inflate_zlib(&bad, 100), Err(InflateError::ChecksumMismatch));
@@ -379,11 +412,20 @@ mod tests {
     #[test]
     fn rejects_bad_input_without_panicking() {
         assert_eq!(inflate_zlib(&[], 10), Err(InflateError::Truncated));
-        assert_eq!(inflate_zlib(&[0x78, 0x00], 10), Err(InflateError::BadZlibHeader));
+        assert_eq!(
+            inflate_zlib(&[0x78, 0x00], 10),
+            Err(InflateError::BadZlibHeader)
+        );
         assert!(inflate_zlib(&HELLO[..8], 100).is_err());
-        assert_eq!(inflate_raw(&[0x07], 10).map(|_| ()), Err(InflateError::Corrupt("block type 3")));
+        assert_eq!(
+            inflate_raw(&[0x07], 10).map(|_| ()),
+            Err(InflateError::Corrupt("block type 3"))
+        );
         // Output cap.
-        assert_eq!(inflate_raw(&HELLO[2..], 5).map(|_| ()), Err(InflateError::TooLarge));
+        assert_eq!(
+            inflate_raw(&HELLO[2..], 5).map(|_| ()),
+            Err(InflateError::TooLarge)
+        );
         // Every truncation and every single-byte corruption must return, not panic.
         for n in 0..DYNAMIC.len() {
             assert!(inflate_zlib(&DYNAMIC[..n], 1000).is_err());

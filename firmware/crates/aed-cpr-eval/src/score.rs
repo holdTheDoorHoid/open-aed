@@ -256,7 +256,9 @@ pub fn score(case: &Case, reference: &Reference, det: &DetectorRun) -> CaseScore
             if let Some(d) = (run.start..run.end).find(|&x| det.states[x] != ChestState::HandsOff) {
                 out.onset_s.push(s(d - run.start));
             }
-            if let Some(d) = (run.start..run.end).find(|&x| det.states[x] == ChestState::Compressing) {
+            if let Some(d) =
+                (run.start..run.end).find(|&x| det.states[x] == ChestState::Compressing)
+            {
                 out.onset_comp_s.push(s(d - run.start));
             }
         }
@@ -264,7 +266,8 @@ pub fn score(case: &Case, reference: &Reference, det: &DetectorRun) -> CaseScore
         let clean_after = next_start >= run.end + quiet
             && (run.end..run.end + quiet).all(|x| x < n && reference.valid[x]);
         if clean_after {
-            if let Some(d) = (run.end..next_start).find(|&x| det.states[x] == ChestState::HandsOff) {
+            if let Some(d) = (run.end..next_start).find(|&x| det.states[x] == ChestState::HandsOff)
+            {
                 out.offset_s.push(s(d - run.end));
             }
         }

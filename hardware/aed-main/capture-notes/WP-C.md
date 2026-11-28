@@ -10,6 +10,183 @@ tables `hardware/aed-main/specs/06_ui.toml`, `07_sense_main.toml`, `08_sense_sup
 `hardware/lib/src/aed_uisense.toml`. Every number below gives its source; "[UNVERIFIED]" means looked for and not
 confirmed.
 
+## Revision 0.3 (contract issue 3, change order `rev3-changes.md` WP-C C-1…C-7)
+
+Applied 27 November 2026 against `docs/HARDWARE_DESIGN.md` v0.3 and `contract.md` issue 3. Sections 1–9 below
+describe the issue-2 capture; where they disagree with this section (notably §1 and §3.4 on the over-voltage
+comparator, and contract issue C-3), this section wins. Checks: `hardware/aed-main/sim/rev3-wpc/` —
+`ovp_band.py` (calculation) and `ovp_latch.cir` (ngspice, hand-built models; **simulated**, nothing measured).
+
+### R3.1 In plain language
+
+- **The main measurement now notices a broken wire.** A very large resistor (1,000 MΩ) gently pulls the main
+  controller's capacitor-voltage input up toward its 2.5 V reference. If the wire from the high-voltage board
+  breaks, the reading climbs within about a quarter of a second and the "capacitor is below 60 V" signal drops,
+  so the low-voltage self-test is refused. With the wire intact it adds a fixed error of well under one volt,
+  which the factory calibration removes.
+- **The hardware over-voltage trip now latches and sits lower.** It trips at about 2,107 V (worst case
+  2,071–2,141 V over −20 to +70 °C), which is above any normal charge (top 2,008.6 V) and below the
+  capacitor's 2,200 V rating. Once tripped it stays tripped, holding both discharge paths open until the
+  capacitor is empty, until the supervisor sends a reset *pulse* (a reset wire stuck "on" cannot keep it
+  disarmed) or its supply is lost.
+- **The supervisor can test it every day.** A test wire pushes a fake "over-voltage" into the measurement while
+  the capacitor is empty; the trip must fire, stay latched after the test wire is released, and clear on a reset.
+- **One change from the change order.** The change order fed that fake signal in *after* the resistor that
+  carries the real signal to the trip circuit. If that resistor broke open, the real trip would be dead but the
+  daily test would still pass. I feed the test in one step earlier (at the input of the measurement amplifier),
+  so the test now goes through the same path as a real over-voltage. Simulated both ways; see R3.5.
+- **One weakness I could not close inside these sheets:** a partly-failed reset transistor (or dirt on the board)
+  that leaks a little current away from the trip input raises the trip point without making the daily test fail.
+  The firmware over-voltage limit still covers it, but it is a hidden fault. The design authority should decide
+  how to test for it (R3.6, problem P-2).
+
+### R3.2 Changes applied (designators)
+
+| # | Sheet | Done | Notes |
+|---|---|---|---|
+| C-1 | 07 | **R718** 1 GΩ 1 %, 1206, Vishay CRHV1206AF1G00FKE5, `VREF_M` → `VCAPM_IN` | as ordered |
+| C-2 | 08 | **R805** 36.5 k → **100 k** 0.1 % (TNPW0603100KBEEA); **R806** 100 k unchanged; **R807** 9.09 k → **21.5 k** 0.1 % (TNPW060321K5BEEA); **R808** 15.6 k unchanged | as ordered |
+| C-3 | 08 | **C812** 100 nF X7R (`OVP_RST`–`OVP_RG`), **R809** 100 k (`OVP_RG`–GND), **Q801** BSS138 (G `OVP_RG`, S GND, D `OVP_RSD`), **R810** 1 k (`OVP_RSD`–`OVP_SENSE`), **R811** 100 k (`OVP_RST`–GND) | as ordered |
+| C-4 | 08 | **R813** 100 k (`OVP_TEST`–GND); **R812 4.7 k** (`OVP_TEST`–`OVP_TI`); **D801** BAS116LT1G (A `OVP_TI`, K **`VCAPS_IN`**) | **departure**: injection node `VCAPS_IN` instead of `OVP_SENSE`, R812 4.7 k instead of 22 k (R3.5) |
+| C-5 | 08 | sheet comment, group notes and part descriptions rewritten: release only by an `OVP_RST` edge or `3V3_SUP` loss; the 2,160 V / "releases near 1,000 V" text removed | |
+| C-6 | 06 | nothing to change: sheet 06 has used only `3V3_AON`, `5V0_SYS` and `GND` since its issue-2 capture; contract §4 already lists 06 off `3V3_MAIN` | |
+| C-7 | 07 | no change (HVCR2512 string stays; owner question 4) | |
+
+New global nets on 08: `OVP_RST`, `OVP_TEST` (contract §5.4 names, active high, default resistors R811, R813).
+New local nets: `OVP_RG`, `OVP_RSD`, `OVP_TI`. Part counts: 06 44, 07 31 (+1), 08 31 (+8). D801 uses WP-D's
+symbol `aed_logic:BAS116LT1G` (library rule: defined once; not duplicated in `aed_uisense`). Symbol library
+`aed_uisense.toml` unchanged (Q801 is the stock `Transistor_FET:BSS138`, pins 1 G / 2 S / 3 D as onsemi CASE 318).
+
+### R3.3 Arithmetic
+
+**R718 (07).** Open tap: C701 10 nF charges from VREF_M through 1 GΩ, τ = 10 s; `LOWV_OK` falls at 54.7 mV
+(§3.3): t = 10 s × ln(2.5 / (2.5 − 0.0547)) = **0.22 s** [CALC] (LR §5.2 simulated 0.16–0.37 s over the
+comparator band). Intact wire: 2.5 nA × (R701 100 k + 50.3 k tap source on 11) = **+0.38 mV = +0.38 V** of
+reading at 0 V, +0.08 V at 1,950 V [CALC]; LR §5.2's simulation gives +0.22 / −0.07 V with its own bias-current
+assumption — both are a fixed offset/gain term removed by calibration. Voltage across R718 ≤ 2.5 V (rating
+1,500 V); TCR 100 ppm/K × 45 K changes the offset by < 0.002 V. Failures: R718 open = issue-2 behaviour (open tap
+not detected; latent); R718 short = reading 2,500 V, refused (detected).
+
+**Over-voltage threshold (08).** OVP_REF = 2.5 V × 15.6 k / (21.5 k + 15.6 k) = **1.05121 V**. Output low
+before the trip, Rin = Rf: trip at VCAPS_BUF = 2 × 1.05121 = 2.10243 V → × 1,002.0 = **2,106.6 V** nominal.
+Latched: with `OVP_TRIP` = VOH, OVP_SENSE = (VCAPS_BUF + VOH)/2 ≥ VOH/2 = 1.6 V > 1.05 V for any tap ≥ 0 V; VOH
+need only exceed 2 × 1.0512 + 2 mV = 2.105 V.
+
+**Trip band, worst case, −20…+70 °C** (`ovp_band.py`; every term at its limit at once; 200,000-sample uniform Monte
+Carlo alongside):
+
+| Term | Assumption and source | Effect on trip |
+|---|---|---:|
+| ADR3425 | 0.1 % initial + 8 ppm/K × 45 K + life 500 ppm **assumed** (30 ppm/1000 h at 50 °C stated) + 70 ppm hysteresis (Rev. B, issue-2 notes) | ±4.1 V |
+| R807, R808 | TNPW 0.1 % + 25 ppm/K × 45 K + 0.05 % life **assumed**, each independent | ±3.2 V each |
+| R805, R806 | same | ±2.8 V each |
+| TLV9031 Vos | ±2 mV, −40…125 °C (SNOSDA3H §5.7) | ±4.0 V |
+| TLV9031 VOL feeding R806 | ≤ 1 mV at ≤ 20 µA [EST from 175 mV at 4 mA] | −1.0 V |
+| Leakage on OVP_SENSE | Q801 off-state ≤ 100 nA [EST; datasheet: 100 nA at 30 V, 25 °C] + TLV9031 IB 5 pA typ | 0 … +10.0 V |
+| Follower | OPA388 Vos + IB × source (issue-2 §4) | ±0.1 V |
+| Supervisor string ratio | 0.2 % + 0.225 % temperature + 0.25 % life (CS Q4) | ±14.2 V |
+| **Band** | without / with the 100 nA leakage estimate | **2,071.5 – 2,141.1 V / 2,071.5 – 2,151.3 V** |
+| Monte Carlo (with leakage) | 0.1 % … 99.9 % | 2,085 – 2,137 V |
+
+Checks against the design (§B4.4): bottom **62.9 V above** the top of a normal adult charge (2,008.6 V) — no
+hardware layer stops a normal charge; top **58.9 V below** the 2,200 V rating (48.7 V with the leakage estimate)
+— confirmed. The change order's 2,073–2,142 V agrees within 2 V. Note the band **overlaps** the firmware limit L1
+(2,043–2,098 V): on some units the latch, not the firmware, acts first (harmless: both dump; a latched trip then
+needs an `OVP_RST`). Sheet-08 parts alone: trip at VCAPS_BUF 2.0815–2.1326 V.
+
+**Reset.** Gate pulse 3.3 V decaying with 100 k × 100 nF = 10 ms; Q801 on for 10 ms × ln(3.3 / VGS(th)) =
+7.9–14 ms (VGS(th) 0.8–1.5 V at 1 mA, BSS138/D Rev. 7); OVP_SENSE during reset = 3.22 V × 1 k / 101 k = 32 mV
+< 1.05 V. A stuck-high line: gate below 0.8 V after 14 ms, so it cannot hold the latch clear. Falling edge:
+gate ≈ −3.3 V (VGS ±20 V).
+
+**Test (as drawn).** OVP_TEST high: VCAPS_IN = (V_OH − VF) × 149.8 k / 154.5 k. With 3V3_SUP 3.2–3.4 V
+[UNVERIFIED, WP-A] and VF 0.45–0.70 V at 15–20 µA [EST]: **2.42–2.86 V**; even at the datasheet's VF ceiling
+(0.90 V, which is specified at 1 mA) and 3.2 V: 2.23 V — above the sheet-08 band top 2.133 V. Rise time
+(4.7 k ∥ 149.8 k) × 10 nF = 46 µs (T-6 wants ≤ 1 ms). Test low: D801 reverse-biased by ≤ 2.2 V; leakage
+≤ 5 nA (25 °C, 75 V) × 150 k = 0.75 mV = **0.75 V** of supervisor reading; at the 150 °C ceiling (80 nA) 12 V,
+which would still leave the supervisor chain inside D-28 at 1,950 V (13.0 + 12 = 25 V of 26.5 V) [CALC].
+
+### R3.4 Datasheets consulted
+
+| Part | Document | Opened? |
+|---|---|---|
+| BAS116LT1G (D801) | onsemi BAS116LT1/D **Rev. 14, Oct 2026**: pin 1 anode, 3 cathode, 2 NC (CASE 318 style 8); VR 75 V; IR ≤ 5 nA (75 V, 25 °C), ≤ 80 nA (150 °C); VF ≤ 0.90 V at 1 mA | yes, onsemi.com |
+| BSS138 (Q801) | onsemi BSS138/D **Rev. 7, Apr 2024**: pins 1 G, 2 S, 3 D; VGS(th) 0.8–1.5 V (1 mA), −2 mV/K; VGSS ±20 V; IDSS ≤ 0.5 µA (50 V), ≤ 100 nA (30 V), ≤ 5 µA (50 V, 125 °C) | yes, onsemi.com |
+| CRHV1206 (R718) | Vishay CRHV, document 68002, **revision 12-Nov-2024** (the change order cites 18-Apr-17): 1206 1,500 V; 2 M–1 G at 1–20 %; TCR 100 ppm/K "reference only"; global ordering-code key | yes, vishay.com |
+| TLV9031 (U803) | TI SNOSDA3H, **Nov 2025**: Vos ±2 mV (−40…125 °C), IB 5 pA typ, **no internal hysteresis**, VOL/VOH ≤ 175 mV at 4 mA; **rev. H deleted the power-on-reset feature** | yes, ti.com |
+| ADR3425, OPA388, TNPW, CRCW, KEMET X7R | as issue-2 notes (§2) | not re-opened |
+| 3V3_SUP tolerance, MCXA153 VOH | — | **unverified** |
+
+### R3.5 Part-failure table (latch, reset, test; one failure at a time)
+
+"Detected by T-6" means the self-test step of design §B14.5 fails. Simulated cases (`ovp_latch.cir`) are marked
+[SIM]; the rest [CALC]. "Change order" = injection at OVP_SENSE through 22 k.
+
+| Part, failure | What it does (as drawn) | Hides a trip / holds the limit off? | Change order arrangement |
+|---|---|---|---|
+| R805 open | real tap cannot reach the comparator | limit lost, **detected by T-6** (injection now passes through R805) [SIM] | **hidden**: test trips and latches, real trip never [SIM] |
+| R805 short | node follows the buffer: trips at ≈ 1,054 V, cannot latch | no; every charge dumped, T-6 "held" step fails | same |
+| R806 open | no latch; trips at ≈ 1,054 V | no (fail-safe, detected) | same |
+| R806 short | output low holds OVP_SENSE low | limit lost, detected by T-6 | same |
+| R807 open / R808 short / C810 short | OVP_REF ≈ 0: trips at any charge | no (fail-safe) | same |
+| R807 short / R808 open | OVP_REF 2.5 V: trip at tap 5 V, never | limit lost, detected by T-6 (test reaches ≤ 2.86 V) | same (test reaches 1.88 V) |
+| U803 output stuck low / high | no trip / permanent trip | low: detected by T-6; high: fail-safe | same |
+| U804 or R801/C801 fault | reading wrong | detected by main-vs-supervisor comparison (issue 2) | same |
+| Q801 drain–source short | OVP_SENSE held at ≈ 0 | limit lost, **detected by T-6** [SIM] | same |
+| **Q801 partial leak (e.g. 1 MΩ D–S), or board contamination on OVP_SENSE** | trip raised by 1.05 V × 100 k / R_leak: 1 MΩ → **2,211 V** [SIM] | **hidden: T-6 passes** [SIM]; anything above ≈ 100 kΩ passes the "held" step | **same, hidden** [SIM] |
+| Q801 gate–source short, R809 short, R810 open, C812 open | reset impossible | no; latch stays set → no charge, detected by T-6 reset step [SIM C812 open] | same |
+| Q801 gate–drain short | diode-connected FET + 101 k on OVP_SENSE: trip ≥ 3.1 V tap | limit lost; detected by T-6 (test reaches ≤ 2.86 V) [CALC] | **may pass T-6** (strong injection, hold step marginal) |
+| C812 short or R809 open | reset becomes level-sensitive | latent (needs a stuck-high `OVP_RST` too); **detected only if T-6 holds `OVP_RST` high ≥ 50 ms before raising `OVP_TEST`** [SIM C812 short] | same |
+| R811 open | `OVP_RST` floats while the supervisor pin is high-impedance | latent; a stray edge only resets (re-trips if still over-voltage) | same |
+| D801 short | VCAPS_IN loaded by 4.7 k: reading ≈ 3 % of true, no real trip | limit lost, **detected at once** by main-vs-supervisor comparison [SIM] | detected by T-6 "held" step when `OVP_TEST` is driven low [SIM] |
+| D801 open, R812 open, R813 short | no injection | no; T-6 fails (false alarm, safe) | same |
+| R812 short | stronger injection | latent, harmless | same |
+| R813 open | `OVP_TEST` floats when the supervisor pin is high-impedance | spurious trip at worst (fail-safe) | same |
+| D801 reverse leakage grown | supervisor reading error | detected by comparison if large | trip raised (leak on OVP_SENSE), hidden |
+
+Result: as drawn, **no single open or short** in the latch/reset/test arrangement hides a trip or holds the
+limit off undetected. A **resistive partial failure** to GND on OVP_SENSE (P-2) is not caught by T-6 in either
+arrangement.
+
+### R3.6 Problems with the change order (for the design authority)
+
+- **P-1 (C-4 test node).** Injecting at OVP_SENSE leaves R805 open hidden (and, less likely, Q801 gate–drain
+  short) [SIM]. Implemented the closest correct circuit inside sheet 08: inject at `VCAPS_IN` through 4.7 k + D801.
+  Net names and levels of `OVP_TEST` unchanged (high = inject a trip). Documents to update: contract §5.4
+  `OVP_TEST` row ("through a BAS116 and 22 kΩ" into `OVP_SENSE`), design §B14.5 T-6. **Firmware consequences:**
+  during T-6 the supervisor's own reading goes to full scale, so T-6 must suspend the main-vs-supervisor
+  comparison and the supervisor's firmware over-voltage response (holds are forced anyway); the reading also
+  proves the injection reached the chain.
+- **P-2 (hidden partial leak, both arrangements).** A leak R from OVP_SENSE to GND raises the trip by
+  1.05 V × 100 k / R and passes T-6 for R ≳ 100 kΩ (up to ≈ +1,000 V); 1 MΩ → 2,211 V [SIM]. Covered only by
+  L1 firmware (≤ 2,098 V) and L3 (≤ 2,316 V). Options: a quantitative test that ramps the injection while the
+  supervisor ADC reads it (needs a controlled ramp, e.g. a slow RC on the injection) and checks the trip level; a
+  second, independent comparator; or accept as a latent two-layer fault. Within-spec Q801 leakage is also the
+  largest unverified term in the band (+10 V per 100 nA).
+- **P-3 (T-6 order).** Propose: raise `OVP_RST` and hold it ≥ 50 ms, then raise `OVP_TEST` with `OVP_RST` still
+  high (must trip), lower `OVP_TEST` (must stay latched), lower then pulse `OVP_RST` (must clear). This proves
+  the reset is edge-only (catches C812 short / R809 open) [SIM].
+- **P-4 (power-up).** TLV9031 SNOSDA3H rev. H deleted the power-on reset; the latch may power up set (safe
+  direction). Firmware should pulse `OVP_RST` at switch-on once both readings are < 50 V.
+- **P-5 (diode drop).** The change order's 0.6 V for the BAS116 is not a datasheet figure (only ≤ 0.90 V at
+  1 mA is); the margins above use both.
+- **P-6 (string ratio).** Sheet 11 now draws the supervisor string as 20 × 1.99 MΩ + 2 × 79.6 kΩ = 1:1,001.0
+  (WP-F departure note) while contract §5.6 and this sheet use 1:1,002.0; at 1:1,001.0 the nominal trip is
+  2,104.5 V (−2 V). Not changed here; integrator to settle the constant.
+- **P-7 (noise).** OVP_SENSE is a 50 kΩ node with no filter capacitor; a fast disturbance can now latch (a
+  nuisance trip empties the capacitor and needs a reset — no shock until then). Not changed; worth a layout and
+  immunity review, and possibly a small capacitor (it would slow T-6 and the reset only microseconds).
+
+### R3.7 Still needs simulation or measurement
+
+- TLV9031 with the maker's model: output during 3V3_SUP ramp; behaviour on a slow ramp at the trip point.
+- Q801 off-state leakage at VDS 1–3 V, −20…+70 °C (sets +0…10 V or more of the band).
+- BAS116 VF at 15–20 µA and IR at 2 V over temperature; MCXA153 output high level; 3V3_SUP tolerance.
+- The P-2 partial-leak case with a real test procedure; ESD/noise immunity of OVP_SENSE (P-7).
+- R718 offset with real bias currents (LR +0.22 V vs hand +0.38 V).
+- Build check: `bash tools/build.sh` BUILD OK (724 nets, 3,688 pin connections round-trip); `tools/xcheck.py`
+  lists `OVP_RST` and `OVP_TEST` as single-sheet nets — expected until WP-B draws them on sheet 05.
+
 ## 1. What is on each sheet (plain language)
 
 **06_ui — user interface.** The small reflective "memory" display (Sharp LS013B7DH05) runs from the always-on

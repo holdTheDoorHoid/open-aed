@@ -44,7 +44,11 @@ pub enum ShockOutcome {
 
 impl ShockOutcome {
     /// All three, in report order.
-    pub const ALL: [ShockOutcome; 3] = [ShockOutcome::Roea, ShockOutcome::NoRoea, ShockOutcome::Indeterminable];
+    pub const ALL: [ShockOutcome; 3] = [
+        ShockOutcome::Roea,
+        ShockOutcome::NoRoea,
+        ShockOutcome::Indeterminable,
+    ];
 
     /// The folder name.
     #[must_use]
@@ -89,13 +93,19 @@ const MAX_FILE: u64 = 16 * 1024 * 1024;
 /// File stems in `dir` with extension `ext`: regular files only, names of
 /// letters, digits and `_` only, sorted.
 fn list(dir: &Path, ext: &str) -> Vec<String> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut v: Vec<String> = rd
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter_map(|e| e.file_name().into_string().ok())
         .filter_map(|n| n.strip_suffix(ext).map(str::to_string))
-        .filter(|s| !s.is_empty() && s.len() <= 40 && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'))
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 40
+                && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+        })
         .collect();
     v.sort();
     v
@@ -113,9 +123,13 @@ fn read_capped(path: &Path) -> Result<Vec<u8>, String> {
 /// or `root` itself if it holds `pdf/`.
 #[must_use]
 pub fn dataset_dir(root: &Path) -> Option<PathBuf> {
-    [root.join("extracted/dataset"), root.join("dataset"), root.to_path_buf()]
-        .into_iter()
-        .find(|d| d.join("pdf/ROEA").is_dir() && d.join("pdf/noROEA").is_dir())
+    [
+        root.join("extracted/dataset"),
+        root.join("dataset"),
+        root.to_path_buf(),
+    ]
+    .into_iter()
+    .find(|d| d.join("pdf/ROEA").is_dir() && d.join("pdf/noROEA").is_dir())
 }
 
 fn stem_key(s: &str) -> &str {
@@ -128,7 +142,8 @@ fn stem_key(s: &str) -> &str {
 /// # Errors
 /// If no dataset folder is found.
 pub fn load(root: &Path, threads: usize) -> Result<Vec<Item>, String> {
-    let d = dataset_dir(root).ok_or_else(|| format!("no Cardially dataset under {}", root.display()))?;
+    let d = dataset_dir(root)
+        .ok_or_else(|| format!("no Cardially dataset under {}", root.display()))?;
     let mut jobs: Vec<(ShockOutcome, String, Option<String>)> = Vec::new();
     for o in ShockOutcome::ALL {
         let txts = list(&d.join("txt").join(o.dir()), ".txt");
@@ -150,7 +165,14 @@ pub fn load(root: &Path, threads: usize) -> Result<Vec<Item>, String> {
                     read_capped(&d.join("txt").join(o.dir()).join(format!("{t}.txt")))
                         .and_then(|b| txt::parse_txt(&b).map_err(|e| e.to_string()))
                 });
-                let item = Item { outcome: *o, id: id.clone(), pdf, txt_name: t.clone(), txt, duplicate_of: None };
+                let item = Item {
+                    outcome: *o,
+                    id: id.clone(),
+                    pdf,
+                    txt_name: t.clone(),
+                    txt,
+                    duplicate_of: None,
+                };
                 if let Ok(mut v) = results.lock() {
                     v.push((i, item));
                 }
@@ -182,7 +204,9 @@ pub fn mark_duplicates(items: &mut [Item]) {
 /// PDFs with no text partner, as `class/name`.
 #[must_use]
 pub fn unpaired(root: &Path) -> (Vec<String>, Vec<String>) {
-    let Some(d) = dataset_dir(root) else { return (Vec::new(), Vec::new()) };
+    let Some(d) = dataset_dir(root) else {
+        return (Vec::new(), Vec::new());
+    };
     let (mut t_only, mut p_only) = (Vec::new(), Vec::new());
     for o in ShockOutcome::ALL {
         let txts = list(&d.join("txt").join(o.dir()), ".txt");

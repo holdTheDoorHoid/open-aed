@@ -97,7 +97,11 @@ impl Signal {
 }
 
 /// Run a signal through a detector; returns the state every sample and the events.
-fn run(sig: &Signal, seconds: f64, det: &mut CompressionDetector) -> (Vec<ChestState>, Vec<(f64, ChestEvent)>) {
+fn run(
+    sig: &Signal,
+    seconds: f64,
+    det: &mut CompressionDetector,
+) -> (Vec<ChestState>, Vec<(f64, ChestEvent)>) {
     let mut rng = Rng(12345);
     let n = (seconds * 125.0) as usize;
     let mut states = Vec::with_capacity(n);
@@ -125,7 +129,12 @@ fn t_of(i: usize) -> f64 {
 /// First time at or after `from` s at which `pred` holds.
 fn first(states: &[ChestState], from: f64, pred: impl Fn(ChestState) -> bool) -> Option<f64> {
     let start = (from * 125.0) as usize;
-    states.iter().enumerate().skip(start).find(|(_, &s)| pred(s)).map(|(i, _)| t_of(i))
+    states
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find(|(_, &s)| pred(s))
+        .map(|(i, _)| t_of(i))
 }
 
 fn all_between(states: &[ChestState], from: f64, to: f64, want: ChestState) -> bool {
@@ -137,17 +146,39 @@ fn all_between(states: &[ChestState], from: f64, to: f64, want: ChestState) -> b
 #[test]
 fn default_settings_are_valid_and_contradictions_are_refused() {
     assert!(Settings::default().validate().is_ok());
-    let s = Settings { min_compression_mohm: 0, ..Settings::default() };
+    let s = Settings {
+        min_compression_mohm: 0,
+        ..Settings::default()
+    };
     assert_eq!(s.validate(), Err(SettingsError::ZeroThreshold));
-    let s = Settings { highpass_hz: 7.0, ..Settings::default() };
+    let s = Settings {
+        highpass_hz: 7.0,
+        ..Settings::default()
+    };
     assert_eq!(s.validate(), Err(SettingsError::FilterCorners));
-    let s = Settings { stuck_ms: 2_000, ..Settings::default() };
-    assert_eq!(s.validate(), Err(SettingsError::TimeLimits), "a stuck channel must be caught before the quiet period ends");
-    let s = Settings { max_rise_ms: 5_000, ..Settings::default() };
+    let s = Settings {
+        stuck_ms: 2_000,
+        ..Settings::default()
+    };
+    assert_eq!(
+        s.validate(),
+        Err(SettingsError::TimeLimits),
+        "a stuck channel must be caught before the quiet period ends"
+    );
+    let s = Settings {
+        max_rise_ms: 5_000,
+        ..Settings::default()
+    };
     assert_eq!(s.validate(), Err(SettingsError::TimeLimits));
-    let s = Settings { rolling_seconds: 0, ..Settings::default() };
+    let s = Settings {
+        rolling_seconds: 0,
+        ..Settings::default()
+    };
     assert_eq!(s.validate(), Err(SettingsError::RollingPeriod));
-    let s = Settings { baseline_min_mohm: 300_000, ..Settings::default() };
+    let s = Settings {
+        baseline_min_mohm: 300_000,
+        ..Settings::default()
+    };
     assert_eq!(s.validate(), Err(SettingsError::BaselineRange));
 }
 
@@ -155,7 +186,11 @@ fn default_settings_are_valid_and_contradictions_are_refused() {
 fn still_chest_is_unknown_while_settling_then_hands_off() {
     let mut det = detector();
     let (states, events) = run(&Signal::quiet(), 10.0, &mut det);
-    assert_eq!(states[0], ChestState::Unknown, "never hands off before the filters settle");
+    assert_eq!(
+        states[0],
+        ChestState::Unknown,
+        "never hands off before the filters settle"
+    );
     assert!(all_between(&states, 0.0, 1.0, ChestState::Unknown));
     let off = first(&states, 0.0, |s| s == ChestState::HandsOff).unwrap();
     assert!(off <= 1.1, "hands off after the settling time, got {off}");
@@ -169,7 +204,10 @@ fn compressions_from_60_to_160_per_minute_are_detected_with_the_right_rate() {
     for rate in [60.0, 80.0, 100.0, 110.0, 120.0, 140.0, 150.0, 160.0] {
         for pp in [0.5, 1.0, 3.0, 8.0] {
             let mut det = detector();
-            let sig = Signal { compressions: Some((3.0, 23.0, rate, pp)), ..Signal::quiet() };
+            let sig = Signal {
+                compressions: Some((3.0, 23.0, rate, pp)),
+                ..Signal::quiet()
+            };
             let (states, events) = run(&sig, 23.0, &mut det);
             // From the third compression on, it must be Compressing throughout.
             let settled = 3.0 + 3.0 * 60.0 / rate;
@@ -178,7 +216,10 @@ fn compressions_from_60_to_160_per_minute_are_detected_with_the_right_rate() {
                 "rate {rate} pp {pp}: not Compressing throughout"
             );
             let reported = det.rate_per_min().unwrap();
-            assert!((f64::from(reported) - rate).abs() <= 3.0, "rate {rate}: reported {reported}");
+            assert!(
+                (f64::from(reported) - rate).abs() <= 3.0,
+                "rate {rate}: reported {reported}"
+            );
             let expected = (20.0 * rate / 60.0).floor() as usize;
             assert!(
                 events.len() + 1 >= expected && events.len() <= expected + 1,
@@ -196,7 +237,10 @@ fn onset_never_leaves_hands_off_for_more_than_one_rise_and_typical_onset_is_fast
         for pp in [0.35, 0.5, 1.0, 3.0] {
             for start in [5.0, 5.3, 5.71] {
                 let mut det = detector();
-                let sig = Signal { compressions: Some((start, 20.0, rate, pp)), ..Signal::quiet() };
+                let sig = Signal {
+                    compressions: Some((start, 20.0, rate, pp)),
+                    ..Signal::quiet()
+                };
                 let (states, _) = run(&sig, 20.0, &mut det);
                 assert!(all_between(&states, 1.2, start, ChestState::HandsOff));
                 let left = first(&states, start, |s| s != ChestState::HandsOff).unwrap() - start;
@@ -215,7 +259,10 @@ fn onset_never_leaves_hands_off_for_more_than_one_rise_and_typical_onset_is_fast
                 }
                 // Once it has left HandsOff it never goes back while compressions continue.
                 let back = first(&states, start + left, |s| s == ChestState::HandsOff);
-                assert!(back.is_none_or(|b| b >= 20.0), "flickered back to hands off at {back:?}");
+                assert!(
+                    back.is_none_or(|b| b >= 20.0),
+                    "flickered back to hands off at {back:?}"
+                );
             }
         }
     }
@@ -226,23 +273,36 @@ fn onset_never_leaves_hands_off_for_more_than_one_rise_and_typical_onset_is_fast
 fn hands_off_comes_back_within_the_quiet_period_after_compressions_stop() {
     for rate in [60.0, 110.0, 150.0] {
         let mut det = detector();
-        let sig = Signal { compressions: Some((3.0, 15.0, rate, 1.5)), ..Signal::quiet() };
+        let sig = Signal {
+            compressions: Some((3.0, 15.0, rate, 1.5)),
+            ..Signal::quiet()
+        };
         let (states, _) = run(&sig, 25.0, &mut det);
         let off = first(&states, 15.0, |s| s == ChestState::HandsOff).unwrap() - 15.0;
         // Last peak is up to one cycle before the end; quiet = max(1 s, 1.6 intervals).
         let interval = 60.0 / rate;
         let bound = (1.6 * interval).max(1.0) + 0.1;
-        assert!(off <= bound, "rate {rate}: hands off {off:.3} s after the last compression ended");
+        assert!(
+            off <= bound,
+            "rate {rate}: hands off {off:.3} s after the last compression ended"
+        );
         assert!(off >= 0.3, "rate {rate}: hands off too soon ({off:.3} s)");
         let again = first(&states, 15.0 + off, |s| s != ChestState::HandsOff);
-        assert!(again.is_none(), "rate {rate}: not hands off again at {again:?} (hands off at {:.3})", 15.0 + off);
+        assert!(
+            again.is_none(),
+            "rate {rate}: not hands off again at {again:?} (hands off at {:.3})",
+            15.0 + off
+        );
     }
 }
 
 #[test]
 fn f12_compressions_at_150_per_minute_are_compressions() {
     let mut det = detector();
-    let sig = Signal { compressions: Some((2.0, 30.0, 150.0, 1.0)), ..Signal::quiet() };
+    let sig = Signal {
+        compressions: Some((2.0, 30.0, 150.0, 1.0)),
+        ..Signal::quiet()
+    };
     let (states, _) = run(&sig, 30.0, &mut det);
     assert!(all_between(&states, 3.5, 30.0, ChestState::Compressing));
     assert_eq!(det.rate_per_min(), Some(150));
@@ -255,10 +315,19 @@ fn a_beating_heart_is_not_read_as_compressions_at_any_rate() {
     for bpm in [40.0, 60.0, 90.0, 120.0, 150.0, 180.0, 220.0] {
         for size in [0.1, 0.2] {
             let mut det = detector();
-            let sig = Signal { heart: Some((bpm, size)), ..Signal::quiet() };
+            let sig = Signal {
+                heart: Some((bpm, size)),
+                ..Signal::quiet()
+            };
             let (states, events) = run(&sig, 30.0, &mut det);
-            assert!(events.is_empty(), "heart {bpm}/min {size} Ω read as compressions");
-            assert!(all_between(&states, 1.2, 30.0, ChestState::HandsOff), "heart {bpm}/min {size} Ω");
+            assert!(
+                events.is_empty(),
+                "heart {bpm}/min {size} Ω read as compressions"
+            );
+            assert!(
+                all_between(&states, 1.2, 30.0, ChestState::HandsOff),
+                "heart {bpm}/min {size} Ω"
+            );
         }
     }
 }
@@ -274,13 +343,26 @@ fn breaths_alone_leave_the_chest_hands_off() {
     for size in [0.5, 1.0, 2.0] {
         for period in [4.0, 6.0] {
             let mut det = detector();
-            let sig = Signal { breaths: Some((2.0, period, size)), ..Signal::quiet() };
+            let sig = Signal {
+                breaths: Some((2.0, period, size)),
+                ..Signal::quiet()
+            };
             let (states, _) = run(&sig, 40.0, &mut det);
-            assert!(!states.contains(&ChestState::Compressing), "breaths read as a run of compressions");
-            let off = states.iter().skip(250).filter(|&&s| s == ChestState::HandsOff).count();
+            assert!(
+                !states.contains(&ChestState::Compressing),
+                "breaths read as a run of compressions"
+            );
+            let off = states
+                .iter()
+                .skip(250)
+                .filter(|&&s| s == ChestState::HandsOff)
+                .count();
             let share = off as f64 / (states.len() - 250) as f64;
             let need = if size >= 2.0 { 0.75 } else { 0.95 };
-            assert!(share >= need, "breath {size} Ω every {period} s: hands off only {share:.3} of the time");
+            assert!(
+                share >= need,
+                "breath {size} Ω every {period} s: hands off only {share:.3} of the time"
+            );
         }
     }
 }
@@ -289,16 +371,30 @@ fn breaths_alone_leave_the_chest_hands_off() {
 fn compressions_with_breaths_between_are_still_compressions_and_the_pause_is_reported() {
     let mut det = detector();
     // 30 compressions at 110/min, then a 4 s pause with two breaths, then more.
-    let sig = Signal { compressions: Some((2.0, 18.4, 110.0, 1.2)), ..Signal::quiet() };
+    let sig = Signal {
+        compressions: Some((2.0, 18.4, 110.0, 1.2)),
+        ..Signal::quiet()
+    };
     let (states, events) = run(&sig, 18.4, &mut det);
     assert!(all_between(&states, 4.0, 18.4, ChestState::Compressing));
     assert!(events.len() >= 29);
     for (_, e) in &events[1..] {
-        let ChestEvent::Compression { since_previous_ms, .. } = e;
-        assert!((*since_previous_ms as i64 - 545).abs() <= 20, "interval {since_previous_ms}");
+        let ChestEvent::Compression {
+            since_previous_ms, ..
+        } = e;
+        assert!(
+            (*since_previous_ms as i64 - 545).abs() <= 20,
+            "interval {since_previous_ms}"
+        );
     }
-    let ChestEvent::Compression { since_previous_ms, .. } = events[0].1;
-    assert_eq!(since_previous_ms, u32::MAX, "first compression has no previous one");
+    let ChestEvent::Compression {
+        since_previous_ms, ..
+    } = events[0].1;
+    assert_eq!(
+        since_previous_ms,
+        u32::MAX,
+        "first compression has no previous one"
+    );
 }
 
 #[test]
@@ -307,10 +403,16 @@ fn pressing_the_pads_is_movement_then_hands_off_again() {
     // stays down. That is someone touching the patient: not hands off while
     // it happens, hands off again once the signal is still.
     let mut det = detector();
-    let sig = Signal { press: Some((5.0, 10.0)), ..Signal::quiet() };
+    let sig = Signal {
+        press: Some((5.0, 10.0)),
+        ..Signal::quiet()
+    };
     let (states, _) = run(&sig, 12.0, &mut det);
     let moved = first(&states, 5.0, |s| s != ChestState::HandsOff).unwrap();
-    assert!(moved <= 5.5, "pressing the pads not seen as movement ({moved:.2} s)");
+    assert!(
+        moved <= 5.5,
+        "pressing the pads not seen as movement ({moved:.2} s)"
+    );
     assert!(all_between(&states, 8.5, 12.0, ChestState::HandsOff));
 }
 
@@ -327,7 +429,10 @@ fn saturation_is_unknown_at_once_and_the_filters_settle_before_hands_off() {
         assert_eq!(det.signal(), ImpedanceSignal::Saturated);
     }
     let (states, _) = run(&sig, 3.0, &mut det);
-    assert!(all_between(&states, 0.0, 1.0, ChestState::Unknown), "must settle first");
+    assert!(
+        all_between(&states, 0.0, 1.0, ChestState::Unknown),
+        "must settle first"
+    );
     assert!(all_between(&states, 1.1, 3.0, ChestState::HandsOff));
 }
 
@@ -353,13 +458,19 @@ fn out_of_range_and_stuck_readings_are_unknown() {
     }
     assert_eq!(det.signal(), ImpedanceSignal::Stuck);
     let ms = stuck_at.unwrap();
-    assert!(ms <= 500 + SAMPLE_MS, "a frozen reading must be caught within stuck_ms, got {ms}");
+    assert!(
+        ms <= 500 + SAMPLE_MS,
+        "a frozen reading must be caught within stuck_ms, got {ms}"
+    );
 }
 
 #[test]
 fn a_channel_that_freezes_during_compressions_never_says_hands_off() {
     let mut det = detector();
-    let sig = Signal { compressions: Some((2.0, 60.0, 110.0, 1.5)), ..Signal::quiet() };
+    let sig = Signal {
+        compressions: Some((2.0, 60.0, 110.0, 1.5)),
+        ..Signal::quiet()
+    };
     let (states, _) = run(&sig, 10.0, &mut det);
     assert_eq!(*states.last().unwrap(), ChestState::Compressing);
     // The reading freezes at whatever it was.
@@ -373,7 +484,10 @@ fn a_channel_that_freezes_during_compressions_never_says_hands_off() {
 #[test]
 fn fast_noise_is_unknown() {
     let mut det = detector();
-    let sig = Signal { noise_ohms: 0.2, ..Signal::quiet() };
+    let sig = Signal {
+        noise_ohms: 0.2,
+        ..Signal::quiet()
+    };
     let (states, _) = run(&sig, 10.0, &mut det);
     assert!(all_between(&states, 1.0, 10.0, ChestState::Unknown));
     assert_eq!(det.signal(), ImpedanceSignal::Noisy);
@@ -383,12 +497,18 @@ fn fast_noise_is_unknown() {
 fn time_on_chest_and_time_since_compression_are_measured() {
     let mut det = detector();
     // 30 s compressing in a 60 s period.
-    let sig = Signal { compressions: Some((10.0, 40.0, 110.0, 1.5)), ..Signal::quiet() };
+    let sig = Signal {
+        compressions: Some((10.0, 40.0, 110.0, 1.5)),
+        ..Signal::quiet()
+    };
     let (_, _) = run(&sig, 60.0, &mut det);
     let toc = det.time_on_chest_permille();
     assert!((470..=530).contains(&toc), "time on chest {toc} per mille");
     let since = det.ms_since_compression();
-    assert!((19_000..=20_500).contains(&since), "since last compression {since} ms");
+    assert!(
+        (19_000..=20_500).contains(&since),
+        "since last compression {since} ms"
+    );
     assert_eq!(det.rate_per_min(), None, "no rate while not compressing");
     assert!(det.compressions() >= 54);
     det.reset();
@@ -403,7 +523,10 @@ fn compressions_below_the_threshold_are_not_seen_and_this_is_the_limit() {
     // peak (after the 1 Hz filter) are invisible. On the development half
     // of the real recordings this is the main cause of missed compressions.
     let mut det = detector();
-    let sig = Signal { compressions: Some((2.0, 20.0, 110.0, 0.2)), ..Signal::quiet() };
+    let sig = Signal {
+        compressions: Some((2.0, 20.0, 110.0, 0.2)),
+        ..Signal::quiet()
+    };
     let (states, events) = run(&sig, 20.0, &mut det);
     assert!(events.is_empty());
     assert!(all_between(&states, 1.2, 20.0, ChestState::HandsOff));
@@ -416,25 +539,49 @@ fn print_latencies() {
         let fourth = false;
         for rate in [60.0, 80.0, 110.0, 150.0] {
             for pp in [0.35, 0.5, 1.0, 3.0] {
-                let s = Settings { highpass_hz: hp, highpass_fourth_order: fourth, ..Settings::default() };
+                let s = Settings {
+                    highpass_hz: hp,
+                    highpass_fourth_order: fourth,
+                    ..Settings::default()
+                };
                 let mut det = CompressionDetector::new(s).unwrap();
-                let sig = Signal { compressions: Some((5.0, 15.0, rate, pp)), ..Signal::quiet() };
+                let sig = Signal {
+                    compressions: Some((5.0, 15.0, rate, pp)),
+                    ..Signal::quiet()
+                };
                 let (states, ev) = run(&sig, 25.0, &mut det);
                 let on = first(&states, 5.0, |s| s != ChestState::HandsOff).map(|t| t - 5.0);
                 let comp = first(&states, 5.0, |s| s == ChestState::Compressing).map(|t| t - 5.0);
                 let off = first(&states, 15.0, |s| s == ChestState::HandsOff).map(|t| t - 15.0);
-                let holes = states[1000..1875].iter().filter(|&&s| s != ChestState::Compressing).count();
+                let holes = states[1000..1875]
+                    .iter()
+                    .filter(|&&s| s != ChestState::Compressing)
+                    .count();
                 std::println!("hp {hp} rate {rate} pp {pp}: on {on:?} comp {comp:?} off {off:?} events {} holes {holes}", ev.len());
             }
         }
         for size in [1.0, 2.0] {
-            let s = Settings { highpass_hz: hp, highpass_fourth_order: fourth, ..Settings::default() };
+            let s = Settings {
+                highpass_hz: hp,
+                highpass_fourth_order: fourth,
+                ..Settings::default()
+            };
             let mut det = CompressionDetector::new(s).unwrap();
-            let sig = Signal { breaths: Some((2.0, 5.0, size)), ..Signal::quiet() };
+            let sig = Signal {
+                breaths: Some((2.0, 5.0, size)),
+                ..Signal::quiet()
+            };
             let (states, ev) = run(&sig, 40.0, &mut det);
-            let off = states.iter().skip(250).filter(|&&s| s == ChestState::HandsOff).count() as f64
+            let off = states
+                .iter()
+                .skip(250)
+                .filter(|&&s| s == ChestState::HandsOff)
+                .count() as f64
                 / (states.len() - 250) as f64;
-            std::println!("hp {hp} breath {size}: hands-off share {off:.3} events {}", ev.len());
+            std::println!(
+                "hp {hp} breath {size}: hands-off share {off:.3} events {}",
+                ev.len()
+            );
         }
     }
 }

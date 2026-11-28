@@ -1,0 +1,107 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+* S-1 (rev3-changes.md second-round list): one low-side switch failed short, the high side commanded on at the
+* start of a sequence, with sheet 13 AS DRAWN in revision 0.3:
+*   - circuit-level high-side island WITH the carrier-loss detector (wpg_common.inc 'hsisland', det = 1);
+*   - fast idle path (R1364/R1365/C1345, OPA838 x 11, TLV3501; threshold 'ith' amperes, 'fast' = 1);
+*   - slow idle path kept (INA240 0.4 us + 1 k/100 pF, 4.96 A on I_SHOCK at 24.0 mV/A, + tdl);
+*   - sheet 12 (WP-D change D-7): either detector sets the fault latch, the high-side kill latch removes G_HA
+*     after 'tlog' (5-7 LVC gates <= 45 ns [rev3-changes D-7] + sheet-13 /CLR and AND gates ~15 ns).
+* Scenario D (diagonal, design fault 18): QLB shorted (slb), current QHA -> patient -> QLB.
+* Scenario S (same side): QLA shorted (sla), current QHA -> QLA across the capacitor through R_S + L_S.
+* 'beh' variant: run.sh swaps the island for ../bridge 'hsdrv' (behavioural PNP, as in bridge/q1) so the
+* two models can be compared in the same circuit (the 1 us vs 2.7 us disagreement, sim/rev3/notes.md §3).
+.include wpg_common.inc
+.param v0=1950 rp=25 sla=1e9 slb=0.05 ith=3.0 fast=1 det=1 vth=1.8 tlog=60n tdl=0.1u ifilt=0.4u
+.param slowthr=4.96 lsh=0.3n lst=50n tc=55 th=0 vamp=18.5 vos=0 vol=0.15 cfail=0 lcap=200n
+.param ths=200u
+Vgnd0 rtn 0 0
+Cmain capi rtn 100u
+* capacitor held at v0 (10 k feed, corrected for the 20 MOhm film balancing string; 1 G as in ../bridge
+* would leave it at 38 V)
+Vchg vchg 0 {v0*1.0005}
+Rchg vchg capi 10k
+XB capi rtn oa ob gha ghb gla glb lss kn tjha tjla tjhb tjlb bus isn capp fm hbridge3
++ params: lst={lst} tc={tc} sla={sla} slb={slb} th={th} lsh={lsh} cfail={cfail} lcap={lcap}
+XP oa ob patient params: rp={rp} lpat=1.5u
+Vpos vp lss 20.7
+Vneg vn lss -5
+Vb5 b5v 0 5
+* BRIDGE_3V3 and the fast path's GND taken at the shunt's HV_RTN Kelvin terminal (SHUNT_KN): see notes.md,
+* layout requirement L-1 (GND bounce against SHUNT_KN must stay inside the OPA838's -0.2 V input range)
+V33 v33 kn 3.3
+* ---- commands: CMD_HA (carrier enable incl. 2 us sync), CMD_LB 100 us later
+Vcha cha0 0 PWL(0 0 {ths+2u} 0 {ths+2u+20n} 1)
+Vclb clb0 0 PWL(0 0 {ths+100u} 0 {ths+100u+20n} 1)
+* ---- fast path on the Kelvin pair (lss = SHUNT_KP, kn = SHUNT_KN); rising threshold placed at ith
+XF lss kn v33 kn fflt faout fref fastpath params: vosc={0.022*(ith-3.204)} vos={vos} vol={vol}
+* ---- slow path (INA240 -> I_SHOCK -> 1 k / 100 pF -> TLV3501), referred to amperes
+Rif1 isn if1 1k
+Cif1 if1 0 {ifilt/1k}
+Rif2 if1 if2 1k
+Cif2 if2 0 100p
+Bslow sl0 0 V = 0.5*(1+tanh(4*(abs(V(if2))-{slowthr})))
+Tsl sl0 0 sld 0 Z0=50 TD={tdl}
+Rsl sld 0 50
+* ---- sheet 12 fault latch (both low sides have been off > 9 us: IDLE_F armed throughout this case)
+Bset 0 fl I = 2m*{fast}*min(max(V(fflt),0),1) + 2m*min(max(V(sld),0),1) + 5m*0.5*(1+tanh(50*(V(fl)-0.2)))
+Cfl fl 0 10p
+.ic v(fl)=0
+Rfl fl 0 1e9
+Dfl fl one dclamp
+Vone one 0 1
+.model dclamp d (is=1e-12 n=1)
+Bfl fla 0 V = min(max(V(fl),0),1)
+Tl1 fla 0 flh 0 Z0=50 TD={tlog}
+Rl1 flh 0 50
+Bcha cha 0 V = min(max(V(cha0),0),1) * (1 - min(max(V(flh),0),1))
+Bclb clb 0 V = min(max(V(clb0),0),1) * (1 - min(max(V(flh),0),1))
+Vcla cla 0 0
+Vchb chb 0 0
+XDLA cla vp vn gla lss lsdrv
+XDLB clb vp vn glb lss lsdrv
+XDHA cha b5v gha oa recta pnpa clga hsisland params: det={det} vth={vth} vamp={vamp}
+*BEH XDHA cha b5v gha oa hsdrv params: rdis=1e9
+XDHB chb b5v ghb ob rectb pnpb clgb hsisland params: det={det} vth={vth} vamp={vamp}
+*BEH XDHB chb b5v ghb ob hsdrv params: rdis=1e9
+.options method=gear reltol=1e-3 abstol=1e-6 vntol=1e-4 itl4=200
+.control
+set noaskquit
+let tstop_req = 300e-6
+tran 5n 300u 195u 10n
+let pha = (v(xb.dha)-v(xb.oai))*v.xb.vmha#branch
+meas tran eha integ pha
+meas tran pmx max pha
+meas tran ipk max v.xb.vmha#branch
+meas tran tjmax max tjha
+meas tran tflt when v(fl)=0.5 rise=1
+meas tran tstp when v(cha)=0.5 fall=1
+let ipat = abs(v.xp.vpat#branch)
+meas tran ippat max ipat
+let vgs = v(gha)-v(oa)
+meas tran vgstop find vgs at=tstp
+let tw = tstp+10e-6
+meas tran vgpk max vgs from=tstp to=tw
+let pnpi = v(pnpa)-v(oa)
+meas tran tpnp when pnpi=0.01 rise=1 td=tstp
+meas tran tg2 when vgs=2 fall=1 td=tstp
+let isn = abs(v(isn))
+meas tran t3a when isn=3 rise=1
+let pflag = pha gt (0.1*pmx)
+meas tran dur integ pflag
+* lower (adiabatic) junction estimate: SiC 2.21 J/cm3K, ASSUMED 0.2 cm2 active area, 30 um + sqrt(D t), D 1.7 cm2/s
+let cth = 2.21*0.2*(30e-4 + sqrt(1.7*dur))
+let dtlow = eha/cth
+let tjlow = 55 + dtlow
+let ehm = eha*1000
+let tf = (tflt-202e-6)*1e6
+let tdet = (tflt-t3a)*1e6
+let dpnp = (tpnp-tstp)*1e6
+let dg2 = (tg2-tstp)*1e6
+let gdelta = vgpk-vgstop
+let durus = dur*1e6
+let n = length(time)-1
+let te = time[n]
+echo "RESULT CASE_LABEL | fault_after_carrier_us=$&tf | 3A_to_latch_us=$&tdet | Ipk_QHA=$&ipk A | Ipk_patient=$&ippat A | E_QHA=$&ehm mJ | dur=$&durus us | Tj_upper=$&tjmax C | Tj_lower=$&tjlow C | gate_at_stop=$&vgstop V | gate_rise_after_stop=$&gdelta V | PNP_start=$&dpnp us | gate<2V=$&dg2 us | t_end=$&te of $&tstop_req"
+.endc
+.end

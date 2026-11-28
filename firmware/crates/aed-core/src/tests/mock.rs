@@ -8,11 +8,11 @@
 //! keeps 20% of its voltage after a shock. It exists to exercise the logic, not to predict
 //! the real circuit.
 
-use crate::heat::{DeciC, SensorSet, TempPoint};
 use crate::hal::{
     BatteryStatus, BridgeTestOutcome, BridgeTestResult, BridgeTestStep, MainHardware, PadCartridge,
     RelayPosition, SequenceEnd, SequenceStatus, SupervisorHardware,
 };
+use crate::heat::{DeciC, SensorSet, TempPoint};
 use crate::interlock::{charger_may_run, discharge_path_active, Latch, LatchInputs, LatchTiming};
 use crate::link::{MainStatus, SupervisorReport};
 use crate::prompts::Prompt;
@@ -159,7 +159,9 @@ impl ChestSensor for FakeChest {
             ImpedanceSample::Milliohms(80_000) => (ChestState::HandsOff, ImpedanceSignal::Good),
             ImpedanceSample::Milliohms(81_000) => (ChestState::Compressing, ImpedanceSignal::Good),
             ImpedanceSample::Milliohms(83_000) => (ChestState::HandsOff, ImpedanceSignal::Settling),
-            ImpedanceSample::Milliohms(300_000) => (ChestState::Unknown, ImpedanceSignal::OutOfRange),
+            ImpedanceSample::Milliohms(300_000) => {
+                (ChestState::Unknown, ImpedanceSignal::OutOfRange)
+            }
             ImpedanceSample::Milliohms(_) => (ChestState::Unknown, ImpedanceSignal::Good),
         };
         self.state = state;
@@ -353,8 +355,13 @@ pub struct Board {
     /// this rate.
     pub charge_rate: f32,
     pub charger_broken: bool,
-    /// Charger ignores its target and keeps going.
+    /// Charger ignores its target and keeps going, and once started it
+    /// also ignores the firmware's "off" (since v0.3 the firmware stops
+    /// every normal charge itself, FW-13): only the discharge-path gating
+    /// stops it.
     pub charger_runaway: bool,
+    /// The runaway charger has been started.
+    pub runaway_on: bool,
     /// Internal discharge load does not work.
     pub dump_broken: bool,
     /// The over-current trip ends every sequence.
@@ -446,6 +453,7 @@ impl Board {
             charge_rate: 0.225,
             charger_broken: false,
             charger_runaway: false,
+            runaway_on: false,
             dump_broken: false,
             output_fault: false,
             status_wire_up: true,
@@ -522,8 +530,13 @@ impl Board {
             }
         }
         // The charger runs only while the discharge path is not active.
+        if self.charger.is_some() && self.charger_runaway {
+            self.runaway_on = true;
+        }
+        let stuck = (self.charger_runaway && self.runaway_on).then_some(Volts(u16::MAX));
         if let Some(target) = self
             .charger
+            .or(stuck)
             .filter(|_| charger_may_run(true, self.discharging()))
         {
             if !self.charger_broken {
@@ -565,7 +578,13 @@ impl Board {
         let active = self.latch.status == SequenceStatus::Active;
         let total_us = plan.map_or(0, |p| p.phase1.0 + p.interphase.0 + p.phase2.0);
         let ready = self.latch.test || self.relay == RelayPosition::Bridge;
-        let drive = !self.bridge_no_start && plan.is_some() && ((armed && ready) || active);
+        // The phase timer: phase 1, the gap (no drive), phase 2 (D-63: each
+        // phase has its own hardware cap, so the gap must be modelled).
+        let (p1, p2_start) = plan.map_or((0, 0), |p| (p.phase1.0, p.phase1.0 + p.interphase.0));
+        let in_phase2 = active && !self.timer_stuck && self.seq_us >= p2_start;
+        let timing = self.timer_stuck || self.seq_us < p1 || in_phase2;
+        let drive =
+            !self.bridge_no_start && plan.is_some() && ((armed && ready) || (active && timing));
         let done = active && !self.timer_stuck && self.seq_us >= total_us;
         let inputs = LatchInputs {
             request: self.request.is_some() || self.request_bare || self.request_stuck_on,
@@ -577,6 +596,8 @@ impl Board {
             drive,
             phases_done: done,
             over_current: active && !self.latch.test && self.output_fault && self.seq_us > 0,
+            in_phase2,
+            ..LatchInputs::default()
         };
         let before = self.latch.status;
         self.latch = self.latch.step(inputs, self.latch_timing, dt_us);
@@ -623,7 +644,10 @@ impl Board {
             if self.relay_coil_us >= 1_000 {
                 self.relay = RelayPosition::Between;
             }
-        } else if coil && self.relay == RelayPosition::Between && self.relay_coil_us >= self.relay_transfer_us {
+        } else if coil
+            && self.relay == RelayPosition::Between
+            && self.relay_coil_us >= self.relay_transfer_us
+        {
             self.relay = RelayPosition::Bridge;
         } else if !coil && self.relay != RelayPosition::FrontEnds && !self.relay_stuck_bridge {
             if self.relay_coil_us >= self.relay_return_us {
@@ -668,6 +692,22 @@ impl MainHardware for MainView<'_> {
     }
     fn set_discharge_hold(&mut self, hold: bool) {
         self.0.main_hold = hold;
+    }
+    fn hold_readback(&mut self) -> crate::hal::HoldReadback {
+        let (a, b) = (self.0.main_hold, self.0.sup_hold);
+        crate::hal::HoldReadback {
+            a1: a,
+            a2: a,
+            b1: b,
+            b2: b,
+        }
+    }
+    fn set_coil_supply(&mut self, _on: bool) {}
+    fn request_probe(&mut self, _probe: crate::hal::Probe) {
+        self.0.request_bare = true;
+    }
+    fn charger_done(&mut self) -> bool {
+        false
     }
     fn request_shock(&mut self, plan: Option<&ShockPlan>) {
         let b = &mut *self.0;
@@ -816,6 +856,11 @@ impl SupervisorHardware for SupView<'_> {
     fn set_test_permit(&mut self, on: bool) {
         self.0.test_permit = on;
     }
+    fn set_ovp_test(&mut self, _on: bool) {}
+    fn set_ovp_reset(&mut self, _high: bool) {}
+    fn ovp_tripped(&mut self) -> bool {
+        false
+    }
     fn sequence_status(&mut self) -> SequenceStatus {
         self.0.latch.status
     }
@@ -857,7 +902,7 @@ pub struct Bench {
 
 impl Bench {
     pub fn new() -> Self {
-        Self::with(Config::default(), FakePlanner::default())
+        Self::with(super::cfg(), FakePlanner::default())
     }
 
     pub fn with(config: Config, planner: FakePlanner) -> Self {
@@ -890,8 +935,9 @@ impl Bench {
             restarts: restarts.clone(),
             tracked: tracked.clone(),
         };
-        let rescue = Rescue::with_chest_sensor(config, analyzer, planner, FakeChest::new(chest_fitted))
-            .expect("valid config");
+        let rescue =
+            Rescue::with_chest_sensor(config, analyzer, planner, FakeChest::new(chest_fitted))
+                .expect("valid config");
         let sup = Supervisor::new(config).expect("valid config");
         Bench {
             board: Board::new(last),

@@ -1,14 +1,15 @@
 # 16_frontend_sup — PATIENT: the supervisor's own pad-impedance front end, MAX30009 (H-bridge drive), with
 # defibrillation protection on every tap; 1V8_SUP LDO; 1.8 V -> 3.3 V translator for the SPI data-out line.
 # NOT FOR CONSTRUCTION — unreviewed design. Source: docs/HARDWARE_DESIGN.md §B3.1, §B3.2, §B3.4 (cross-loading), §B3.6;
-# contract.md issue 2 (§4, §5.8, §8, §10). Capture notes: hardware/aed-main/capture-notes/WP-H.md. References 1601-1699.
+# contract.md issue 3 (§4, §5.8, §8, §10); change order capture-notes/rev3-changes.md WP-H H-5 (96 kHz carrier, no circuit
+# change). Capture notes: hardware/aed-main/capture-notes/WP-H.md. References 1601-1699.
 
 [sheet]
 name = "16_frontend_sup"
 title = "PATIENT: supervisor pad-impedance front end MAX30009 (H-bridge drive) with defibrillation protection; 1V8_SUP LDO"
-source = "docs/HARDWARE_DESIGN.md §B3.6; hardware/aed-main/contract.md §4, §5.8, §8, §10; capture notes WP-H"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B3.6; hardware/aed-main/contract.md issue 3 §4, §5.8, §8, §10; rev3-changes.md WP-H H-5; capture notes WP-H"
 date = "2026-11-27"
-comments = ["Carrier: the contract says 128 kHz; 128 kHz aliases into the ADS1292R ECG channel (its modulator runs at 128 kHz). Proposed 96 kHz: see notes, contract issue 1.",
+comments = ["Carrier 96 kHz (design v0.3 §B3.6, I-18, change order H-5): 128 kHz would alias into the ADS1292R ECG channel (its modulator samples at 128 kHz). A register setting: no circuit change.",
             "Drive: H-bridge voltage mode through 20 k DPCR + 10 k per pad (ADI's own defibrillation-protected application uses H-bridge + series R); ~30 uA."]
 
 [nets]
@@ -66,7 +67,7 @@ title = "U1601 MAX30009 (WLP-25), 4-wire calibration resistor, VREF"
 note = """
 Supplies AVDD = DVDD = 1V8_SUP (1.7-2.0 V), each 0.1 uF + 10 uF (pin table). VREF 1 uF. Operating range -40 to +85 C (datasheet, four places) - the design's [UNVERIFIED] item is now answered; the device itself is the narrowest-range part on these sheets.
 Calibration: R1609 100 ohm 0.05 % across the CAL port (CAL1+CAL2 to one end, CAL3+CAL4 to the other, Kelvin at the resistor) for the datasheet's per-frequency gain/phase calibration; absolute accuracy of the pad reading also depends on the 5 % DPCR drive resistors (current is set by them in H-bridge mode) -> factory calibration at the pad connector with the other chip in its specified state (F-9) [whether the CAL port calibration applies in H-bridge mode is UNVERIFIED].
-Carrier: 96 kHz proposed (PLL 24.576 MHz = 750 x 32.768 kHz, KDIV 1, DAC_OSR 256) instead of 128 kHz (contract issue 1). FCLK unconnected (datasheet: allowed), TRIG to GND (datasheet: when unused).
+Carrier: 96 kHz, adopted in design v0.3 (I-18; PLL 24.576 MHz = 750 x 32.768 kHz, KDIV 1, DAC_OSR 256; firmware configuration record FW-20). No part changes on this sheet for revision 0.3. FCLK unconnected (datasheet: allowed), TRIG to GND (datasheet: when unused).
 Interface: CSB/I2C_SEL = SBZ_CS_N with the contract's 100 k pull-up (SPI mode; firmware sets DISABLE_I2C). SCLK, SDI tolerate 5.5 V, so 3.3 V inputs are fine. SDO is a 1.8 V output (abs max 2.2 V): U1603 SN74LVC1T45 (A on 1V8_SUP, B on 3V3_SUP, DIR = A->B, Ioff both ports) drives SBZ_MISO at 3.3 V levels; R1612 holds A low while SDO is tri-stated. INT open drain, pulled up on 05.
 """
 

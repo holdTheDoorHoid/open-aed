@@ -1,0 +1,250 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* hold_held_wpf.cir — stack A hold pump, release and BOTH "held" sensors AS DRAWN on 11_hv_storage after revision
+* 0.3 (stack B identical: R1195, R1198/D1134/R1199/U1106). Circuit from the pin table:
+*   HOLD_A_DRV -> R1131 100 k to GND, R1133 10 ohm -> PMPA_CLK; pump C1111-C1114 2.2 uF, hold C1115-C1117 2.2 uF,
+*   D1109-D1112 BAT54S; D1112 pin 1 on PMPA_H4 (no capacitor) -> R1194 470 ohm -> STKA_G; C1109 3.3 uF; R1127 680 k +
+*   R1128 330 k; D1101 SMF15CA; bottom-device gate capacitance 3.65 nF (IXTT2N170D2 Ciss, DS100418B);
+*   release Q1109 BSS138 (drain HV_RTN, source STKA_G, gate RLSA_NG), R1188 1 M; pilot Q1112 MMBFJ270 (drain
+*   RLSA_NG, source HV_RTN, gate RLSA_JB); pilot pump C1125-C1127 10 nF, C1128/C1129 4.7 nF, R1190/R1191 2.2 M,
+*   D1117-D1119 BAV199, C1130 2.2 nF, R1135 1.8 M;
+*   sensor 1: R1137 3.9 k, D1125 MMSZ4687, R1138 22 k, U1101 TLP187 -> HOLD_A_HELD_N;
+*   sensor 2: R1196 3.9 k, D1133 MMSZ4687, R1197 22 k, U1105 TLP187 -> HOLD_A_HELD2_N;
+*   sheet 09 (contract issue 3 §5.4): 47 k to 5V0_SYS plus 1 M backup on each line; the opto emitters on GND;
+*   OVP force opto U1103: dark current only.
+* "Held" for the interlock = BOTH lines below 1.2 V (09 reads V_IL >= 1.2 V); the sheet-11 requirement is
+* HELD_N <= 1.0 V. "Conducting" = gate above the IXTT2N170D2's smallest cut-off at that temperature
+* (2.0 V x Fig. 12 factor: 1.78 V at -20 C, 2.0 V at 25 C, 2.22 V at 70 C).
+* MMBFJ270 (onsemi MMBFJ270/D Rev 2: VGS(off) 0.5-2.0 V, IDSS 2-15 mA) uses charger-storage's J177 sub-circuit with
+* vp = pinch-off magnitude (IDSS ~5 mA at any vp); its temperature drift is not modelled [UNVERIFIED].
+* MMSZ4687 temperature coefficient: about 0 mV/K at 4.3 V (onsemi MMSZ4678T1/D Rev 13 Fig. 1, typical), so the
+* ngspice-ignored tbv1 (sim/rev3 note) no longer matters.
+.include ../charger-storage/models/datasheet_models.lib
+.param rsh=22k rser=3.9k cpm=2.2u rpo=470 vclk=3.1 fclk=1.5k rclk=40 tstop=60m trestart=90m stophigh=0 vp=2.0 kcap=0.7 ctrp=2.5 isl=1.57e-14
+.param bz=4.52 z1=0 z2=0 tgap=40m gap=1m
+.param tper={1/fclk}
+VCK ck0 0 PULSE(0 {vclk} 0 2u 2u {tper/2-2u} {tper})
+BCK ck1 0 V={ ((time<tstop && (time<tgap || time>tgap+gap)) || time>trestart) ? v(ck0) : stophigh*vclk }
+RCK ck1 drv {rclk}
+R1131 drv 0 100k
+R1133 drv clk 10
+C1111 clk p1 {kcap*cpm}
+C1112 clk p2 {kcap*cpm}
+C1113 clk p3 {kcap*cpm}
+C1114 clk p4 {kcap*cpm}
+D1109a h1 p1 BAT54
+D1109b p1 0 BAT54
+D1110a h2 p2 BAT54
+D1110b p2 h1 BAT54
+D1111a h3 p3 BAT54
+D1111b p3 h2 BAT54
+D1112a h4 p4 BAT54
+D1112b p4 h3 BAT54
+C1115 h1 0 {kcap*cpm}
+C1116 h2 0 {kcap*cpm}
+C1117 h3 0 {kcap*cpm}
+R1194 h4 g {rpo}
+C1109 g 0 {kcap*3.3u}
+CISS g 0 3.65n
+R1127 g gtp 680k
+R1128 gtp 0 330k
+XD1101 g 0 SMF15CA
+GOVP 0 g cur={0.2u}*(1-exp(-max(-v(g),0)/0.1))
+XQ1112 rng jb 0 J177 params: vp={vp}
+M1109 0 rng g g BSS138
+R1188 rng g 1meg
+C1125 clk rp1 10n
+C1126 clk rp2 10n
+C1127 clk rp3 10n
+D1117a 0 rp1 BAV199
+D1117b rp1 rh1 BAV199
+D1118a rh1 rp2 BAV199
+D1118b rp2 rh2 BAV199
+D1119a rh2 rp3 BAV199
+D1119b rp3 jb BAV199
+C1128 rh1 0 4.7n
+R1190 rh1 0 2.2meg
+C1129 rh2 0 4.7n
+R1191 rh2 0 2.2meg
+C1130 jb 0 2.2n
+R1135 jb 0 1.8meg
+* sensor 1 (z1: 0 intact, 1 zener shorted, 2 zener open)
+R1137 0 zk1 {rser}
+XD1125 la1 zk1x ZENER params: bvz={bz}
+RZ1O zk1 zk1x {z1==2 ? 1e15 : 1m}
+RZ1S zk1 la1 {z1==1 ? 0.1 : 1e15}
+R1138 la1 g {rsh}
+XU1101 la1 g heldn1 0 TLP187 params: ctr={ctrp} isled={isl}
+RPU1 v5 heldn1 47k
+RBU1 v5 heldn1 1meg
+* sensor 2
+R1196 0 zk2 {rser}
+XD1133 la2 zk2x ZENER params: bvz={bz}
+RZ2O zk2 zk2x {z2==2 ? 1e15 : 1m}
+RZ2S zk2 la2 {z2==1 ? 0.1 : 1e15}
+R1197 la2 g {rsh}
+XU1105 la2 g heldn2 0 TLP187 params: ctr={ctrp} isled={isl}
+RPU2 v5 heldn2 47k
+RBU2 v5 heldn2 1meg
+V5 v5 0 5
+BHA heldall 0 V=max(v(heldn1),v(heldn2))
+.control
+set noaskquit
+foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
+  alterparam vclk = 3.1
+  alterparam fclk = 1.5k
+  alterparam rclk = 40
+  alterparam kcap = 0.7
+  alterparam vp = 2.0
+  alterparam ctrp = 2.5
+  alterparam isl = 1.57e-14
+  alterparam bz = 4.52
+  set vc = -1.78
+  alterparam stophigh = 0
+  alterparam z1 = 0
+  alterparam z2 = 0
+  alterparam rsh = 22k
+  set tc = -20
+  if $cs = 1
+    set nm = "W1_cold-20_aged_1.35kHz_pilot2.0"
+    alterparam fclk = 1.35k
+  end
+  if $cs = 2
+    set nm = "W2_cold-20_aged_1.5kHz_pilot2.0"
+  end
+  if $cs = 3
+    set nm = "W3_cold-20_aged_1.65kHz_pilot2.0"
+    alterparam fclk = 1.65k
+  end
+  if $cs = 4
+    set nm = "W4_cold-20_aged_1.5kHz_pilot0.5_slowest_release_cold"
+    alterparam vp = 0.5
+  end
+  if $cs = 5
+    set nm = "W5_nom25_3.3V_1.5kHz_pilot1.2_nomsensors"
+    alterparam vclk = 3.3
+    alterparam rclk = 35
+    alterparam kcap = 1.0
+    alterparam vp = 1.2
+    alterparam ctrp = 5
+    alterparam isl = 4.7e-14
+    alterparam bz = 4.3
+    set vc = -2.0
+    set tc = 25
+  end
+  if $cs = 6
+    set nm = "W6_hot70_3.2V_1.35kHz_pilot0.5_newsensors"
+    alterparam vclk = 3.2
+    alterparam fclk = 1.35k
+    alterparam vp = 0.5
+    alterparam ctrp = 100
+    alterparam isl = 1.41e-13
+    alterparam bz = 4.09
+    set vc = -2.22
+    set tc = 70
+  end
+  if $cs = 7
+    set nm = "W7_hot70_3.1V_1.65kHz_pilot2.0_aged"
+    alterparam fclk = 1.65k
+    set vc = -2.22
+    set tc = 70
+  end
+  if $cs = 8
+    set nm = "W8_fresh25_3.5V_1.65kHz_pilot0.5_newsensors"
+    alterparam vclk = 3.5
+    alterparam rclk = 30
+    alterparam kcap = 1.0
+    alterparam fclk = 1.65k
+    alterparam vp = 0.5
+    alterparam ctrp = 100
+    alterparam isl = 1.41e-13
+    alterparam bz = 4.09
+    set vc = -2.0
+    set tc = 25
+  end
+  if $cs = 9
+    set nm = "Z1_cold_aged_1.5kHz_sensor2_ZENER_SHORTED"
+    alterparam z2 = 1
+  end
+  if $cs = 10
+    set nm = "Z2_cold_aged_1.5kHz_sensor2_ZENER_OPEN"
+    alterparam z2 = 2
+  end
+  if $cs = 11
+    set nm = "Z3_cold_aged_1.5kHz_sensor1_ZENER_SHORTED"
+    alterparam z1 = 1
+  end
+  if $cs = 12
+    set nm = "Z4_cold_aged_1.5kHz_sensor1_ZENER_OPEN"
+    alterparam z1 = 2
+  end
+  if $cs = 13
+    set nm = "Z5_hot70_newsensors_1.5kHz_pilot0.5_sensor2_ZENER_SHORTED"
+    alterparam vclk = 3.2
+    alterparam vp = 0.5
+    alterparam ctrp = 100
+    alterparam isl = 1.41e-13
+    alterparam bz = 4.09
+    set vc = -2.22
+    alterparam z2 = 1
+    set tc = 70
+  end
+  if $cs = 14
+    set nm = "W9_cold-20_aged_1.5kHz_pilot2.0_2.9V_clock_(below_the_3.1_V_corner)"
+    alterparam vclk = 2.9
+  end
+  if $cs = 15
+    set nm = "W10_cold-20_NEW_sensors_ctr500_3.1V_1.5kHz_pilot2.0"
+    alterparam ctrp = 5
+  end
+  if $cs = 16
+    set nm = "W11_cold-20_aged_3.3V_clock_1.5kHz_pilot2.0"
+    alterparam vclk = 3.3
+  end
+  if $cs = 17
+    set nm = "W12_cold-20_aged_3.1V_1.5kHz_pilot2.0_LED_shunt_47k_(variant_not_drawn)"
+    alterparam rsh = 47k
+  end
+  if $cs = 18
+    set nm = "W13_cold-20_aged_3.2V_clock_1.5kHz_pilot2.0"
+    alterparam vclk = 3.2
+  end
+  if $cs = 19
+    set nm = "W14_cold-20_aged_3.2V_clock_1.35kHz_pilot2.0"
+    alterparam vclk = 3.2
+    alterparam fclk = 1.35k
+  end
+  reset
+  option temp=$tc
+  tran 5u 130m 0 10u uic
+  let thm = -1
+  let tcm = -1
+  let tnhm = -1
+  let trhm = -1
+  meas tran theld when v(heldall)=1.2 fall=1
+  meas tran vhmax max v(g) from=30m to=40m
+  meas tran vhmin min v(g) from=30m to=40m
+  meas tran h1max max v(heldn1) from=30m to=40m
+  meas tran h2max max v(heldn2) from=30m to=40m
+  meas tran gaph max v(heldall) from=40.5m to=45m
+  meas tran tcond when v(g)=$vc rise=1 td=60m
+  meas tran tnh when v(heldall)=1.2 rise=1 td=60m
+  meas tran trh when v(heldall)=1.2 fall=1 td=90m
+  if length(theld) > 0
+    let thm = theld*1e3
+  end
+  if length(tcond) > 0
+    let tcm = (tcond - 60m)*1e3
+  end
+  if length(tnh) > 0
+    let tnhm = (tnh - 60m)*1e3
+  end
+  if length(trh) > 0
+    let trhm = (trh - 90m)*1e3
+  end
+  echo "HOLD $nm T=$tc C | held_after_powerup_ms=$&thm | hold worst point V=$&vhmax (best $&vhmin) | HELD_N max while held: s1=$&h1max s2=$&h2max | 1 ms gap: max=$&gaph | stop low: conducting_ms=$&tcm not_held_ms=$&tnhm | restart held_ms=$&trhm"
+end
+quit
+.endc
+.end

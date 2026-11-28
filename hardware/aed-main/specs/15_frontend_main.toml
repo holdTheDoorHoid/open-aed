@@ -1,16 +1,17 @@
 # 15_frontend_main — PATIENT: main heart-signal (ECG, channel 2) and pad-impedance (respiration channel 1, 64 kHz)
 # front end, ADS1292R, with defibrillation protection on every tap from PT_FE_A / PT_FE_B.
-# NOT FOR CONSTRUCTION — unreviewed design. Source: docs/HARDWARE_DESIGN.md §B3.1-B3.4, §B3.7; contract.md issue 2
-# (§5.7, §5.8, §8, §10). Capture notes, arithmetic and failure table: hardware/aed-main/capture-notes/WP-H.md.
+# NOT FOR CONSTRUCTION — unreviewed design. Source: docs/HARDWARE_DESIGN.md v0.3 §B3.1-B3.4, §B3.7; contract.md issue 3
+# (§5.7, §5.8, §8, §10); change order capture-notes/rev3-changes.md WP-H H-4 (separate ECG sense resistors, D-67). Capture notes, arithmetic and failure table: hardware/aed-main/capture-notes/WP-H.md.
 # References 1501-1599.
 
 [sheet]
 name = "15_frontend_main"
 title = "PATIENT: main ECG + pad-impedance front end ADS1292R (64 kHz respiration carrier) with defibrillation protection"
-source = "docs/HARDWARE_DESIGN.md §B3; hardware/aed-main/contract.md §5.8, §8, §10; capture notes WP-H"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B3; hardware/aed-main/contract.md issue 3 §5.8, §8, §10; rev3-changes.md WP-H H-4; capture notes WP-H"
 date = "2026-11-27"
 comments = ["Every tap: patient side = defibrillator-rated DPCR resistor (+ 2 x 3 kV C0G on drive taps) -> TVS to GND -> inner resistor -> chip pin.",
-            "Excitation is limited by the ADS1292R itself (100 uA max): ~80 uA here, NOT the 0.34 mA the design assumed (notes)."]
+            "Excitation is limited by the ADS1292R itself (100 uA max): ~80 uA here, NOT the 0.34 mA the design assumed (notes).",
+            "Revision 0.3 (H-4, D-67): the ECG branch has its own 51 k DPCR sense resistors R1528/R1529 and clamps D1506/D1507, so the ECG filter C1505 no longer shunts the 64 kHz impedance signal."]
 
 [nets]
 power = ["GND", "3V3_MAIN"]
@@ -52,13 +53,15 @@ TVS D1501/D1502 Bourns CDSOD323-T03C (bidirectional, VWM 3.3 V, VBR >= 4.0 V, 35
 
 [[group]]
 id = "sense"
-title = "Sense taps: DPCR2512 51 k + TVS to GND, then 10 k to the ECG inputs (IN2) and 10 k + 2.2 nF to the respiration inputs (IN1)"
+title = "Sense taps, two per pad: impedance R1507/R1508 51 k DPCR + TVS + 10 k + 2.2 nF (IN1); ECG R1528/R1529 51 k DPCR + TVS + 10 k (IN2)"
 note = """
 External 5 kV pulse: <= 98 mA one-sided (49 mA balanced) through each 51 k; <= 0.74 J one-sided per pulse (V^2 tau / 2R with tau = 3.4 ms); DPCR rating = 100 pulses of 5 kV peak, single-pulse curve ~1.5 kW at 1 ms. Own shock 2,182 V for up to 20 ms (relay fault): 43 mA, 93 W, 1.9 J per resistor; curve ~250 W at 20 ms [CALC; curve values read from the graph].
 TVS currents 43-98 mA for milliseconds: energy small (<= 5 mJ) but outside the 8/20 us rating basis [UNVERIFIED for ms pulses]. Chip pin current through 10 k <= 0.34 mA.
 ECG (channel 2): IN2P/IN2N DC-coupled through 61 k per side; C1505 470 pF C0G differential: 2.8 kHz pole against the charger's 3-43 kHz band [CALC]. IN2 common mode set by the RLD amplifier (below).
-Respiration (channel 1): from the same clamp node through a separate 10 k and 2.2 nF C0G into IN1P/IN1N, biased at mid-supply by 10 M to AVDD and 10 M to GND each (datasheet Figure 68 arrangement). Pole ~1/(2 pi x 61 k x ~25 pF) ~ 100 kHz: ~15 % attenuation and some phase at 64 kHz, removed by RESP_PH choice and calibration.
-Kept apart so the 470 pF ECG filter does not short the 64 kHz carrier. No test points (R9).
+Respiration (channel 1): R1507/R1508 -> clamp D1503/D1504 (PT_MSA_CL/PT_MSB_CL) -> 10 k + 2.2 nF C0G into IN1P/IN1N, biased at mid-supply by 10 M to AVDD and 10 M to GND each (datasheet Figure 68 arrangement).
+Revision 0.3 (H-4): in issue 2 the ECG resistors R1509/R1510 hung on the same clamp nodes, so C1505 (5.3 k at 64 kHz) shunted ~85 % of the impedance signal (simulated 25-34 mohm RMS against < 10 mohm, LR §6). Now the ECG branch has its own R1528/R1529 51 k DPCR from PT_FE_A/PT_FE_B to new clamp nodes PT_ESA_CL/PT_ESB_CL with D1506/D1507 (same parts as R1507/D1503). Simulated (sim/rev3-wph/imp_ecg_noise_wph.cir): IN1 sees 0.97 of the pad voltage (was 0.17); impedance noise 4.6-6.3 mohm RMS (chip noise 0.13 uV/rtHz EST). ECG gain 0.99 and ECG resistor noise 0.28 uV RMS (0.5-40 Hz) unchanged.
+Protection per tap unchanged (each new resistor/TVS sees what R1507/D1503 see: 5 kV external pulse one-sided 97 mA, 0.83 J; own shock bound 2,409 V for 19.9 ms 47 mA, 2.26 J) [SIM rev3-wph fe_protect_wph.cir]. Resistive sense taps per pad rise from 2 x 51 k (R1507 + the supervisor's R1605) to 3 x 51 k, so pad to pad 51 k -> 34 k: diverts ~0.3 % (was ~0.2 %) of an external defibrillator's energy into a 100 ohm patient [CALC].
+No test points (R9).
 """
 
 [[group]]
@@ -267,7 +270,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "RC0603FR-0710KL"
 manufacturer = "Yageo"
 datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-between = ["PT_MSA_CL", "FEM_ECGA"]
+between = ["PT_ESA_CL", "FEM_ECGA"]
 
 [[part]]
 ref = "R1511"
@@ -349,7 +352,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "RC0603FR-0710KL"
 manufacturer = "Yageo"
 datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-between = ["PT_MSB_CL", "FEM_ECGB"]
+between = ["PT_ESB_CL", "FEM_ECGB"]
 
 [[part]]
 ref = "R1512"
@@ -405,6 +408,61 @@ mpn = "GRM1885C1H471JA01D"
 manufacturer = "Murata"
 datasheet = "https://www.murata.com/en-us/products/productdetail?partno=GRM1885C1H471JA01D"
 between = ["FEM_ECGA", "FEM_ECGB"]
+
+# ====================================================================== ECG sense taps (revision 0.3, H-4)
+[[part]]
+ref = "R1528"
+group = "sense"
+lib_id = "Device:R"
+value = "51k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-51KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "ECG sense tap A (revision 0.3, H-4; service item as R1507)" }
+between = ["PT_FE_A", "PT_ESA_CL"]
+
+[[part]]
+ref = "D1506"
+group = "sense"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { DocRef = "ECG sense tap A clamp (revision 0.3, H-4)", Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_ESA_CL
+2 A2 GND
+"""
+
+[[part]]
+ref = "R1529"
+group = "sense"
+lib_id = "Device:R"
+value = "51k DPCR"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "DPCR2512-51KJT18"
+manufacturer = "TT Electronics (Welwyn)"
+datasheet = "https://www.ttelectronics.com/TTElectronics/media/ProductFiles/Datasheets/DPCR.pdf"
+fields = { DocRef = "ECG sense tap B (revision 0.3, H-4; service item as R1508)" }
+between = ["PT_FE_B", "PT_ESB_CL"]
+
+[[part]]
+ref = "D1507"
+group = "sense"
+lib_id = "Device:D_TVS"
+value = "CDSOD323-T03C"
+footprint = "Diode_SMD:D_SOD-323"
+mpn = "CDSOD323-T03C"
+manufacturer = "Bourns"
+datasheet = "https://www.bourns.com/docs/product-datasheets/cdsod323-txxc.pdf"
+fields = { DocRef = "ECG sense tap B clamp (revision 0.3, H-4)", Verify = "ms-duration current rating (only 8/20 us published)" }
+pins = """
+1 A1 PT_ESB_CL
+2 A2 GND
+"""
 
 # ====================================================================== RLD bias
 [[part]]

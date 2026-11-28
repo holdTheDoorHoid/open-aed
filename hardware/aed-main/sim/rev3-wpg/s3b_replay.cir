@@ -1,0 +1,49 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+* S-3b: the fast idle path ALONE, driven by the shunt Kelvin voltage (SHUNT_KP - SHUNT_KN) recorded in an S-3 run
+* (s3_false_trip.cir writes it; run.sh turns it into the PWL include WAVEINC). Why: in the full bridge circuit the
+* solver settings that survive the stiff switching events (gear, reltol 2e-3, trtol 1) also put ns-wide numerical
+* spikes of 5-20 mV on the fast path's internal nodes, which no physical cause explains (the amplifier input moved
+* while the shunt voltage feeding it did not). The fast path loads the shunt by 100 ohm only, so it can be replayed
+* on its own with tight tolerances. Everything is referred to SHUNT_KN (layout requirement L-1).
+* Output: largest comparator overdrive (positive = past its rising switching point at ith) in each armed window,
+* the time spent past it, and whether the comparator output crossed half-way (a trip).
+.include wpg_common.inc
+.param ith=2.54 vol=0.15 vos=0 cin=100p
+.include WAVEINC
+V33 v33 0 3.3
+XF kp 0 v33 0 fflt faout fref fastpath params: vosc={0.022*(ith-3.204)} vos={vos} vol={vol} cin={cin}
+.options method=trap reltol=1e-4 abstol=1e-9 vntol=1e-6
+.control
+set noaskquit
+* (keep equal to .param ith; run.sh rewrites this line)
+let ith_v = 2.54
+tran 1n TSTOP 195u 2n
+let tw1a = 202e-6
+let tw1b = 300e-6
+let tw2a = 409e-6
+let tw2b = 720e-6
+let tw3a = 829e-6
+let tw3b = TSTOP_S
+let ovd = (v(faout)-v(fref)-0.022*(ith_v-3.204)-0.003)*1000
+let pos = ovd gt 0
+meas tran o1 max ovd from=tw1a to=tw1b
+meas tran o2 max ovd from=tw2a to=tw2b
+meas tran o3 max ovd from=tw3a to=tw3b
+meas tran p1 integ pos from=tw1a to=tw1b
+meas tran p2 integ pos from=tw2a to=tw2b
+meas tran p3 integ pos from=tw3a to=tw3b
+meas tran f1 max v(fflt) from=tw1a to=tw1b
+meas tran f2 max v(fflt) from=tw2a to=tw2b
+meas tran f3 max v(fflt) from=tw3a to=tw3b
+let m1 = -o1/22
+let m2 = -o2/22
+let m3 = -o3/22
+let p1n = p1*1e9
+let p2n = p2*1e9
+let p3n = p3*1e9
+let n = length(time)-1
+let te = time[n]
+echo "RESULT CASE_LABEL | replay: fast flag max W1/W2/W3=$&f1/$&f2/$&f3 (trips if > 0.5) | overdrive max W1/W2/W3=$&o1/$&o2/$&o3 mV | margin W1/W2/W3=$&m1/$&m2/$&m3 A (above the threshold at ith) | time past W1/W2/W3=$&p1n/$&p2n/$&p3n ns | t_end=$&te of TSTOP_S"
+.endc
+.end

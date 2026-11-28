@@ -2,10 +2,11 @@
 # NOT FOR CONSTRUCTION — unreviewed design. Drawn with AI assistance; not reviewed by a qualified high-voltage or
 # medical-device engineer (SAFETY.md §2a). Nothing here is an instruction to build, power or test anything.
 #
-# Source: docs/HARDWARE_DESIGN.md v0.2 §B4 (charger), §B8.2 (charger gates), §B12 (net classes), §13, §F-3;
-# hardware/aed-main/contract.md issue 2 (§2 refs, §4 rails, §5.5 nets, §8 parts, §9 WP-E decisions); D-25, D-29,
-# D-41, D-44, D-60. Arithmetic, part choices, datasheet versions, failure table and open problems:
-# hardware/aed-main/capture-notes/WP-E.md. References 1001-1099 (contract §2).
+# Source: docs/HARDWARE_DESIGN.md v0.3 §B4 (charger), §B8.2 (charger gates), §B12 (net classes), §13, §F-3;
+# hardware/aed-main/contract.md issue 3 (amends issue 2: §2 refs, §4 rails, §5.5 nets, §8 parts, §9 WP-E decisions);
+# change order capture-notes/rev3-changes.md WP-E (E-1..E-4); D-25, D-29, D-41, D-44, D-60, D-65.
+# Arithmetic, part choices, datasheet versions, failure table and open problems:
+# hardware/aed-main/capture-notes/WP-E.md (section "Revision 0.3" for this revision). References 1001-1099.
 
 [sheet]
 name = "10_hv_charger"
@@ -13,7 +14,7 @@ title = "HIGH VOLTAGE: LT3751 flyback charger, TPS25982 eFuse, 1:50 transformer,
 source = "docs/HARDWARE_DESIGN.md §B4; contract.md §5.5; capture notes WP-E.md"
 date = "2026-11-27"
 comments = [
-  "HIGH VOLTAGE: HV_* nets reach about 2,200 V (2,420 V capacitor test rating). Classes HV / HV_PULSE (hierarchy.toml). No test point on any HV_* net (contract R9).",
+  "HIGH VOLTAGE: HV_* nets reach about 2,000 V in normal use (top of the at-plan window 2,008.6 V) and up to 2,409 V if the last-resort primary-side trip is the only limit left (capacitor surge rating >= 2,420 V, D-65). Classes HV / HV_PULSE (hierarchy.toml). No test point on any HV_* net (contract R9).",
   "Charger runs only when VTRANS_EN (eFuse) and CHARGE_EN AND local VTRANS-good (CHARGE pin) are high; both come from sheet 09 = request AND both discharge paths proven held AND not test mode (D-25).",
   "Child ceiling: FB divider active only while MODE_CHILD_HW is high; open/absent contact = FB grounded = adult (D-60). MODE_HW_RB_N reads back the FB-switch gate drive.",
 ]
@@ -99,7 +100,7 @@ title = "LT3751IUFD controller: charge mode (adult), UVLO/OVLO, RVTRANS/RVOUT/RD
 note = """
 VCC = 5V0_SYS; LVGATE tied to HVGATE (VCC <= 8 V, datasheet Note 8); CLAMP to VCC (5.6 V gate clamp; the gate swings to VCC with LVGATE active).
 Lockouts (V = 1.225 V + 50 uA x R; pin threshold 1.195-1.255 V, pin current 48.5-51.5 uA): UVLO1 69.8k -> VTRANS 4.58/4.72/4.85 V; OVLO1 154k -> 8.66/8.93/9.19 V; UVLO2 71.5k -> VCC 4.66/4.80/4.94 V; OVLO2 87.6k -> 5.44/5.61/5.77 V. 470 pF on each pin (datasheet: 100 pF-1 nF against false trips).
-Primary-side output trip (VOUT comparator): Vout = 0.98 x N x RVOUT/RBG - Vdiode = 0.98 x 50 x 40.2k/931 = 2,116 V sensed, minus the rectifier and R1004 drops at the trip. RVTRANS = RVOUT = 40.2k, RDCM = 18.2k (= 0.45 x RVTRANS; datasheet Table 2 row for VTRANS 5-80 V), all 0.1 %. Keep RVOUT/RDCM/RVTRANS nodes short with no plane underneath (datasheet layout items 4).
+Primary-side output trip (VOUT comparator), v0.3 LAST-RESORT layer L3 (rev3 E-1, D-65): Vout + drops = 0.98 x N x RVOUT/RBG = 0.98 x 50 x 40.2k/876 = 2,249 V sensed; true capacitor volts = sensed minus the rectifier, R1004 and winding drops (19-48 V). Band 2,116-2,316 V true, 2,409 V with the comparator's maximum overdrive (datasheet 40 mV at 2 us): never below the 2,008.6 V window top (107 V), always inside the capacitor's 2,420 V surge rating (11 V at the very top). Nominal ~2,215 V is ABOVE the 2,200 V continuous rating by design: the latching OVP comparator (sheet 08, 2,073-2,142 V) and the firmware limit act first; this trip only matters if both have failed. RVTRANS = RVOUT = 40.2k, RDCM = 18.2k (= 0.45 x RVTRANS; datasheet Table 2 row for VTRANS 5-80 V), all 0.1 %. Keep RVOUT/RDCM/RVTRANS nodes short with no plane underneath (datasheet layout items 4).
 DONE and FAULT are latched open collectors; both pulse low for microseconds at every CHARGE rise. 10k + 1 nF (10 us) filters that pulse (datasheet: 5-20 us RC); the pull-ups (100k to 3V3_MAIN) are on 04.
 """
 
@@ -107,7 +108,7 @@ DONE and FAULT are latched open collectors; both pulse low for microseconds at e
 id = "power"
 title = "Primary power stage: 2 x BSC070N10LS5 in parallel, 5 mOhm Kelvin sense (21.2 A peak), RC snubber, diode + 45 V TVS clamp"
 note = """
-Current limit 106 mV (100-112) / 5 mOhm = 21.2 A (19.8-22.9 A incl. 1 % resistor and 180 ns delay at 8.4 V). Switch drain: VTRANS (<= 8.4 V) + reflected (Vout + drops)/50 (<= 45.7 V at the trip top) + leakage spike clamped by D1003 + D1004 (SMCJ45A: VBR >= 50 V, about 75 V at 23 A) -> about 90 V peak against 100 V (and EAS 55 mJ avalanche rating as backup).
+Current limit 106 mV (100-112) / 5 mOhm = 21.2 A (19.8-22.9 A incl. 1 % resistor and 180 ns delay at 8.4 V). Switch drain: VTRANS (<= 8.4 V) + reflected (Vout + drops)/50 (<= 46.7 V at the v0.3 trip top, 48.5 V with maximum overdrive: above the SMCJ45A's 45 V standoff, below its 50 V minimum breakdown; simulated extra clamp loss <= 16 uJ/cycle, sim/rev3-wpe) + leakage spike clamped by D1003 + D1004 (SMCJ45A: VBR >= 50 V, about 75 V at 23 A) -> about 90 V peak against 100 V (and EAS 55 mJ avalanche rating as backup).
 Two FETs share the 12.4 A RMS: about 0.5 W each in conduction at 4.5-5 V gate (8.5 mOhm max at 25 C, x1.55 hot). Individual 2.2 Ohm gate resistors; 10k gate-source resistors keep the FETs off if 5V0_SYS is absent while VTRANS is present.
 Snubber across the primary 10 Ohm + 1 nF (tau 10 ns < 1 us, datasheet). The sense resistor is Kelvin-connected: CSP and CSN are dedicated traces to its sense pads (datasheet layout).
 """
@@ -116,7 +117,7 @@ Snubber across the primary 10 Ohm + 1 nF (tau 10 ns < 1 us, datasheet). The sens
 id = "hv_out"
 title = "HIGH VOLTAGE secondary: T1001 1:50 (made to order), D1001 + D1002 UX-F5B in series (each blocks the full voltage, R-15), R1004 fusible -> HV_CAP_P"
 note = """
-Each UX-F5B is rated 8 kV repetitive (Sanken rev 1.6); worst reverse voltage = capacitor 2,420 V (test) + 50 x 9.2 V = 2,880 V -> 2.8 x margin per diode; no voltage sharing is relied on (no grading resistors). Average current <= IPK/2N = 0.23 A vs 0.35 A rating; trr 0.15 us max is ABOVE the LT3751's < 100 ns recommendation (capture notes).
+Each UX-F5B is rated 8 kV repetitive (Sanken rev 1.6); worst reverse voltage = capacitor 2,420 V (surge/test; the v0.3 trip top is 2,409 V) + 50 x 9.2 V = 2,880 V -> 2.8 x margin per diode; no voltage sharing is relied on (no grading resistors). Average current <= IPK/2N = 0.23 A vs 0.35 A rating; trr 0.15 us max is ABOVE the LT3751's < 100 ns recommendation (capture notes).
 R1004 (about 10 Ohm, high-voltage fusible) limits and then breaks a capacitor discharge into the secondary if both diodes short (R-15). No catalogue part found that states >= 3 kV across the open element: qualification part (footprint and MPN to be decided).
 HV_SEC, HV_D_MID, HV_RECT: class HV (12.5 mm placeholder). HV_CAP_P: class HV_PULSE. HV_RTN: class RTN_PULSE. No test points (R9).
 """
@@ -127,7 +128,7 @@ title = "Child-mode voltage ceiling (D-60): FB divider 14 x 2.87 MOhm + 36.9 kOh
 note = """
 Adult and default: Q1003 and Q1004 on, FB about 0 V -> charge mode (the LT3751 runs until CHARGE falls or the VOUT comparator trips). Child: MODE_CHILD_HW high -> U1005 drives FB_GATE low -> both FETs off -> FB = Vout/1,089.9 -> hand-over to regulation >= 1,206 V, regulation 1,282-1,365 V, no-load stop <= 1,507 V.
 Fail direction: MODE_CHILD_HW open or unpowered -> R1042 pulls it low -> FB_GATE high -> adult; U1005 output open -> R1043 pulls FB_GATE high -> adult. One FET open -> the other still grounds FB (adult kept; this is why there are two). U1005 output stuck low -> child ceiling in the adult position, seen on MODE_HW_RB_N (U1006 open drain follows FB_GATE: low = child ceiling active). Either FET shorted = adult ceiling always (design fault 36, not read back).
-Top string: 14 x TNPV1210 2.87 MOhm 0.1 % 25 ppm/K thin film (the contract's 4.02 MOhm 0.1 % thin film is not made: Vishay TNPV tops out at 3.01 MOhm) -> 40.18 MOhm, ratio 1,089.9 vs the design's 1,090.4. 157 V and 8.6 mW per element at 2,200 V (part rated 1,000 V). Every node HV_FB_n is class HV. CHG_FB is low voltage but its creepage to HV_FB_13 must follow the in-string rule (0.6 mm + 0.005 mm/V).
+Top string: 14 x TNPV1210 2.87 MOhm 0.1 % 25 ppm/K thin film (the contract's 4.02 MOhm 0.1 % thin film is not made: Vishay TNPV tops out at 3.01 MOhm) -> 40.18 MOhm, ratio 1,089.9 vs the design's 1,090.4. (Contract issue 3 §8 and design v0.3 §B4.3 still name 10 x 4.02 MOhm: WP-E C4 stays open as a documentation change.) 157 V and 8.6 mW per element at 2,200 V (part rated 1,000 V). Every node HV_FB_n is class HV. CHG_FB is low voltage but its creepage to HV_FB_13 must follow the in-string rule (0.6 mm + 0.005 mm/V).
 C1024 2.2 nF on FB (datasheet: small capacitor FB to ground lowers injected ripple) gives tau 81 us with the 36.9k.
 """
 
@@ -216,7 +217,7 @@ mpn = "TPS259824ONRGER"
 manufacturer = "Texas Instruments"
 datasheet = "https://www.ti.com/lit/ds/symlink/tps25982.pdf"
 description = "eFuse on the transformer supply: enable = VTRANS_EN, ILIM 13 A, circuit breaker, latch-off, dV/dt soft start"
-fields = { DocRef = "U1002 (R-5, R-16)", Verify = "recommended junction temperature is -15..125 C (datasheet 6.3) although orderables list -40..125 C: operation at -20 C (D-44) is outside the recommended range; pad 25/26 = IN/GND pairing" }
+fields = { DocRef = "U1002 (R-5, R-16)", Verify = "OPEN (WP-E C6, O-16): recommended junction temperature is -15..125 C (SLVSEI3D, 6.3) although orderables list -40..125 C: operation at -20 C (D-44) is outside the recommended range; pad 25/26 = IN/GND pairing" }
 new_row = true
 pins = """
 1  IN        VTRANS_IN
@@ -689,7 +690,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "TNPW060371K5BEEA"
 manufacturer = "Vishay Dale"
 datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
-description = "UVLO2 (VCC under-voltage): 4.80 V nominal, 4.66-4.94 V (contract issue: top overlaps a 5V0_SYS at -2 %)"
+description = "UVLO2 (VCC under-voltage): 4.80 V nominal, 4.66-4.94 V. OPEN (WP-E C3, O-16): the top is above the 4.9 V minimum 5V0_SYS of §B1.6 and the bottom below the 4.75 V minimum VCC; no resistor fits both"
 fields = { DocRef = "§B4.3 UVLO2 71.5k (R-20)" }
 between = ["5V0_SYS", "LT_UVLO2"]
 
@@ -801,13 +802,13 @@ between = ["VTRANS_SW", "LT_RDCM"]
 ref = "R1019"
 group = "ctrl"
 lib_id = "Device:R"
-value = "931 0.1%"
+value = "876 0.1%"
 footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "TNPW0603931RBEEA"
+mpn = "TNPW0603876RBEEA"
 manufacturer = "Vishay Dale"
 datasheet = "https://www.vishay.com/docs/28758/tnpw_e3.pdf"
-description = "RBG: trip current 0.98 V/931 = 1.05 mA (datasheet: best accuracy 100 uA-2 mA). Sensed trip 2,116 V (contract value kept; see contract issue on the band)"
-fields = { DocRef = "§B4.3 RBG 931 Ohm" }
+description = "RBG (v0.3, was 931): trip current 0.98 V/876 = 1.12 mA (datasheet: best accuracy 100 uA-2 mA). Sensed trip 2,249 V nominal; true capacitor trip 2,116-2,316 V, 2,409 V with max comparator overdrive: last-resort layer L3 above the normal window, inside the capacitor surge rating (D-65)"
+fields = { DocRef = "§B4.3 RBG 876 Ohm (contract issue 3 §8; rev3-changes E-1)", Verify = "ordering code per the TNPW scheme, not checked against the maker's page" }
 between = ["LT_RBG", "GND"]
 
 [[part]]
@@ -865,14 +866,14 @@ between = ["CHG_FAULT_N", "GND"]
 ref = "T1001"
 group = "power"
 lib_id = "aed_charger:T_FLYBACK_1to50"
-value = "1:50 7.5uH (made to order)"
+value = "1:50 7.5uH +10/-5% (made to order)"
 footprint = "aed_charger:T1001_made_to_order_TBD"
 footprint_todo = true
 mpn = "made to order per docs/HARDWARE_DESIGN.md §B4.5"
 manufacturer = "made to order (no maker selected)"
 datasheet = "docs/HARDWARE_DESIGN.md §B4.5"
-description = "Flyback transformer: 1:50 +-1 %, Lpri 7.5 uH +-10 %, <= 10 % L loss at 25 A, leakage <= 1 % Lpri, Csec <= 15 pF, >= 2,200 V DC working; terminals as defined by the symbol"
-fields = { DocRef = "T1001 (D-42)", Verify = "everything: no maker, no sample" }
+description = "Flyback transformer (v0.3 requirement, §B4.5): 1:50 +-1 % (load-bearing: sets the primary-trip band); Lpri 7.5 uH +10 %/-5 % (7.125-8.25 uH); efficiency >= 90 % (core + AC winding loss <= 10 % of throughput) at 20 A peak, 30-45 kHz; primary 12.4 A RMS; secondary winding resistance stated by the maker (design assumes <= 20 Ohm); <= 10 % L loss at 25 A 70 C; leakage <= 1 % Lpri; Csec <= 15 pF; >= 2,200 V DC working; terminals as defined by the symbol"
+fields = { DocRef = "T1001 (D-42; rev3-changes E-2; WP-E C2, C8)", Verify = "everything: no maker, no sample. Lpri at the -5 % limit gives a 3.04 us flyback at the 2,316 V trip top but 2.93 us at 2,409 V (datasheet sizing rule 3 us); Lpri at +10 % with a cold pack may exceed the LT3751 one-shot-clock rule (charge time up to ~7.1 s, EST): capture notes WP-E Revision 0.3" }
 new_row = true
 pins = """
 1 PRI_DOT VTRANS
@@ -977,7 +978,7 @@ mpn = "WSK25125L000FEA"
 manufacturer = "Vishay Dale"
 datasheet = "https://www.vishay.com/docs/30108/wsk2512.pdf"
 description = "Current sense 5.0 mOhm, 4-terminal (pads 1, 4 force; 2, 3 sense), 1 W at 70 C, 35 ppm/K, 0.5-5 nH. Dissipation 0.68 W worst during a charge (LT3751 eq.)"
-fields = { DocRef = "R1001 5.0 mOhm (design asked 2 W: departure, capture notes)" }
+fields = { DocRef = "R1001 5.0 mOhm (design asked 2 W: departure, capture notes). v0.3 E-3: kept at 5.0 mOhm; 4.7 mOhm not taken (24 A peak against the transformer's 25 A and the eFuse's 11.4 A minimum limit)" }
 pins = """
 1 ~ VTRANS_ISNS    # force, FET sources
 2 ~ CS_P           # sense at the FET end -> CSP
@@ -1102,7 +1103,7 @@ footprint = "Resistor_SMD:R_1210_3225Metric"
 mpn = "TNPV12102M87BEEA"
 manufacturer = "Vishay Draloric"
 datasheet = "https://www.vishay.com/docs/28881/tnpve3.pdf"
-description = "FB string 1/14 (top, at the capacitor): 157 V, 8.6 mW at 2,200 V; TNPV1210 Umax 1,000 V"
+description = "FB string 1/14 (top, at the capacitor): 157 V, 8.6 mW at 2,200 V (172 V at the 2,409 V trip top); TNPV1210 Umax 1,000 V"
 between = ["HV_CAP_P", "HV_FB_1"]
 
 [[part]]

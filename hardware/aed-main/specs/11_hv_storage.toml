@@ -5,7 +5,10 @@
 # NOT FOR CONSTRUCTION — unreviewed design. HIGH VOLTAGE (up to 2,200 V). This file is a circuit description
 # for review (SAFETY.md §2a, CLAUDE.md rule 2); it is not an instruction to build, power or test anything.
 #
-# Work package WP-F (contract.md issue 2). Design source: docs/HARDWARE_DESIGN.md v0.2 §B5, §B9.1, §13, §15, §F-7.
+# Work package WP-F (contract.md issue 3). Design source: docs/HARDWARE_DESIGN.md v0.3 §B5, §B9.1, §13, §15, §F-7.
+# Revision 0.3 applied 2026-11-27 from capture-notes/rev3-changes.md section WP-F (F-1..F-12); simulation of the
+# circuit as drawn: hardware/aed-main/sim/rev3-wpf/. New references 1127-1134, 1137-1144, 1194-1199, U1105-U1106,
+# TP1107-TP1108 and overflow R6101-R6122 (contract §2: NN01 + 5000; R6115-R6122 are WP-F's own addition W-1).
 # Capture notes, arithmetic, failure table and every departure: hardware/aed-main/capture-notes/WP-F.md.
 # References 1101-1199 (contract §2). The test relay K1301 and the 200 ohm test load R1303 are on 13_hv_bridge
 # (contract §2), not on this sheet.
@@ -20,9 +23,9 @@
 [sheet]
 name = "11_hv_storage"
 title = "HIGH VOLTAGE: storage terminals, bleeder, sense strings, discharge stacks A/B, hold pumps, held sense, OVP force"
-source = "docs/HARDWARE_DESIGN.md §B5, §B9.1; contract.md issue 2 §5.4-5.6, §8 sheet 11; capture notes WP-F.md"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B5, §B9.1; contract.md issue 3 §5.4-5.6, §8 sheet 11; capture-notes/rev3-changes.md WP-F; capture notes WP-F.md"
 date = "2026-11-27"
-comments = ["HIGH VOLTAGE up to 2,200 V on HV_CAP_P and every HV_* net. A charged capacitor must always have a way to empty: two independent depletion stacks (A held off only by the main, B only by the supervisor) plus a permanent bleeder.", "Held = an optocoupler LED lit by the negative gate bias (R-6). Open, unpowered or missing = not held. Over-voltage force = second opto per stack shorting the bias (R-10).", "Capture WP-F 2026-11-27. Departures from the design document are listed in hardware/aed-main/capture-notes/WP-F.md (4-stage pump, JFET-pilot release, TLP187 Darlington optos, 20 x 1.99 Mohm supervisor string)."]
+comments = ["HIGH VOLTAGE up to 2,200 V on HV_CAP_P and every HV_* net. A charged capacitor must always have a way to empty: two independent depletion stacks (A held off only by the main, B only by the supervisor) plus a permanent bleeder.", "Held = an optocoupler LED lit by the negative gate bias (R-6); TWO independent sensors per stack, each on its own line (rev 0.3, I-4). Open, unpowered or missing = not held. Over-voltage force = a further opto per stack shorting the bias (R-10).", "Rev 0.3: 1,700 V IXTT2N170D2 devices, steered upper gates (GP02-40 || 22 M, 100 M gate-source), 4 x (2 x 10 M) string (WP-F W-1), 10 M + 3.3 nF across every device, 470 ohm pump output, MMBFJ270 pilots, 4.3 V zeners. Capture WP-F 2026-11-27; departures and simulations in hardware/aed-main/capture-notes/WP-F.md."]
 
 [nets]
 power = ["GND", "HV_RTN", "3V3_SUP"]
@@ -30,7 +33,8 @@ power_flags = ["HV_RTN"]   # HV_RTN is made on this sheet (contract §4: NT1101 
 global = [
   "HV_CAP_P",                               # capacitor +, from 10_hv_charger; loads 11, 13
   "HOLD_A_DRV", "HOLD_B_DRV",               # hold clocks from 09 (A: 3V3_MAIN buffer, B: 3V3_SUP buffer)
-  "HOLD_A_HELD_N", "HOLD_B_HELD_N",         # opto transistor to GND -> 09 (10 k pull-ups to 5V0_SYS on 09)
+  "HOLD_A_HELD_N", "HOLD_B_HELD_N",         # sensor-1 opto transistor to GND -> 09 (47 k + 1 M pull-ups on 09, issue 3)
+  "HOLD_A_HELD2_N", "HOLD_B_HELD2_N",       # sensor-2 opto transistor to GND -> 09 (issue 3, I-4)
   "OVP_TRIP",                               # from 08 (push-pull on 3V3_SUP); 100 k default here
   "VCAP_M_TAP", "VCAP_S_TAP",               # scaled taps to 07 / 08, clamped to GND here
   "NTC_CAP_M", "NTC_CAP_S",                 # capacitor-case NTCs via J1102 to 07 / 05
@@ -82,28 +86,28 @@ note = "20 x 1.99 Mohm TNPV1206 (0.1 %, 25 ppm/K, < 1 ppm/V) + bottom leg 2 x 79
 
 [[group]]
 id = "stackA"
-title = "STACK A (held off only by the MAIN): dump resistors R1101-R1103 + Q1101 (bottom) ... Q1104 (top), sharing string, gate clamps"
-note = "Normally ON: with no gate bias every IXTT10N100D2 conducts (VGS = 0, RDS(on) 1.5 ohm) and the capacitor empties through 3 x 1.5 kohm. Static sharing: 4 x 10 Mohm string across the stack; the gate of each upper device goes through 100 kohm to the tap below its source, so each upper device is a source follower of its tap and every device blocks V/4 (545 V at 2,182 V) whatever its leakage. Dynamic sharing: 3.3 nF / 2 kV C0G across each string resistor (>= 10 x Coss 300 pF). Every gate has a 15 V bidirectional TVS to its own source; upper gates also have 10 Mohm gate-source so an open 100 kohm leaves a defined VGS = 0 (device conducts). FINDING F-1 (WP-F.md): with tap-referenced followers a SHORTED device puts the device below it (or above, for the top one) at V/2 = 1,091 V at 2,182 V, above the 1,000 V rating; the design's 727 V figure assumes redistribution that this topology does not do."
+title = "STACK A (held off only by the MAIN): dump resistors R1101-R1103 + Q1101 (bottom) ... Q1104 (top) IXTT2N170D2, steered gate feeds, sharing string, per-device RC, gate clamps"
+note = "Normally ON: with no gate bias every IXTT2N170D2 (1,700 V) conducts (VGS = 0, RDS(on) <= 6.5 ohm) and the capacitor empties through 3 x 1.5 kohm. Rev 0.3 (cfg 5 of sim/charger-storage, I-3): sharing string of 4 elements, each 2 x 10 Mohm in parallel (5.0 Mohm; WP-F change W-1 replaces the change order's single 4.7 Mohm so that one open resistor cannot remove a tap reference), + 3.3 nF per element; each upper gate fed tap -> 100 k -> GP02-40 steering diode (anode at the tap side) bypassed by 22 Mohm -> gate, 100 Mohm gate-source, 15 V TVS gate-source; and 10 Mohm + 3.3 nF directly across EVERY device (essential: with a steered gate a leaky device's source can float). The diode stops a shorted device's clamp current from dragging the tap below, so one shorted device puts about V/2 on a neighbour instead of nearly all of it [SIM]. The v0.2 figure of 727 V with one device shorted was wrong (I-3). Results and margins: WP-F.md, Revision 0.3."
 
 [[group]]
 id = "holdA"
-title = "Stack A hold: HOLD_A_DRV -> 4-stage pump -> bottom gate STKA_G; release switch Q1109; held opto U1101 -> HOLD_A_HELD_N"
-note = "Everything here is referenced to HV_RTN at the stack and coupled to the GND side only through the pump capacitors and the optocoupler (R-9). Pump: 4-stage single-clock Dickson-type (pump capacitors driven in parallel from the clock, hold capacitors to HV_RTN), BAT54S Schottky pairs, 2.2 uF / 25 V; output -7.4 V (cold, 3.1 V clock, 1 kHz) to -9.3 V [SIM, behavioural]. DEPARTURE: design says 3 stages; a 3-stage single-clock pump is below -7.0 V even unloaded at the cold corner (WP-F.md). Reservoir 3.3 uF. Gate-source 680 k + 330 k (1.01 Mohm) with test point at the 1/3 tap. Release: P-channel JFET pilot Q1112 (normally ON, source HV_RTN) is pinched off only while a 3-stage positive BAV199 pump (referenced to HV_RTN, so the moving gate node cannot pump it) biases its gate; when the clock stops the bias bleeds away (tau 4 ms; every inner pump node is bled too), the pilot conducts and turns on Q1109 (BSS138, source STKA_G) from the reservoir's own charge. DEPARTURE D-3: a gate-referenced depletion release (BSS126/BSS139) was simulated and either would not stay off at 1 kHz or was pumped back off by the rising gate node (WP-F.md). Held sense: HV_RTN - 3.9 k - 4.7 V zener - TLP187 LED (22 k across it) - STKA_G: LED lit only when the gate is below about -5.5..-7.0 V; Darlington pulls HOLD_A_HELD_N low (10 k pull-up on 09). Open, unlit or unpowered = high = not held."
+title = "Stack A hold: HOLD_A_DRV (1.5 kHz) -> 4-stage pump -> 470 ohm -> bottom gate STKA_G; release Q1109 with MMBFJ270 pilot; two held optos U1101/U1105 -> HOLD_A_HELD_N / HOLD_A_HELD2_N"
+note = "Everything here is referenced to HV_RTN at the stack and coupled to the GND side only through the pump capacitors and the optocouplers (R-9). Pump: 4-stage single-clock, BAT54S pairs, 2.2 uF; last stage PMPA_H4 -> R1194 470 ohm -> STKA_G (rev 0.3, breaks the cold power-up lock-out); reservoir 3.3 uF; 1.01 Mohm gate-source with 1/3 test tap. Requirement (rev 0.3): BOTH sensors held, HELD_N <= 1.0 V, at -20 C, 3.1 V clock, 1.35-1.65 kHz, aged sensors (met [SIM]); release <= 25 ms with the clock stopped LOW (firmware rule). Release: MMBFJ270 P-JFET pilot (VGS(off) 0.5-2.0 V), normally on, pinched off only while the 3-stage BAV199 pump biases it; when the clock stops it turns on Q1109 (BSS138), which empties the gate. Held sense, two identical independent strings: HV_RTN - 3.9 k - MMSZ4687 4.3 V - TLP187 LED (22 k across) - STKA_G; each reads held only below about -4.95..-6.12 V [SIM]; each Darlington on its own line to 09, HOLD_OK = all four lines low. Open, unlit or unpowered = high = not held."
 
 [[group]]
 id = "stackB"
-title = "STACK B (held off only by the SUPERVISOR): dump resistors R1104-R1106 + Q1105 (bottom) ... Q1108 (top), sharing string, gate clamps"
+title = "STACK B (held off only by the SUPERVISOR): dump resistors R1104-R1106 + Q1105 (bottom) ... Q1108 (top) IXTT2N170D2, steered gate feeds, sharing string, per-device RC, gate clamps"
 note = "Identical to stack A, own parts, own string, own nodes. No part or net is shared between the stacks except HV_CAP_P and HV_RTN."
 
 [[group]]
 id = "holdB"
-title = "Stack B hold: HOLD_B_DRV -> 4-stage pump -> STKB_G; release switch Q1110; held opto U1102 -> HOLD_B_HELD_N"
-note = "Identical to stack A's hold circuit. HOLD_B_DRV comes from the 3V3_SUP buffer on 09 (supervisor's clock HOLD_S_CLK)."
+title = "Stack B hold: HOLD_B_DRV (1.5 kHz) -> 4-stage pump -> 470 ohm -> STKB_G; release Q1110 with MMBFJ270 pilot; two held optos U1102/U1106 -> HOLD_B_HELD_N / HOLD_B_HELD2_N"
+note = "Identical to stack A's hold circuit (R1195 470 ohm; second sensor R1198, D1134, R1199, U1106, TP1108). HOLD_B_DRV comes from the 3V3_SUP buffer on 09 (supervisor's clock HOLD_S_CLK)."
 
 [[group]]
 id = "ovp"
 title = "Over-voltage force (R-10): OVP_TRIP -> Q1111 -> one TLP187 LED per stack; transistors short each bottom gate to HV_RTN"
-note = "OVP_TRIP high (08 comparator, 2,160 V) turns Q1111 on; 3V3_SUP drives about 8 mA through each LED (separate 240 ohm resistors, so one open LED does not disable the other). Each Darlington (collector HV_RTN, emitter STKx_G, VCEO 300 V) sinks >= 35 mA, which overpowers its running pump (short-circuit current about 10-15 mA [SIM]) and pulls the gate to about -0.4..-1 V: both stacks conduct even while both controllers keep clocking. Default: OVP_TRIP pulled down 100 k here (contract §5.4) -> no LED current -> no force. 3V3_SUP is used on this sheet for these LEDs only (contract §4)."
+note = "OVP_TRIP high (08 comparator, 2,107 V nominal, latched until OVP_RST, contract issue 3) turns Q1111 on; 3V3_SUP drives about 8 mA through each LED (separate 240 ohm resistors, so one open LED does not disable the other). Each Darlington (collector HV_RTN, emitter STKx_G, VCEO 300 V) sinks >= 35 mA, which overpowers its running pump (short-circuit current about 10-15 mA [SIM]) and pulls the gate to about -0.4..-1 V: both stacks conduct even while both controllers keep clocking. Default: OVP_TRIP pulled down 100 k here (contract §5.4) -> no LED current -> no force. 3V3_SUP is used on this sheet for these LEDs only (contract §4)."
 
 [[part]]
 ref = "J1101"
@@ -817,9 +821,9 @@ footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
 mpn = "EY152KE"
 manufacturer = "Ohmite"
 datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
-description = "Stack A dump resistor 1/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+description = "Stack A dump resistor 1/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 733 V at the start of a dump from 2,200 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
 new_row = true
-fields = { DocRef = "R_dump A1 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+fields = { DocRef = "R_dump A1 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 733 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
 between = ["HV_CAP_P", "HV_A_D1"]
 
 [[part]]
@@ -831,8 +835,8 @@ footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
 mpn = "EY152KE"
 manufacturer = "Ohmite"
 datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
-description = "Stack A dump resistor 2/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
-fields = { DocRef = "R_dump A2 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+description = "Stack A dump resistor 2/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 733 V at the start of a dump from 2,200 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+fields = { DocRef = "R_dump A2 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 733 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
 between = ["HV_A_D1", "HV_A_D2"]
 
 [[part]]
@@ -844,22 +848,22 @@ footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
 mpn = "EY152KE"
 manufacturer = "Ohmite"
 datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
-description = "Stack A dump resistor 3/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
-fields = { DocRef = "R_dump A3 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+description = "Stack A dump resistor 3/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 733 V at the start of a dump from 2,200 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+fields = { DocRef = "R_dump A3 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 733 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
 between = ["HV_A_D2", "HV_A_TOP"]
 
 [[part]]
 ref = "Q1101"
 group = "stackA"
-lib_id = "aed_storage:IXTT10N100D2"
-value = "IXTT10N100D2"
+lib_id = "aed_storage:IXTT2N170D2"
+value = "IXTT2N170D2"
 footprint = "Package_TO_SOT_SMD:TO-268-2"
-mpn = "IXTT10N100D2"
+mpn = "IXTT2N170D2"
 manufacturer = "Littelfuse (IXYS)"
-datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
-description = "Stack A device 1/4 (bottom, gate held by the pump). Depletion, 1,000 V, normally on."
+datasheet = "https://static.datasheets.com/doc/13418158-ixys-ixtt2n170d2-ds.pdf (mirror of IXYS DS100418B(02/12); no Littelfuse-hosted copy found 2026-11-27)"
+description = "Stack A device 1/4 (bottom, gate held by the pump). Depletion, 1,700 V (IXTT10N100D2 -> IXTT2N170D2, rev 0.3 F-1), normally on; RDS(on) <= 6.5 ohm."
 new_row = true
-fields = { DocRef = "stack A Q1 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+fields = { DocRef = "stack A Q1 (§B5.4)", Verify = "DS100418B(02/12) Fig. 12 read 2026-11-27: BVDSX normalised ~0.98 at -20 C (1,666 V), |VGS(off)| ~0.89 at -20 C and ~1.11 at 70 C (curve readings, typical). No avalanche rating" }
 pins = """
   1  G  STKA_G
   2  D  HV_A_M1
@@ -869,14 +873,14 @@ pins = """
 [[part]]
 ref = "Q1102"
 group = "stackA"
-lib_id = "aed_storage:IXTT10N100D2"
-value = "IXTT10N100D2"
+lib_id = "aed_storage:IXTT2N170D2"
+value = "IXTT2N170D2"
 footprint = "Package_TO_SOT_SMD:TO-268-2"
-mpn = "IXTT10N100D2"
+mpn = "IXTT2N170D2"
 manufacturer = "Littelfuse (IXYS)"
-datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
-description = "Stack A device 2/4 (upper, source follower of tap T1). Depletion, 1,000 V, normally on."
-fields = { DocRef = "stack A Q2 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+datasheet = "https://static.datasheets.com/doc/13418158-ixys-ixtt2n170d2-ds.pdf (mirror of IXYS DS100418B(02/12); no Littelfuse-hosted copy found 2026-11-27)"
+description = "Stack A device 2/4 (upper, source follower of tap T1). Depletion, 1,700 V (IXTT10N100D2 -> IXTT2N170D2, rev 0.3 F-1), normally on; RDS(on) <= 6.5 ohm."
+fields = { DocRef = "stack A Q2 (§B5.4)", Verify = "DS100418B(02/12) Fig. 12 read 2026-11-27: BVDSX normalised ~0.98 at -20 C (1,666 V), |VGS(off)| ~0.89 at -20 C and ~1.11 at 70 C (curve readings, typical). No avalanche rating" }
 pins = """
   1  G  HV_A_G2
   2  D  HV_A_M2
@@ -886,14 +890,14 @@ pins = """
 [[part]]
 ref = "Q1103"
 group = "stackA"
-lib_id = "aed_storage:IXTT10N100D2"
-value = "IXTT10N100D2"
+lib_id = "aed_storage:IXTT2N170D2"
+value = "IXTT2N170D2"
 footprint = "Package_TO_SOT_SMD:TO-268-2"
-mpn = "IXTT10N100D2"
+mpn = "IXTT2N170D2"
 manufacturer = "Littelfuse (IXYS)"
-datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
-description = "Stack A device 3/4 (upper, source follower of tap T2). Depletion, 1,000 V, normally on."
-fields = { DocRef = "stack A Q3 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+datasheet = "https://static.datasheets.com/doc/13418158-ixys-ixtt2n170d2-ds.pdf (mirror of IXYS DS100418B(02/12); no Littelfuse-hosted copy found 2026-11-27)"
+description = "Stack A device 3/4 (upper, source follower of tap T2). Depletion, 1,700 V (IXTT10N100D2 -> IXTT2N170D2, rev 0.3 F-1), normally on; RDS(on) <= 6.5 ohm."
+fields = { DocRef = "stack A Q3 (§B5.4)", Verify = "DS100418B(02/12) Fig. 12 read 2026-11-27: BVDSX normalised ~0.98 at -20 C (1,666 V), |VGS(off)| ~0.89 at -20 C and ~1.11 at 70 C (curve readings, typical). No avalanche rating" }
 pins = """
   1  G  HV_A_G3
   2  D  HV_A_M3
@@ -903,14 +907,14 @@ pins = """
 [[part]]
 ref = "Q1104"
 group = "stackA"
-lib_id = "aed_storage:IXTT10N100D2"
-value = "IXTT10N100D2"
+lib_id = "aed_storage:IXTT2N170D2"
+value = "IXTT2N170D2"
 footprint = "Package_TO_SOT_SMD:TO-268-2"
-mpn = "IXTT10N100D2"
+mpn = "IXTT2N170D2"
 manufacturer = "Littelfuse (IXYS)"
-datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
-description = "Stack A device 4/4 (upper, source follower of tap T3). Depletion, 1,000 V, normally on."
-fields = { DocRef = "stack A Q4 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+datasheet = "https://static.datasheets.com/doc/13418158-ixys-ixtt2n170d2-ds.pdf (mirror of IXYS DS100418B(02/12); no Littelfuse-hosted copy found 2026-11-27)"
+description = "Stack A device 4/4 (upper, source follower of tap T3). Depletion, 1,700 V (IXTT10N100D2 -> IXTT2N170D2, rev 0.3 F-1), normally on; RDS(on) <= 6.5 ohm."
+fields = { DocRef = "stack A Q4 (§B5.4)", Verify = "DS100418B(02/12) Fig. 12 read 2026-11-27: BVDSX normalised ~0.98 at -20 C (1,666 V), |VGS(off)| ~0.89 at -20 C and ~1.11 at 70 C (curve readings, typical). No avalanche rating" }
 pins = """
   1  G  HV_A_G4
   2  D  HV_A_TOP
@@ -926,9 +930,22 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "HVCR2512FTD10M0"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
-description = "Stack A sharing string 1/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+description = "Stack A sharing string element 1/4 (bottom first), resistor 1 of 2 in parallel (with R6115): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
 new_row = true
-fields = { DocRef = "stack A sharing string 4 x 10M (§B5.4)" }
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
+between = ["HV_RTN", "HV_A_T1"]
+
+[[part]]
+ref = "R6115"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A sharing string element 1/4 (bottom first), resistor 2 of 2 in parallel (with R1107): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
 between = ["HV_RTN", "HV_A_T1"]
 
 [[part]]
@@ -940,8 +957,21 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "HVCR2512FTD10M0"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
-description = "Stack A sharing string 2/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
-fields = { DocRef = "stack A sharing string 4 x 10M (§B5.4)" }
+description = "Stack A sharing string element 2/4 (bottom first), resistor 1 of 2 in parallel (with R6116): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
+between = ["HV_A_T1", "HV_A_T2"]
+
+[[part]]
+ref = "R6116"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A sharing string element 2/4 (bottom first), resistor 2 of 2 in parallel (with R1108): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
 between = ["HV_A_T1", "HV_A_T2"]
 
 [[part]]
@@ -953,8 +983,21 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "HVCR2512FTD10M0"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
-description = "Stack A sharing string 3/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
-fields = { DocRef = "stack A sharing string 4 x 10M (§B5.4)" }
+description = "Stack A sharing string element 3/4 (bottom first), resistor 1 of 2 in parallel (with R6117): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
+between = ["HV_A_T2", "HV_A_T3"]
+
+[[part]]
+ref = "R6117"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A sharing string element 3/4 (bottom first), resistor 2 of 2 in parallel (with R1109): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
 between = ["HV_A_T2", "HV_A_T3"]
 
 [[part]]
@@ -966,8 +1009,21 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "HVCR2512FTD10M0"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
-description = "Stack A sharing string 4/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
-fields = { DocRef = "stack A sharing string 4 x 10M (§B5.4)" }
+description = "Stack A sharing string element 4/4 (bottom first), resistor 1 of 2 in parallel (with R6118): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
+between = ["HV_A_T3", "HV_A_TOP"]
+
+[[part]]
+ref = "R6118"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A sharing string element 4/4 (bottom first), resistor 2 of 2 in parallel (with R1110): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
 between = ["HV_A_T3", "HV_A_TOP"]
 
 [[part]]
@@ -976,11 +1032,11 @@ group = "stackA"
 lib_id = "Device:C"
 value = "3.3nF 2kV C0G"
 footprint = "Capacitor_SMD:C_2220_5750Metric"
-mpn = "C2220C332JGGACTU"
+mpn = "C2220Y332JGGACAUTO"
 manufacturer = "KEMET"
 datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
-description = "Stack A dynamic-sharing capacitor across string resistor 1: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
-fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+description = "Stack A dynamic-sharing capacitor across string resistor 1: >= 10 x Coss (300 pF at 25 V); 550 V of 2,000 V (733 V with a shorted neighbour)"
+fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
 between = ["HV_RTN", "HV_A_T1"]
 
 [[part]]
@@ -989,11 +1045,11 @@ group = "stackA"
 lib_id = "Device:C"
 value = "3.3nF 2kV C0G"
 footprint = "Capacitor_SMD:C_2220_5750Metric"
-mpn = "C2220C332JGGACTU"
+mpn = "C2220Y332JGGACAUTO"
 manufacturer = "KEMET"
 datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
-description = "Stack A dynamic-sharing capacitor across string resistor 2: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
-fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+description = "Stack A dynamic-sharing capacitor across string resistor 2: >= 10 x Coss (300 pF at 25 V); 550 V of 2,000 V (733 V with a shorted neighbour)"
+fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
 between = ["HV_A_T1", "HV_A_T2"]
 
 [[part]]
@@ -1002,11 +1058,11 @@ group = "stackA"
 lib_id = "Device:C"
 value = "3.3nF 2kV C0G"
 footprint = "Capacitor_SMD:C_2220_5750Metric"
-mpn = "C2220C332JGGACTU"
+mpn = "C2220Y332JGGACAUTO"
 manufacturer = "KEMET"
 datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
-description = "Stack A dynamic-sharing capacitor across string resistor 3: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
-fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+description = "Stack A dynamic-sharing capacitor across string resistor 3: >= 10 x Coss (300 pF at 25 V); 550 V of 2,000 V (733 V with a shorted neighbour)"
+fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
 between = ["HV_A_T2", "HV_A_T3"]
 
 [[part]]
@@ -1015,11 +1071,11 @@ group = "stackA"
 lib_id = "Device:C"
 value = "3.3nF 2kV C0G"
 footprint = "Capacitor_SMD:C_2220_5750Metric"
-mpn = "C2220C332JGGACTU"
+mpn = "C2220Y332JGGACAUTO"
 manufacturer = "KEMET"
 datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
-description = "Stack A dynamic-sharing capacitor across string resistor 4: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
-fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+description = "Stack A dynamic-sharing capacitor across string resistor 4: >= 10 x Coss (300 pF at 25 V); 550 V of 2,000 V (733 V with a shorted neighbour)"
+fields = { DocRef = "stack A speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
 between = ["HV_A_T3", "HV_A_TOP"]
 
 [[part]]
@@ -1031,10 +1087,10 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "RVC2512FT100K"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
-description = "Stack A upper-gate resistor, device 2: tap T1 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
+description = "Stack A upper-gate resistor, device 2: tap -> HV_A_GF2 -> steering diode -> gate (rev 0.3 F-2). Normally < 1 V across it; in a fault the steering diode, not this resistor, blocks the tap from the shorted node"
 new_row = true
-fields = { DocRef = "stack A upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
-between = ["HV_A_T1", "HV_A_G2"]
+fields = { DocRef = "stack A upper-gate 100k (§B5.4; rev 0.3 feeds the steering diode)" }
+between = ["HV_A_T1", "HV_A_GF2"]
 
 [[part]]
 ref = "R1116"
@@ -1045,9 +1101,9 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "RVC2512FT100K"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
-description = "Stack A upper-gate resistor, device 3: tap T2 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
-fields = { DocRef = "stack A upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
-between = ["HV_A_T2", "HV_A_G3"]
+description = "Stack A upper-gate resistor, device 3: tap -> HV_A_GF3 -> steering diode -> gate (rev 0.3 F-2). Normally < 1 V across it; in a fault the steering diode, not this resistor, blocks the tap from the shorted node"
+fields = { DocRef = "stack A upper-gate 100k (§B5.4; rev 0.3 feeds the steering diode)" }
+between = ["HV_A_T2", "HV_A_GF3"]
 
 [[part]]
 ref = "R1117"
@@ -1058,47 +1114,47 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "RVC2512FT100K"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
-description = "Stack A upper-gate resistor, device 4: tap T3 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
-fields = { DocRef = "stack A upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
-between = ["HV_A_T3", "HV_A_G4"]
+description = "Stack A upper-gate resistor, device 4: tap -> HV_A_GF4 -> steering diode -> gate (rev 0.3 F-2). Normally < 1 V across it; in a fault the steering diode, not this resistor, blocks the tap from the shorted node"
+fields = { DocRef = "stack A upper-gate 100k (§B5.4; rev 0.3 feeds the steering diode)" }
+between = ["HV_A_T3", "HV_A_GF4"]
 
 [[part]]
 ref = "R1121"
 group = "stackA"
 lib_id = "Device:R"
-value = "10M"
-footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "RC0603FR-0710ML"
-manufacturer = "Yageo"
-datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-description = "Stack A device 2 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
-fields = { DocRef = "stack A upper gate-source (capture addition, WP-F.md)" }
+value = "100M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF100MFKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack A device 2 gate-source 100 M (rev 0.3 F-4, was 10 M): defines VGS = 0 (conducting) if the gate feed opens; <= 18.5 V across it while the TVS is intact. CRHV2512 3,000 V / 1 W, VCR 10 ppm/V"
+fields = { DocRef = "upper gate-source 100M (§B5.4 v0.3, rev3 F-4)", Verify = "100 Mohm inside CRHV2512 range 10 M-1 G (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme (A 3-sided, F Ni barrier, F 1 %, K 100 ppm, E Sn, 5 reel) - not seen in a listing" }
 between = ["HV_A_G2", "HV_A_M1"]
 
 [[part]]
 ref = "R1122"
 group = "stackA"
 lib_id = "Device:R"
-value = "10M"
-footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "RC0603FR-0710ML"
-manufacturer = "Yageo"
-datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-description = "Stack A device 3 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
-fields = { DocRef = "stack A upper gate-source (capture addition, WP-F.md)" }
+value = "100M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF100MFKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack A device 3 gate-source 100 M (rev 0.3 F-4, was 10 M): defines VGS = 0 (conducting) if the gate feed opens; <= 18.5 V across it while the TVS is intact. CRHV2512 3,000 V / 1 W, VCR 10 ppm/V"
+fields = { DocRef = "upper gate-source 100M (§B5.4 v0.3, rev3 F-4)", Verify = "100 Mohm inside CRHV2512 range 10 M-1 G (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme (A 3-sided, F Ni barrier, F 1 %, K 100 ppm, E Sn, 5 reel) - not seen in a listing" }
 between = ["HV_A_G3", "HV_A_M2"]
 
 [[part]]
 ref = "R1123"
 group = "stackA"
 lib_id = "Device:R"
-value = "10M"
-footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "RC0603FR-0710ML"
-manufacturer = "Yageo"
-datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-description = "Stack A device 4 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
-fields = { DocRef = "stack A upper gate-source (capture addition, WP-F.md)" }
+value = "100M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF100MFKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack A device 4 gate-source 100 M (rev 0.3 F-4, was 10 M): defines VGS = 0 (conducting) if the gate feed opens; <= 18.5 V across it while the TVS is intact. CRHV2512 3,000 V / 1 W, VCR 10 ppm/V"
+fields = { DocRef = "upper gate-source 100M (§B5.4 v0.3, rev3 F-4)", Verify = "100 Mohm inside CRHV2512 range 10 M-1 G (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme (A 3-sided, F Ni barrier, F 1 %, K 100 ppm, E Sn, 5 reel) - not seen in a listing" }
 between = ["HV_A_G4", "HV_A_M3"]
 
 [[part]]
@@ -1165,6 +1221,201 @@ pins = """
   1  A1  HV_A_G4
   2  A2  HV_A_M3
 """
+
+[[part]]
+ref = "D1127"
+group = "stackA"
+lib_id = "Device:D"
+value = "GP02-40"
+footprint = "Diode_THT:D_DO-41_SOD81_P12.70mm_Horizontal"
+mpn = "GP02-40-E3/54"
+manufacturer = "Vishay General Semiconductor"
+datasheet = "https://www.vishay.com/doc?88635"
+description = "Stack A device 2 gate-steering diode (rev 0.3 F-2): anode tap side HV_A_GF2, cathode gate. Stops a shorted device's gate clamp from dragging the tap below. 4,000 V, IR <= 5 uA (25 C) / <= 50 uA (100 C) at 4 kV"
+new_row = true
+fields = { DocRef = "stack A steering diode 2 (§B5.4 v0.3, rev3 F-2, I-3)", Verify = "Vishay 88635 rev 09-Aug-2022 marks GP02-20..40 'Not for New Designs': choose a current 2-4 kV low-leakage rectifier before release; DO-41 axial, 12.7 mm pitch for creepage" }
+pins = """
+  1  K  HV_A_G2
+  2  A  HV_A_GF2
+"""
+
+[[part]]
+ref = "D1128"
+group = "stackA"
+lib_id = "Device:D"
+value = "GP02-40"
+footprint = "Diode_THT:D_DO-41_SOD81_P12.70mm_Horizontal"
+mpn = "GP02-40-E3/54"
+manufacturer = "Vishay General Semiconductor"
+datasheet = "https://www.vishay.com/doc?88635"
+description = "Stack A device 3 gate-steering diode (rev 0.3 F-2): anode tap side HV_A_GF3, cathode gate. Stops a shorted device's gate clamp from dragging the tap below. 4,000 V, IR <= 5 uA (25 C) / <= 50 uA (100 C) at 4 kV"
+fields = { DocRef = "stack A steering diode 3 (§B5.4 v0.3, rev3 F-2, I-3)", Verify = "Vishay 88635 rev 09-Aug-2022 marks GP02-20..40 'Not for New Designs': choose a current 2-4 kV low-leakage rectifier before release; DO-41 axial, 12.7 mm pitch for creepage" }
+pins = """
+  1  K  HV_A_G3
+  2  A  HV_A_GF3
+"""
+
+[[part]]
+ref = "D1129"
+group = "stackA"
+lib_id = "Device:D"
+value = "GP02-40"
+footprint = "Diode_THT:D_DO-41_SOD81_P12.70mm_Horizontal"
+mpn = "GP02-40-E3/54"
+manufacturer = "Vishay General Semiconductor"
+datasheet = "https://www.vishay.com/doc?88635"
+description = "Stack A device 4 gate-steering diode (rev 0.3 F-2): anode tap side HV_A_GF4, cathode gate. Stops a shorted device's gate clamp from dragging the tap below. 4,000 V, IR <= 5 uA (25 C) / <= 50 uA (100 C) at 4 kV"
+fields = { DocRef = "stack A steering diode 4 (§B5.4 v0.3, rev3 F-2, I-3)", Verify = "Vishay 88635 rev 09-Aug-2022 marks GP02-20..40 'Not for New Designs': choose a current 2-4 kV low-leakage rectifier before release; DO-41 axial, 12.7 mm pitch for creepage" }
+pins = """
+  1  K  HV_A_G4
+  2  A  HV_A_GF4
+"""
+
+[[part]]
+ref = "R6101"
+group = "stackA"
+lib_id = "Device:R"
+value = "22M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF22M0FKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack A steering-diode bypass 2, HV_A_GF2 -> HV_A_G2 (rev 0.3 F-3): lets the gate follow the tap downwards. < 1 V normally; up to the diode's reverse voltage in a fault (<= 0.55 kV, 14 mW [SIM rev3-wpf])"
+new_row = true
+fields = { DocRef = "stack A diode bypass 22M (§B5.4 v0.3, rev3 F-3)", Verify = "22 Mohm inside CRHV2512 range 10 M-1 G, 3,000 V, 1 W, VCR 10 ppm/V (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme - not seen in a listing" }
+between = ["HV_A_GF2", "HV_A_G2"]
+
+[[part]]
+ref = "R6102"
+group = "stackA"
+lib_id = "Device:R"
+value = "22M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF22M0FKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack A steering-diode bypass 3, HV_A_GF3 -> HV_A_G3 (rev 0.3 F-3): lets the gate follow the tap downwards. < 1 V normally; up to the diode's reverse voltage in a fault (<= 0.55 kV, 14 mW [SIM rev3-wpf])"
+fields = { DocRef = "stack A diode bypass 22M (§B5.4 v0.3, rev3 F-3)", Verify = "22 Mohm inside CRHV2512 range 10 M-1 G, 3,000 V, 1 W, VCR 10 ppm/V (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme - not seen in a listing" }
+between = ["HV_A_GF3", "HV_A_G3"]
+
+[[part]]
+ref = "R6103"
+group = "stackA"
+lib_id = "Device:R"
+value = "22M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF22M0FKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack A steering-diode bypass 4, HV_A_GF4 -> HV_A_G4 (rev 0.3 F-3): lets the gate follow the tap downwards. < 1 V normally; up to the diode's reverse voltage in a fault (<= 0.55 kV, 14 mW [SIM rev3-wpf])"
+fields = { DocRef = "stack A diode bypass 22M (§B5.4 v0.3, rev3 F-3)", Verify = "22 Mohm inside CRHV2512 range 10 M-1 G, 3,000 V, 1 W, VCR 10 ppm/V (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme - not seen in a listing" }
+between = ["HV_A_GF4", "HV_A_G4"]
+
+[[part]]
+ref = "R6107"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A per-device drain-source resistor across Q1101 (rev 0.3 F-6, essential): stops a leaky device's source floating once the gate feed is steered. 550 V / 30 mW normally; <= 1.36 kV / 0.19 W after any single fault [SIM rev3-wpf, static]"
+new_row = true
+fields = { DocRef = "stack A per-device 10M (§B5.4 v0.3, rev3 F-6, I-3)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for v0.2 capture); pulse rating not stated" }
+between = ["HV_A_M1", "HV_RTN"]
+
+[[part]]
+ref = "R6108"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A per-device drain-source resistor across Q1102 (rev 0.3 F-6, essential): stops a leaky device's source floating once the gate feed is steered. 550 V / 30 mW normally; <= 1.36 kV / 0.19 W after any single fault [SIM rev3-wpf, static]"
+fields = { DocRef = "stack A per-device 10M (§B5.4 v0.3, rev3 F-6, I-3)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for v0.2 capture); pulse rating not stated" }
+between = ["HV_A_M2", "HV_A_M1"]
+
+[[part]]
+ref = "R6109"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A per-device drain-source resistor across Q1103 (rev 0.3 F-6, essential): stops a leaky device's source floating once the gate feed is steered. 550 V / 30 mW normally; <= 1.36 kV / 0.19 W after any single fault [SIM rev3-wpf, static]"
+fields = { DocRef = "stack A per-device 10M (§B5.4 v0.3, rev3 F-6, I-3)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for v0.2 capture); pulse rating not stated" }
+between = ["HV_A_M3", "HV_A_M2"]
+
+[[part]]
+ref = "R6110"
+group = "stackA"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack A per-device drain-source resistor across Q1104 (rev 0.3 F-6, essential): stops a leaky device's source floating once the gate feed is steered. 550 V / 30 mW normally; <= 1.36 kV / 0.19 W after any single fault [SIM rev3-wpf, static]"
+fields = { DocRef = "stack A per-device 10M (§B5.4 v0.3, rev3 F-6, I-3)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for v0.2 capture); pulse rating not stated" }
+between = ["HV_A_TOP", "HV_A_M3"]
+
+[[part]]
+ref = "C1137"
+group = "stackA"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220Y332JGGACAUTO"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack A per-device drain-source capacitor across Q1101 (rev 0.3 F-6, essential): shares fast edges once the gate feed is steered. 550 V normally; <= 1.36 kV after any single fault (static), 1.63 kV in the bounding 1 us step with a shorted device [SIM rev3-wpf]; rated 2,000 V"
+new_row = true
+fields = { DocRef = "stack A per-device 3.3nF (§B5.4 v0.3, rev3 F-6)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
+between = ["HV_A_M1", "HV_RTN"]
+
+[[part]]
+ref = "C1138"
+group = "stackA"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220Y332JGGACAUTO"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack A per-device drain-source capacitor across Q1102 (rev 0.3 F-6, essential): shares fast edges once the gate feed is steered. 550 V normally; <= 1.36 kV after any single fault (static), 1.63 kV in the bounding 1 us step with a shorted device [SIM rev3-wpf]; rated 2,000 V"
+fields = { DocRef = "stack A per-device 3.3nF (§B5.4 v0.3, rev3 F-6)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
+between = ["HV_A_M2", "HV_A_M1"]
+
+[[part]]
+ref = "C1139"
+group = "stackA"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220Y332JGGACAUTO"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack A per-device drain-source capacitor across Q1103 (rev 0.3 F-6, essential): shares fast edges once the gate feed is steered. 550 V normally; <= 1.36 kV after any single fault (static), 1.63 kV in the bounding 1 us step with a shorted device [SIM rev3-wpf]; rated 2,000 V"
+fields = { DocRef = "stack A per-device 3.3nF (§B5.4 v0.3, rev3 F-6)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
+between = ["HV_A_M3", "HV_A_M2"]
+
+[[part]]
+ref = "C1140"
+group = "stackA"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220Y332JGGACAUTO"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack A per-device drain-source capacitor across Q1104 (rev 0.3 F-6, essential): shares fast edges once the gate feed is steered. 550 V normally; <= 1.36 kV after any single fault (static), 1.63 kV in the bounding 1 us step with a shorted device [SIM rev3-wpf]; rated 2,000 V"
+fields = { DocRef = "stack A per-device 3.3nF (§B5.4 v0.3, rev3 F-6)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
+between = ["HV_A_TOP", "HV_A_M3"]
 
 [[part]]
 ref = "R1131"
@@ -1345,13 +1596,26 @@ footprint = "Package_TO_SOT_SMD:SOT-23"
 mpn = "BAT54S-7-F"
 manufacturer = "Diodes Incorporated"
 datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
-description = "Pump A stage 4 diode pair: clamp P4 -> PMPA_H3, transfer STKA_G -> P4. VF <= 0.32 V at 1 mA, 30 V"
+description = "Pump A stage 4 diode pair: clamp P4 -> PMPA_H3, transfer PMPA_H4 -> P4 (rev 0.3: H4 -> 470 ohm -> STKA_G). VF <= 0.32 V at 1 mA, 30 V"
 fields = { DocRef = "pump A stage 4", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
 pins = """
-  1  A  STKA_G
+  1  A  PMPA_H4
   3  COM  PMPA_P4
   2  K  PMPA_H3
 """
+
+[[part]]
+ref = "R1194"
+group = "holdA"
+lib_id = "Device:R"
+value = "470"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07470RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Pump A output resistor PMPA_H4 -> STKA_G (rev 0.3 F-8): limits what the release switch can pull from the pump before the pilot is pinched off, which removes the cold power-up lock-out [SIM rev3 §2]"
+fields = { DocRef = "pump output 470 ohm (§B5.4 v0.3, rev3 F-8, I-17)" }
+between = ["PMPA_H4", "STKA_G"]
 
 [[part]]
 ref = "C1109"
@@ -1428,13 +1692,13 @@ pins = """
 ref = "Q1112"
 group = "holdA"
 lib_id = "Device:Q_PJFET_DSG"
-value = "MMBFJ177"
+value = "MMBFJ270"
 footprint = "Package_TO_SOT_SMD:SOT-23"
-mpn = "MMBFJ177LT1G"
+mpn = "MMBFJ270"
 manufacturer = "onsemi"
-datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmbfj177lt1-d.pdf"
-description = "Stack A release PILOT: P-channel depletion JFET, NORMALLY ON with no bias (IDSS 1.5-20 mA). Source HV_RTN, drain RLSA_NG; pinched off only while its clock-derived gate bias (> VGS(off) 0.8-2.5 V) is present"
-fields = { DocRef = "release pilot A (capture addition, WP-F.md departure D-3)", Verify = "VDG -25 V max: worst -17.3 V here (gate +5.5 V, drain -11.8 V)" }
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmbfj270-d.pdf"
+description = "Stack A release PILOT: P-channel depletion JFET, NORMALLY ON with no bias (IDSS 2-15 mA). Source HV_RTN, drain RLSA_NG; pinched off only while its clock-derived gate bias (> VGS(off) 0.5-2.0 V) is present"
+fields = { DocRef = "release pilot A (MMBFJ177 -> MMBFJ270, rev 0.3 F-9, I-17)", Verify = "onsemi MMBFJ270/D Rev 2 (May 2022): VDG -30 V (worst here about -17.3 V), VGS 30 V. Pin numbers are not printed: the SOT-23 drawing places D and S on the two-lead side and G alone, read as 1 D / 2 S / 3 G as the MMBFJ177 - human check" }
 pins = """
   1  D  RLSA_NG
   2  S  HV_RTN
@@ -1626,7 +1890,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "RC0603FR-073K9L"
 manufacturer = "Yageo"
 datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-description = "Held-sense string A series resistor"
+description = "Held-sense 1 string A series resistor"
 new_row = true
 fields = { DocRef = "held sense A: 1.5 k -> 3.9 k (WP-F.md)" }
 between = ["HV_RTN", "HLDA_ZK"]
@@ -1635,13 +1899,13 @@ between = ["HV_RTN", "HLDA_ZK"]
 ref = "D1125"
 group = "holdA"
 lib_id = "Device:D_Zener"
-value = "MMSZ4688 4.7V"
+value = "MMSZ4687 4.3V"
 footprint = "Diode_SMD:D_SOD-123"
-mpn = "MMSZ4688T1G"
+mpn = "MMSZ4687T1G"
 manufacturer = "onsemi"
 datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmsz4678t1-d.pdf"
-description = "Held-sense threshold zener A: 4.47-4.94 V at 50 uA (low-current type), IR <= 10 uA at 3 V"
-fields = { DocRef = "held sense A 4.7 V zener (§B5.4)" }
+description = "Held-sense 1 threshold zener A (rev 0.3 F-10, was MMSZ4688): 4.09-4.52 V at 50 uA, IR <= 4 uA at 2 V; typical TC about 0 mV/K at 4.3 V (Fig. 1)"
+fields = { DocRef = "held sense A1 4.3 V zener (§B5.4 v0.3, rev3 F-10)" }
 pins = """
   1  K  HLDA_ZK
   2  A  HLDA_LA
@@ -1669,13 +1933,89 @@ footprint = "Package_SO:Toshiba_SOIC-4-6_4.4x3.6mm_P1.27mm"
 mpn = "TLP187(TPL,E"
 manufacturer = "Toshiba"
 datasheet = "https://toshiba.semicon-storage.com/info/TLP187_datasheet_en_20260727.pdf?did=13690&prodName=TLP187"
-description = "Stack A HELD sensor: LED lit only by a gate bias below about -5.5 V; Darlington pulls HOLD_A_HELD_N low (= held). Dark, open or unpowered = high = not held."
+description = "Stack A HELD sensor: LED lit only by a gate bias below about -4.95..-6.12 V (sensor 1 of 2); Darlington pulls HOLD_A_HELD_N low (= held; 47 k pull-up on 09). Dark, open or unpowered = high = not held."
 fields = { DocRef = "held opto A (§B5.4; VOS618A class -> TLP187 Darlington, WP-F.md)" }
 pins = """
   1  A  HLDA_LA
   3  K  STKA_G
   6  C  HOLD_A_HELD_N
   4  E  GND
+"""
+
+[[part]]
+ref = "R1196"
+group = "holdA"
+lib_id = "Device:R"
+value = "3.9k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-073K9L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Held-sense 2 string A series resistor (rev 0.3 F-10: second independent sensor)"
+new_row = true
+fields = { DocRef = "held sense A2 (§B5.4 v0.3, rev3 F-10, I-4)" }
+between = ["HV_RTN", "HLDA2_ZK"]
+
+[[part]]
+ref = "D1133"
+group = "holdA"
+lib_id = "Device:D_Zener"
+value = "MMSZ4687 4.3V"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "MMSZ4687T1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmsz4678t1-d.pdf"
+description = "Held-sense 2 threshold zener A: 4.09-4.52 V at 50 uA, IR <= 4 uA at 2 V"
+fields = { DocRef = "held sense A2 4.3 V zener (§B5.4 v0.3, rev3 F-10)" }
+pins = """
+  1  K  HLDA2_ZK
+  2  A  HLDA2_LA
+"""
+
+[[part]]
+ref = "R1197"
+group = "holdA"
+lib_id = "Device:R"
+value = "22k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0722KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Held-sense 2 LED shunt A"
+fields = { DocRef = "held sense A2 LED shunt" }
+between = ["HLDA2_LA", "STKA_G"]
+
+[[part]]
+ref = "U1105"
+group = "holdA"
+lib_id = "aed_storage:TLP187"
+value = "TLP187"
+footprint = "Package_SO:Toshiba_SOIC-4-6_4.4x3.6mm_P1.27mm"
+mpn = "TLP187(TPL,E"
+manufacturer = "Toshiba"
+datasheet = "https://toshiba.semicon-storage.com/info/TLP187_datasheet_en_20260727.pdf?did=13690&prodName=TLP187"
+description = "Stack A HELD sensor 2 of 2, on its own line HOLD_A_HELD2_N (I-4): any one shorted zener or Darlington leaves the other sensor's full threshold; HOLD_OK on 09 needs all four lines low"
+fields = { DocRef = "held opto A2 (§B5.4 v0.3, contract issue 3 §5.4)" }
+pins = """
+  1  A  HLDA2_LA
+  3  K  STKA_G
+  6  C  HOLD_A_HELD2_N
+  4  E  GND
+"""
+
+[[part]]
+ref = "TP1107"
+group = "holdA"
+lib_id = "Connector:TestPoint"
+value = "HOLD_A_HELD2_N"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "n/a (pad)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+description = "Test point HOLD_A_HELD2_N (low voltage)"
+fields = { DocRef = "test point HOLD_A_HELD2_N" }
+pins = """
+  1  1  HOLD_A_HELD2_N
 """
 
 [[part]]
@@ -1719,9 +2059,9 @@ footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
 mpn = "EY152KE"
 manufacturer = "Ohmite"
 datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
-description = "Stack B dump resistor 1/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+description = "Stack B dump resistor 1/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 733 V at the start of a dump from 2,200 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
 new_row = true
-fields = { DocRef = "R_dump B1 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+fields = { DocRef = "R_dump B1 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 733 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
 between = ["HV_CAP_P", "HV_B_D1"]
 
 [[part]]
@@ -1733,8 +2073,8 @@ footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
 mpn = "EY152KE"
 manufacturer = "Ohmite"
 datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
-description = "Stack B dump resistor 2/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
-fields = { DocRef = "R_dump B2 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+description = "Stack B dump resistor 2/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 733 V at the start of a dump from 2,200 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+fields = { DocRef = "R_dump B2 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 733 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
 between = ["HV_B_D1", "HV_B_D2"]
 
 [[part]]
@@ -1746,22 +2086,22 @@ footprint = "Resistor_THT:R_Axial_DIN0617_L17.0mm_D6.0mm_P25.40mm_Horizontal"
 mpn = "EY152KE"
 manufacturer = "Ohmite"
 datasheet = "https://www.ohmite.com/catalog/ey-series/ (series datasheet as catalogued by DirectIndustry: pdf.directindustry.com/pdf/ohmite/ey-series/35141-678510.html)"
-description = "Stack B dump resistor 3/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 727 V at the start of a dump from 2,182 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
-fields = { DocRef = "R_dump B3 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 727 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
+description = "Stack B dump resistor 3/3, ceramic composition 2.5 W, 400 J single impulse, 550 V working / 1,100 V overload (5 s) / 25 kV pulse. Up to 733 V at the start of a dump from 2,200 V (above the 550 V working rating for about 0.13 s): see WP-F.md"
+fields = { DocRef = "R_dump B3 (§B5.3, §B5.5)", Verify = "Ohmite to confirm: 733 V for ~0.13 s per dump vs 550 V working; 5,000 dumps of 40-80 J at >= 120 s spacing; body length for the 25.4 mm footprint" }
 between = ["HV_B_D2", "HV_B_TOP"]
 
 [[part]]
 ref = "Q1105"
 group = "stackB"
-lib_id = "aed_storage:IXTT10N100D2"
-value = "IXTT10N100D2"
+lib_id = "aed_storage:IXTT2N170D2"
+value = "IXTT2N170D2"
 footprint = "Package_TO_SOT_SMD:TO-268-2"
-mpn = "IXTT10N100D2"
+mpn = "IXTT2N170D2"
 manufacturer = "Littelfuse (IXYS)"
-datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
-description = "Stack B device 1/4 (bottom, gate held by the pump). Depletion, 1,000 V, normally on."
+datasheet = "https://static.datasheets.com/doc/13418158-ixys-ixtt2n170d2-ds.pdf (mirror of IXYS DS100418B(02/12); no Littelfuse-hosted copy found 2026-11-27)"
+description = "Stack B device 1/4 (bottom, gate held by the pump). Depletion, 1,700 V (IXTT10N100D2 -> IXTT2N170D2, rev 0.3 F-1), normally on; RDS(on) <= 6.5 ohm."
 new_row = true
-fields = { DocRef = "stack B Q1 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+fields = { DocRef = "stack B Q1 (§B5.4)", Verify = "DS100418B(02/12) Fig. 12 read 2026-11-27: BVDSX normalised ~0.98 at -20 C (1,666 V), |VGS(off)| ~0.89 at -20 C and ~1.11 at 70 C (curve readings, typical). No avalanche rating" }
 pins = """
   1  G  STKB_G
   2  D  HV_B_M1
@@ -1771,14 +2111,14 @@ pins = """
 [[part]]
 ref = "Q1106"
 group = "stackB"
-lib_id = "aed_storage:IXTT10N100D2"
-value = "IXTT10N100D2"
+lib_id = "aed_storage:IXTT2N170D2"
+value = "IXTT2N170D2"
 footprint = "Package_TO_SOT_SMD:TO-268-2"
-mpn = "IXTT10N100D2"
+mpn = "IXTT2N170D2"
 manufacturer = "Littelfuse (IXYS)"
-datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
-description = "Stack B device 2/4 (upper, source follower of tap T1). Depletion, 1,000 V, normally on."
-fields = { DocRef = "stack B Q2 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+datasheet = "https://static.datasheets.com/doc/13418158-ixys-ixtt2n170d2-ds.pdf (mirror of IXYS DS100418B(02/12); no Littelfuse-hosted copy found 2026-11-27)"
+description = "Stack B device 2/4 (upper, source follower of tap T1). Depletion, 1,700 V (IXTT10N100D2 -> IXTT2N170D2, rev 0.3 F-1), normally on; RDS(on) <= 6.5 ohm."
+fields = { DocRef = "stack B Q2 (§B5.4)", Verify = "DS100418B(02/12) Fig. 12 read 2026-11-27: BVDSX normalised ~0.98 at -20 C (1,666 V), |VGS(off)| ~0.89 at -20 C and ~1.11 at 70 C (curve readings, typical). No avalanche rating" }
 pins = """
   1  G  HV_B_G2
   2  D  HV_B_M2
@@ -1788,14 +2128,14 @@ pins = """
 [[part]]
 ref = "Q1107"
 group = "stackB"
-lib_id = "aed_storage:IXTT10N100D2"
-value = "IXTT10N100D2"
+lib_id = "aed_storage:IXTT2N170D2"
+value = "IXTT2N170D2"
 footprint = "Package_TO_SOT_SMD:TO-268-2"
-mpn = "IXTT10N100D2"
+mpn = "IXTT2N170D2"
 manufacturer = "Littelfuse (IXYS)"
-datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
-description = "Stack B device 3/4 (upper, source follower of tap T2). Depletion, 1,000 V, normally on."
-fields = { DocRef = "stack B Q3 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+datasheet = "https://static.datasheets.com/doc/13418158-ixys-ixtt2n170d2-ds.pdf (mirror of IXYS DS100418B(02/12); no Littelfuse-hosted copy found 2026-11-27)"
+description = "Stack B device 3/4 (upper, source follower of tap T2). Depletion, 1,700 V (IXTT10N100D2 -> IXTT2N170D2, rev 0.3 F-1), normally on; RDS(on) <= 6.5 ohm."
+fields = { DocRef = "stack B Q3 (§B5.4)", Verify = "DS100418B(02/12) Fig. 12 read 2026-11-27: BVDSX normalised ~0.98 at -20 C (1,666 V), |VGS(off)| ~0.89 at -20 C and ~1.11 at 70 C (curve readings, typical). No avalanche rating" }
 pins = """
   1  G  HV_B_G3
   2  D  HV_B_M3
@@ -1805,14 +2145,14 @@ pins = """
 [[part]]
 ref = "Q1108"
 group = "stackB"
-lib_id = "aed_storage:IXTT10N100D2"
-value = "IXTT10N100D2"
+lib_id = "aed_storage:IXTT2N170D2"
+value = "IXTT2N170D2"
 footprint = "Package_TO_SOT_SMD:TO-268-2"
-mpn = "IXTT10N100D2"
+mpn = "IXTT2N170D2"
 manufacturer = "Littelfuse (IXYS)"
-datasheet = "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
-description = "Stack B device 4/4 (upper, source follower of tap T3). Depletion, 1,000 V, normally on."
-fields = { DocRef = "stack B Q4 (§B5.4)", Verify = "datasheet is 'Preliminary Technical Information' DS100326A(4/17); VDSX 1,000 V at 25 C falls to ~940 V at -20 C (Fig. 11)" }
+datasheet = "https://static.datasheets.com/doc/13418158-ixys-ixtt2n170d2-ds.pdf (mirror of IXYS DS100418B(02/12); no Littelfuse-hosted copy found 2026-11-27)"
+description = "Stack B device 4/4 (upper, source follower of tap T3). Depletion, 1,700 V (IXTT10N100D2 -> IXTT2N170D2, rev 0.3 F-1), normally on; RDS(on) <= 6.5 ohm."
+fields = { DocRef = "stack B Q4 (§B5.4)", Verify = "DS100418B(02/12) Fig. 12 read 2026-11-27: BVDSX normalised ~0.98 at -20 C (1,666 V), |VGS(off)| ~0.89 at -20 C and ~1.11 at 70 C (curve readings, typical). No avalanche rating" }
 pins = """
   1  G  HV_B_G4
   2  D  HV_B_TOP
@@ -1828,9 +2168,22 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "HVCR2512FTD10M0"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
-description = "Stack B sharing string 1/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
+description = "Stack B sharing string element 1/4 (bottom first), resistor 1 of 2 in parallel (with R6119): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
 new_row = true
-fields = { DocRef = "stack B sharing string 4 x 10M (§B5.4)" }
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
+between = ["HV_RTN", "HV_B_T1"]
+
+[[part]]
+ref = "R6119"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B sharing string element 1/4 (bottom first), resistor 2 of 2 in parallel (with R1111): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
 between = ["HV_RTN", "HV_B_T1"]
 
 [[part]]
@@ -1842,8 +2195,21 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "HVCR2512FTD10M0"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
-description = "Stack B sharing string 2/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
-fields = { DocRef = "stack B sharing string 4 x 10M (§B5.4)" }
+description = "Stack B sharing string element 2/4 (bottom first), resistor 1 of 2 in parallel (with R6120): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
+between = ["HV_B_T1", "HV_B_T2"]
+
+[[part]]
+ref = "R6120"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B sharing string element 2/4 (bottom first), resistor 2 of 2 in parallel (with R1112): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
 between = ["HV_B_T1", "HV_B_T2"]
 
 [[part]]
@@ -1855,8 +2221,21 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "HVCR2512FTD10M0"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
-description = "Stack B sharing string 3/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
-fields = { DocRef = "stack B sharing string 4 x 10M (§B5.4)" }
+description = "Stack B sharing string element 3/4 (bottom first), resistor 1 of 2 in parallel (with R6121): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
+between = ["HV_B_T2", "HV_B_T3"]
+
+[[part]]
+ref = "R6121"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B sharing string element 3/4 (bottom first), resistor 2 of 2 in parallel (with R1113): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
 between = ["HV_B_T2", "HV_B_T3"]
 
 [[part]]
@@ -1868,8 +2247,21 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "HVCR2512FTD10M0"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
-description = "Stack B sharing string 4/4 (bottom first): 545 V, 30 mW at 2,182 V (rated 3,000 V)"
-fields = { DocRef = "stack B sharing string 4 x 10M (§B5.4)" }
+description = "Stack B sharing string element 4/4 (bottom first), resistor 1 of 2 in parallel (with R6122): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
+between = ["HV_B_T3", "HV_B_TOP"]
+
+[[part]]
+ref = "R6122"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B sharing string element 4/4 (bottom first), resistor 2 of 2 in parallel (with R1114): element = 2 x 10 Mohm = 5.0 Mohm (WP-F change W-1: the change order's single 4.7 Mohm part left the stack with no tap reference if it opened - one open element put 2,174 V on one device [SIM rev3-wpf]). 550 V, 30 mW per resistor at 2,200 V; 896 V if its partner opens [SIM rev3-wpf]"
+fields = { DocRef = "sharing string 4 x (2 x 10M) (§B5.4 v0.3 F-5 as changed by WP-F W-1)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for the v0.2 capture; HVCR datasheet not re-opened 2026-11-27)" }
 between = ["HV_B_T3", "HV_B_TOP"]
 
 [[part]]
@@ -1878,11 +2270,11 @@ group = "stackB"
 lib_id = "Device:C"
 value = "3.3nF 2kV C0G"
 footprint = "Capacitor_SMD:C_2220_5750Metric"
-mpn = "C2220C332JGGACTU"
+mpn = "C2220Y332JGGACAUTO"
 manufacturer = "KEMET"
 datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
-description = "Stack B dynamic-sharing capacitor across string resistor 1: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
-fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+description = "Stack B dynamic-sharing capacitor across string resistor 1: >= 10 x Coss (300 pF at 25 V); 550 V of 2,000 V (733 V with a shorted neighbour)"
+fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
 between = ["HV_RTN", "HV_B_T1"]
 
 [[part]]
@@ -1891,11 +2283,11 @@ group = "stackB"
 lib_id = "Device:C"
 value = "3.3nF 2kV C0G"
 footprint = "Capacitor_SMD:C_2220_5750Metric"
-mpn = "C2220C332JGGACTU"
+mpn = "C2220Y332JGGACAUTO"
 manufacturer = "KEMET"
 datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
-description = "Stack B dynamic-sharing capacitor across string resistor 2: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
-fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+description = "Stack B dynamic-sharing capacitor across string resistor 2: >= 10 x Coss (300 pF at 25 V); 550 V of 2,000 V (733 V with a shorted neighbour)"
+fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
 between = ["HV_B_T1", "HV_B_T2"]
 
 [[part]]
@@ -1904,11 +2296,11 @@ group = "stackB"
 lib_id = "Device:C"
 value = "3.3nF 2kV C0G"
 footprint = "Capacitor_SMD:C_2220_5750Metric"
-mpn = "C2220C332JGGACTU"
+mpn = "C2220Y332JGGACAUTO"
 manufacturer = "KEMET"
 datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
-description = "Stack B dynamic-sharing capacitor across string resistor 3: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
-fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+description = "Stack B dynamic-sharing capacitor across string resistor 3: >= 10 x Coss (300 pF at 25 V); 550 V of 2,000 V (733 V with a shorted neighbour)"
+fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
 between = ["HV_B_T2", "HV_B_T3"]
 
 [[part]]
@@ -1917,11 +2309,11 @@ group = "stackB"
 lib_id = "Device:C"
 value = "3.3nF 2kV C0G"
 footprint = "Capacitor_SMD:C_2220_5750Metric"
-mpn = "C2220C332JGGACTU"
+mpn = "C2220Y332JGGACAUTO"
 manufacturer = "KEMET"
 datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
-description = "Stack B dynamic-sharing capacitor across string resistor 4: >= 10 x Coss (300 pF at 25 V); 545 V of 2,000 V"
-fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "KEMET waterfall: 3,300 pF 2220 at 2 kV listed (code JN/JK); confirm thickness and lead time" }
+description = "Stack B dynamic-sharing capacitor across string resistor 4: >= 10 x Coss (300 pF at 25 V); 550 V of 2,000 V (733 V with a shorted neighbour)"
+fields = { DocRef = "stack B speed-up 1 nF->3.3 nF (§B5.4, contract §9)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
 between = ["HV_B_T3", "HV_B_TOP"]
 
 [[part]]
@@ -1933,10 +2325,10 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "RVC2512FT100K"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
-description = "Stack B upper-gate resistor, device 2: tap T1 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
+description = "Stack B upper-gate resistor, device 2: tap -> HV_B_GF2 -> steering diode -> gate (rev 0.3 F-2). Normally < 1 V across it; in a fault the steering diode, not this resistor, blocks the tap from the shorted node"
 new_row = true
-fields = { DocRef = "stack B upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
-between = ["HV_B_T1", "HV_B_G2"]
+fields = { DocRef = "stack B upper-gate 100k (§B5.4; rev 0.3 feeds the steering diode)" }
+between = ["HV_B_T1", "HV_B_GF2"]
 
 [[part]]
 ref = "R1119"
@@ -1947,9 +2339,9 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "RVC2512FT100K"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
-description = "Stack B upper-gate resistor, device 3: tap T2 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
-fields = { DocRef = "stack B upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
-between = ["HV_B_T2", "HV_B_G3"]
+description = "Stack B upper-gate resistor, device 3: tap -> HV_B_GF3 -> steering diode -> gate (rev 0.3 F-2). Normally < 1 V across it; in a fault the steering diode, not this resistor, blocks the tap from the shorted node"
+fields = { DocRef = "stack B upper-gate 100k (§B5.4; rev 0.3 feeds the steering diode)" }
+between = ["HV_B_T2", "HV_B_GF3"]
 
 [[part]]
 ref = "R1120"
@@ -1960,47 +2352,47 @@ footprint = "Resistor_SMD:R_2512_6332Metric"
 mpn = "RVC2512FT100K"
 manufacturer = "Stackpole Electronics"
 datasheet = "https://www.seielect.com/catalog/sei-rvc.pdf"
-description = "Stack B upper-gate resistor, device 4: tap T3 -> gate. Normally a few volts; a fault that collapses the devices below can put up to ~545-727 V across it briefly (RVC2512: 316 V working, 790 V overload at 100 k)"
-fields = { DocRef = "stack B upper-gate 100k (§B5.4)", Verify = "pulse rating of RVC2512 100 k for up to ~730 V for < 1 ms" }
-between = ["HV_B_T3", "HV_B_G4"]
+description = "Stack B upper-gate resistor, device 4: tap -> HV_B_GF4 -> steering diode -> gate (rev 0.3 F-2). Normally < 1 V across it; in a fault the steering diode, not this resistor, blocks the tap from the shorted node"
+fields = { DocRef = "stack B upper-gate 100k (§B5.4; rev 0.3 feeds the steering diode)" }
+between = ["HV_B_T3", "HV_B_GF4"]
 
 [[part]]
 ref = "R1124"
 group = "stackB"
 lib_id = "Device:R"
-value = "10M"
-footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "RC0603FR-0710ML"
-manufacturer = "Yageo"
-datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-description = "Stack B device 2 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
-fields = { DocRef = "stack B upper gate-source (capture addition, WP-F.md)" }
+value = "100M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF100MFKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack B device 2 gate-source 100 M (rev 0.3 F-4, was 10 M): defines VGS = 0 (conducting) if the gate feed opens; <= 18.5 V across it while the TVS is intact. CRHV2512 3,000 V / 1 W, VCR 10 ppm/V"
+fields = { DocRef = "upper gate-source 100M (§B5.4 v0.3, rev3 F-4)", Verify = "100 Mohm inside CRHV2512 range 10 M-1 G (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme (A 3-sided, F Ni barrier, F 1 %, K 100 ppm, E Sn, 5 reel) - not seen in a listing" }
 between = ["HV_B_G2", "HV_B_M1"]
 
 [[part]]
 ref = "R1125"
 group = "stackB"
 lib_id = "Device:R"
-value = "10M"
-footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "RC0603FR-0710ML"
-manufacturer = "Yageo"
-datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-description = "Stack B device 3 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
-fields = { DocRef = "stack B upper gate-source (capture addition, WP-F.md)" }
+value = "100M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF100MFKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack B device 3 gate-source 100 M (rev 0.3 F-4, was 10 M): defines VGS = 0 (conducting) if the gate feed opens; <= 18.5 V across it while the TVS is intact. CRHV2512 3,000 V / 1 W, VCR 10 ppm/V"
+fields = { DocRef = "upper gate-source 100M (§B5.4 v0.3, rev3 F-4)", Verify = "100 Mohm inside CRHV2512 range 10 M-1 G (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme (A 3-sided, F Ni barrier, F 1 %, K 100 ppm, E Sn, 5 reel) - not seen in a listing" }
 between = ["HV_B_G3", "HV_B_M2"]
 
 [[part]]
 ref = "R1126"
 group = "stackB"
 lib_id = "Device:R"
-value = "10M"
-footprint = "Resistor_SMD:R_0603_1608Metric"
-mpn = "RC0603FR-0710ML"
-manufacturer = "Yageo"
-datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-description = "Stack B device 4 gate-source 10 M: defines VGS = 0 (conducting) if its 100 k opens; <= 18 V across it (TVS)"
-fields = { DocRef = "stack B upper gate-source (capture addition, WP-F.md)" }
+value = "100M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF100MFKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack B device 4 gate-source 100 M (rev 0.3 F-4, was 10 M): defines VGS = 0 (conducting) if the gate feed opens; <= 18.5 V across it while the TVS is intact. CRHV2512 3,000 V / 1 W, VCR 10 ppm/V"
+fields = { DocRef = "upper gate-source 100M (§B5.4 v0.3, rev3 F-4)", Verify = "100 Mohm inside CRHV2512 range 10 M-1 G (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme (A 3-sided, F Ni barrier, F 1 %, K 100 ppm, E Sn, 5 reel) - not seen in a listing" }
 between = ["HV_B_G4", "HV_B_M3"]
 
 [[part]]
@@ -2067,6 +2459,201 @@ pins = """
   1  A1  HV_B_G4
   2  A2  HV_B_M3
 """
+
+[[part]]
+ref = "D1130"
+group = "stackB"
+lib_id = "Device:D"
+value = "GP02-40"
+footprint = "Diode_THT:D_DO-41_SOD81_P12.70mm_Horizontal"
+mpn = "GP02-40-E3/54"
+manufacturer = "Vishay General Semiconductor"
+datasheet = "https://www.vishay.com/doc?88635"
+description = "Stack B device 2 gate-steering diode (rev 0.3 F-2): anode tap side HV_B_GF2, cathode gate. Stops a shorted device's gate clamp from dragging the tap below. 4,000 V, IR <= 5 uA (25 C) / <= 50 uA (100 C) at 4 kV"
+new_row = true
+fields = { DocRef = "stack B steering diode 2 (§B5.4 v0.3, rev3 F-2, I-3)", Verify = "Vishay 88635 rev 09-Aug-2022 marks GP02-20..40 'Not for New Designs': choose a current 2-4 kV low-leakage rectifier before release; DO-41 axial, 12.7 mm pitch for creepage" }
+pins = """
+  1  K  HV_B_G2
+  2  A  HV_B_GF2
+"""
+
+[[part]]
+ref = "D1131"
+group = "stackB"
+lib_id = "Device:D"
+value = "GP02-40"
+footprint = "Diode_THT:D_DO-41_SOD81_P12.70mm_Horizontal"
+mpn = "GP02-40-E3/54"
+manufacturer = "Vishay General Semiconductor"
+datasheet = "https://www.vishay.com/doc?88635"
+description = "Stack B device 3 gate-steering diode (rev 0.3 F-2): anode tap side HV_B_GF3, cathode gate. Stops a shorted device's gate clamp from dragging the tap below. 4,000 V, IR <= 5 uA (25 C) / <= 50 uA (100 C) at 4 kV"
+fields = { DocRef = "stack B steering diode 3 (§B5.4 v0.3, rev3 F-2, I-3)", Verify = "Vishay 88635 rev 09-Aug-2022 marks GP02-20..40 'Not for New Designs': choose a current 2-4 kV low-leakage rectifier before release; DO-41 axial, 12.7 mm pitch for creepage" }
+pins = """
+  1  K  HV_B_G3
+  2  A  HV_B_GF3
+"""
+
+[[part]]
+ref = "D1132"
+group = "stackB"
+lib_id = "Device:D"
+value = "GP02-40"
+footprint = "Diode_THT:D_DO-41_SOD81_P12.70mm_Horizontal"
+mpn = "GP02-40-E3/54"
+manufacturer = "Vishay General Semiconductor"
+datasheet = "https://www.vishay.com/doc?88635"
+description = "Stack B device 4 gate-steering diode (rev 0.3 F-2): anode tap side HV_B_GF4, cathode gate. Stops a shorted device's gate clamp from dragging the tap below. 4,000 V, IR <= 5 uA (25 C) / <= 50 uA (100 C) at 4 kV"
+fields = { DocRef = "stack B steering diode 4 (§B5.4 v0.3, rev3 F-2, I-3)", Verify = "Vishay 88635 rev 09-Aug-2022 marks GP02-20..40 'Not for New Designs': choose a current 2-4 kV low-leakage rectifier before release; DO-41 axial, 12.7 mm pitch for creepage" }
+pins = """
+  1  K  HV_B_G4
+  2  A  HV_B_GF4
+"""
+
+[[part]]
+ref = "R6104"
+group = "stackB"
+lib_id = "Device:R"
+value = "22M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF22M0FKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack B steering-diode bypass 2, HV_B_GF2 -> HV_B_G2 (rev 0.3 F-3): lets the gate follow the tap downwards. < 1 V normally; up to the diode's reverse voltage in a fault (<= 0.55 kV, 14 mW [SIM rev3-wpf])"
+new_row = true
+fields = { DocRef = "stack B diode bypass 22M (§B5.4 v0.3, rev3 F-3)", Verify = "22 Mohm inside CRHV2512 range 10 M-1 G, 3,000 V, 1 W, VCR 10 ppm/V (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme - not seen in a listing" }
+between = ["HV_B_GF2", "HV_B_G2"]
+
+[[part]]
+ref = "R6105"
+group = "stackB"
+lib_id = "Device:R"
+value = "22M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF22M0FKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack B steering-diode bypass 3, HV_B_GF3 -> HV_B_G3 (rev 0.3 F-3): lets the gate follow the tap downwards. < 1 V normally; up to the diode's reverse voltage in a fault (<= 0.55 kV, 14 mW [SIM rev3-wpf])"
+fields = { DocRef = "stack B diode bypass 22M (§B5.4 v0.3, rev3 F-3)", Verify = "22 Mohm inside CRHV2512 range 10 M-1 G, 3,000 V, 1 W, VCR 10 ppm/V (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme - not seen in a listing" }
+between = ["HV_B_GF3", "HV_B_G3"]
+
+[[part]]
+ref = "R6106"
+group = "stackB"
+lib_id = "Device:R"
+value = "22M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "CRHV2512AF22M0FKE5"
+manufacturer = "Vishay Techno"
+datasheet = "https://www.vishay.com/doc?68002"
+description = "Stack B steering-diode bypass 4, HV_B_GF4 -> HV_B_G4 (rev 0.3 F-3): lets the gate follow the tap downwards. < 1 V normally; up to the diode's reverse voltage in a fault (<= 0.55 kV, 14 mW [SIM rev3-wpf])"
+fields = { DocRef = "stack B diode bypass 22M (§B5.4 v0.3, rev3 F-3)", Verify = "22 Mohm inside CRHV2512 range 10 M-1 G, 3,000 V, 1 W, VCR 10 ppm/V (Vishay 68002 rev 12-Nov-2024); ordering code built from the 68002 scheme - not seen in a listing" }
+between = ["HV_B_GF4", "HV_B_G4"]
+
+[[part]]
+ref = "R6111"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B per-device drain-source resistor across Q1105 (rev 0.3 F-6, essential): stops a leaky device's source floating once the gate feed is steered. 550 V / 30 mW normally; <= 1.36 kV / 0.19 W after any single fault [SIM rev3-wpf, static]"
+new_row = true
+fields = { DocRef = "stack B per-device 10M (§B5.4 v0.3, rev3 F-6, I-3)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for v0.2 capture); pulse rating not stated" }
+between = ["HV_B_M1", "HV_RTN"]
+
+[[part]]
+ref = "R6112"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B per-device drain-source resistor across Q1106 (rev 0.3 F-6, essential): stops a leaky device's source floating once the gate feed is steered. 550 V / 30 mW normally; <= 1.36 kV / 0.19 W after any single fault [SIM rev3-wpf, static]"
+fields = { DocRef = "stack B per-device 10M (§B5.4 v0.3, rev3 F-6, I-3)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for v0.2 capture); pulse rating not stated" }
+between = ["HV_B_M2", "HV_B_M1"]
+
+[[part]]
+ref = "R6113"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B per-device drain-source resistor across Q1107 (rev 0.3 F-6, essential): stops a leaky device's source floating once the gate feed is steered. 550 V / 30 mW normally; <= 1.36 kV / 0.19 W after any single fault [SIM rev3-wpf, static]"
+fields = { DocRef = "stack B per-device 10M (§B5.4 v0.3, rev3 F-6, I-3)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for v0.2 capture); pulse rating not stated" }
+between = ["HV_B_M3", "HV_B_M2"]
+
+[[part]]
+ref = "R6114"
+group = "stackB"
+lib_id = "Device:R"
+value = "10M 1%"
+footprint = "Resistor_SMD:R_2512_6332Metric"
+mpn = "HVCR2512FTD10M0"
+manufacturer = "Stackpole Electronics"
+datasheet = "https://www.seielect.com/catalog/sei-hvcr.pdf"
+description = "Stack B per-device drain-source resistor across Q1108 (rev 0.3 F-6, essential): stops a leaky device's source floating once the gate feed is steered. 550 V / 30 mW normally; <= 1.36 kV / 0.19 W after any single fault [SIM rev3-wpf, static]"
+fields = { DocRef = "stack B per-device 10M (§B5.4 v0.3, rev3 F-6, I-3)", Verify = "HVCR2512 3,000 V working, 10 Mohm in the HVCR standard list (as read for v0.2 capture); pulse rating not stated" }
+between = ["HV_B_TOP", "HV_B_M3"]
+
+[[part]]
+ref = "C1141"
+group = "stackB"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220Y332JGGACAUTO"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack B per-device drain-source capacitor across Q1105 (rev 0.3 F-6, essential): shares fast edges once the gate feed is steered. 550 V normally; <= 1.36 kV after any single fault (static), 1.63 kV in the bounding 1 us step with a shorted device [SIM rev3-wpf]; rated 2,000 V"
+new_row = true
+fields = { DocRef = "stack B per-device 3.3nF (§B5.4 v0.3, rev3 F-6)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
+between = ["HV_B_M1", "HV_RTN"]
+
+[[part]]
+ref = "C1142"
+group = "stackB"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220Y332JGGACAUTO"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack B per-device drain-source capacitor across Q1106 (rev 0.3 F-6, essential): shares fast edges once the gate feed is steered. 550 V normally; <= 1.36 kV after any single fault (static), 1.63 kV in the bounding 1 us step with a shorted device [SIM rev3-wpf]; rated 2,000 V"
+fields = { DocRef = "stack B per-device 3.3nF (§B5.4 v0.3, rev3 F-6)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
+between = ["HV_B_M2", "HV_B_M1"]
+
+[[part]]
+ref = "C1143"
+group = "stackB"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220Y332JGGACAUTO"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack B per-device drain-source capacitor across Q1107 (rev 0.3 F-6, essential): shares fast edges once the gate feed is steered. 550 V normally; <= 1.36 kV after any single fault (static), 1.63 kV in the bounding 1 us step with a shorted device [SIM rev3-wpf]; rated 2,000 V"
+fields = { DocRef = "stack B per-device 3.3nF (§B5.4 v0.3, rev3 F-6)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
+between = ["HV_B_M3", "HV_B_M2"]
+
+[[part]]
+ref = "C1144"
+group = "stackB"
+lib_id = "Device:C"
+value = "3.3nF 2kV C0G"
+footprint = "Capacitor_SMD:C_2220_5750Metric"
+mpn = "C2220Y332JGGACAUTO"
+manufacturer = "KEMET"
+datasheet = "https://content.kemet.com/datasheets/KEM_C1035_C0G_HV_SMD.pdf"
+description = "Stack B per-device drain-source capacitor across Q1108 (rev 0.3 F-6, essential): shares fast edges once the gate feed is steered. 550 V normally; <= 1.36 kV after any single fault (static), 1.63 kV in the bounding 1 us step with a shorted device [SIM rev3-wpf]; rated 2,000 V"
+fields = { DocRef = "stack B per-device 3.3nF (§B5.4 v0.3, rev3 F-6)", Verify = "C2220Y332JGGACAUTO (3,300 pF 5 % 2 kV C0G 2220, floating electrode, soft termination, AEC-Q200) seen in a distributor listing only; KEMET C1035 datasheet not opened (certificate error 2026-11-27). Confirm the series rating, the floating-electrode construction and surface arc-over guidance (coating) at up to 1.2 kV" }
+between = ["HV_B_TOP", "HV_B_M3"]
 
 [[part]]
 ref = "R1132"
@@ -2247,13 +2834,26 @@ footprint = "Package_TO_SOT_SMD:SOT-23"
 mpn = "BAT54S-7-F"
 manufacturer = "Diodes Incorporated"
 datasheet = "https://www.diodes.com/assets/Datasheets/ds11005.pdf"
-description = "Pump B stage 4 diode pair: clamp P4 -> PMPB_H3, transfer STKB_G -> P4. VF <= 0.32 V at 1 mA, 30 V"
+description = "Pump B stage 4 diode pair: clamp P4 -> PMPB_H3, transfer PMPB_H4 -> P4 (rev 0.3: H4 -> 470 ohm -> STKB_G). VF <= 0.32 V at 1 mA, 30 V"
 fields = { DocRef = "pump B stage 4", Verify = "SOT-23 pin numbers not printed on the Diodes DS11005 drawing; standard top-view numbering assumed (1 bottom-left, 2 bottom-right, 3 top)" }
 pins = """
-  1  A  STKB_G
+  1  A  PMPB_H4
   3  COM  PMPB_P4
   2  K  PMPB_H3
 """
+
+[[part]]
+ref = "R1195"
+group = "holdB"
+lib_id = "Device:R"
+value = "470"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07470RL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Pump B output resistor PMPB_H4 -> STKB_G (rev 0.3 F-8): limits what the release switch can pull from the pump before the pilot is pinched off, which removes the cold power-up lock-out [SIM rev3 §2]"
+fields = { DocRef = "pump output 470 ohm (§B5.4 v0.3, rev3 F-8, I-17)" }
+between = ["PMPB_H4", "STKB_G"]
 
 [[part]]
 ref = "C1110"
@@ -2330,13 +2930,13 @@ pins = """
 ref = "Q1113"
 group = "holdB"
 lib_id = "Device:Q_PJFET_DSG"
-value = "MMBFJ177"
+value = "MMBFJ270"
 footprint = "Package_TO_SOT_SMD:SOT-23"
-mpn = "MMBFJ177LT1G"
+mpn = "MMBFJ270"
 manufacturer = "onsemi"
-datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmbfj177lt1-d.pdf"
-description = "Stack B release PILOT: P-channel depletion JFET, NORMALLY ON with no bias (IDSS 1.5-20 mA). Source HV_RTN, drain RLSB_NG; pinched off only while its clock-derived gate bias (> VGS(off) 0.8-2.5 V) is present"
-fields = { DocRef = "release pilot B (capture addition, WP-F.md departure D-3)", Verify = "VDG -25 V max: worst -17.3 V here (gate +5.5 V, drain -11.8 V)" }
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmbfj270-d.pdf"
+description = "Stack B release PILOT: P-channel depletion JFET, NORMALLY ON with no bias (IDSS 2-15 mA). Source HV_RTN, drain RLSB_NG; pinched off only while its clock-derived gate bias (> VGS(off) 0.5-2.0 V) is present"
+fields = { DocRef = "release pilot B (MMBFJ177 -> MMBFJ270, rev 0.3 F-9, I-17)", Verify = "onsemi MMBFJ270/D Rev 2 (May 2022): VDG -30 V (worst here about -17.3 V), VGS 30 V. Pin numbers are not printed: the SOT-23 drawing places D and S on the two-lead side and G alone, read as 1 D / 2 S / 3 G as the MMBFJ177 - human check" }
 pins = """
   1  D  RLSB_NG
   2  S  HV_RTN
@@ -2528,7 +3128,7 @@ footprint = "Resistor_SMD:R_0603_1608Metric"
 mpn = "RC0603FR-073K9L"
 manufacturer = "Yageo"
 datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
-description = "Held-sense string B series resistor"
+description = "Held-sense 1 string B series resistor"
 new_row = true
 fields = { DocRef = "held sense B: 1.5 k -> 3.9 k (WP-F.md)" }
 between = ["HV_RTN", "HLDB_ZK"]
@@ -2537,13 +3137,13 @@ between = ["HV_RTN", "HLDB_ZK"]
 ref = "D1126"
 group = "holdB"
 lib_id = "Device:D_Zener"
-value = "MMSZ4688 4.7V"
+value = "MMSZ4687 4.3V"
 footprint = "Diode_SMD:D_SOD-123"
-mpn = "MMSZ4688T1G"
+mpn = "MMSZ4687T1G"
 manufacturer = "onsemi"
 datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmsz4678t1-d.pdf"
-description = "Held-sense threshold zener B: 4.47-4.94 V at 50 uA (low-current type), IR <= 10 uA at 3 V"
-fields = { DocRef = "held sense B 4.7 V zener (§B5.4)" }
+description = "Held-sense 1 threshold zener B (rev 0.3 F-10, was MMSZ4688): 4.09-4.52 V at 50 uA, IR <= 4 uA at 2 V; typical TC about 0 mV/K at 4.3 V (Fig. 1)"
+fields = { DocRef = "held sense B1 4.3 V zener (§B5.4 v0.3, rev3 F-10)" }
 pins = """
   1  K  HLDB_ZK
   2  A  HLDB_LA
@@ -2571,13 +3171,89 @@ footprint = "Package_SO:Toshiba_SOIC-4-6_4.4x3.6mm_P1.27mm"
 mpn = "TLP187(TPL,E"
 manufacturer = "Toshiba"
 datasheet = "https://toshiba.semicon-storage.com/info/TLP187_datasheet_en_20260727.pdf?did=13690&prodName=TLP187"
-description = "Stack B HELD sensor: LED lit only by a gate bias below about -5.5 V; Darlington pulls HOLD_B_HELD_N low (= held). Dark, open or unpowered = high = not held."
+description = "Stack B HELD sensor: LED lit only by a gate bias below about -4.95..-6.12 V (sensor 1 of 2); Darlington pulls HOLD_B_HELD_N low (= held; 47 k pull-up on 09). Dark, open or unpowered = high = not held."
 fields = { DocRef = "held opto B (§B5.4; VOS618A class -> TLP187 Darlington, WP-F.md)" }
 pins = """
   1  A  HLDB_LA
   3  K  STKB_G
   6  C  HOLD_B_HELD_N
   4  E  GND
+"""
+
+[[part]]
+ref = "R1198"
+group = "holdB"
+lib_id = "Device:R"
+value = "3.9k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-073K9L"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Held-sense 2 string B series resistor (rev 0.3 F-10: second independent sensor)"
+new_row = true
+fields = { DocRef = "held sense B2 (§B5.4 v0.3, rev3 F-10, I-4)" }
+between = ["HV_RTN", "HLDB2_ZK"]
+
+[[part]]
+ref = "D1134"
+group = "holdB"
+lib_id = "Device:D_Zener"
+value = "MMSZ4687 4.3V"
+footprint = "Diode_SMD:D_SOD-123"
+mpn = "MMSZ4687T1G"
+manufacturer = "onsemi"
+datasheet = "https://www.onsemi.com/download/data-sheet/pdf/mmsz4678t1-d.pdf"
+description = "Held-sense 2 threshold zener B: 4.09-4.52 V at 50 uA, IR <= 4 uA at 2 V"
+fields = { DocRef = "held sense B2 4.3 V zener (§B5.4 v0.3, rev3 F-10)" }
+pins = """
+  1  K  HLDB2_ZK
+  2  A  HLDB2_LA
+"""
+
+[[part]]
+ref = "R1199"
+group = "holdB"
+lib_id = "Device:R"
+value = "22k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-0722KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "Held-sense 2 LED shunt B"
+fields = { DocRef = "held sense B2 LED shunt" }
+between = ["HLDB2_LA", "STKB_G"]
+
+[[part]]
+ref = "U1106"
+group = "holdB"
+lib_id = "aed_storage:TLP187"
+value = "TLP187"
+footprint = "Package_SO:Toshiba_SOIC-4-6_4.4x3.6mm_P1.27mm"
+mpn = "TLP187(TPL,E"
+manufacturer = "Toshiba"
+datasheet = "https://toshiba.semicon-storage.com/info/TLP187_datasheet_en_20260727.pdf?did=13690&prodName=TLP187"
+description = "Stack B HELD sensor 2 of 2, on its own line HOLD_B_HELD2_N (I-4): any one shorted zener or Darlington leaves the other sensor's full threshold; HOLD_OK on 09 needs all four lines low"
+fields = { DocRef = "held opto B2 (§B5.4 v0.3, contract issue 3 §5.4)" }
+pins = """
+  1  A  HLDB2_LA
+  3  K  STKB_G
+  6  C  HOLD_B_HELD2_N
+  4  E  GND
+"""
+
+[[part]]
+ref = "TP1108"
+group = "holdB"
+lib_id = "Connector:TestPoint"
+value = "HOLD_B_HELD2_N"
+footprint = "TestPoint:TestPoint_Pad_D1.0mm"
+mpn = "n/a (pad)"
+manufacturer = "n/a"
+datasheet = "docs/HARDWARE_DESIGN.md §15"
+description = "Test point HOLD_B_HELD2_N (low voltage)"
+fields = { DocRef = "test point HOLD_B_HELD2_N" }
+pins = """
+  1  1  HOLD_B_HELD2_N
 """
 
 [[part]]
@@ -2666,4 +3342,3 @@ manufacturer = "Yageo"
 datasheet = "https://www.yageo.com/upload/media/product/productsearch/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
 description = "OVP force LED B current: (3.3 - 1.15 - 0.1)/240 = 8.5 mA nominal, >= 7 mA cold"
 between = ["3V3_SUP", "OVP_LEDB"]
-

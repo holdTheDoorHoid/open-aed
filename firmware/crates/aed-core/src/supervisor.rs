@@ -119,7 +119,38 @@ use crate::hal::{SequenceEnd, SequenceStatus, SupervisorHardware};
 use crate::heat::DeciC;
 use crate::link::{MainStatus, ShockCheck, SupervisorFault, SupervisorReport, TestRequest};
 use crate::rescue::RescueState;
-use aed_types::{in_shock_range, Millis, Ohms, Volts};
+use aed_types::{in_shock_range, Millis, Ohms, Volts, PAD_SENSE_MAX_OHMS};
+
+/// Where the over-voltage latch test (D-62 step T-6) has got to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OvpStep {
+    /// Not running.
+    Idle,
+    /// `OVP_RST` held high before the injection (reveals a shorted
+    /// coupling capacitor in the reset path).
+    ResetPre(Millis),
+    /// `OVP_TEST` up; the latch must trip within 2 ms.
+    TestHigh(Millis),
+    /// `OVP_TEST` down; the latch must stay set (and force both discharge
+    /// paths open long enough for the main controller to see all four
+    /// "held" sensors release, ≤ 25 ms) before the reset.
+    TestLow(Millis),
+    /// `OVP_RST` high for at least 1 ms (the hardware needs ≥ 100 µs
+    /// through its 220 Ω series resistor).
+    ResetHigh(Millis),
+    /// `OVP_RST` down again; the latch must now be clear.
+    ResetLow(Millis),
+}
+
+/// How long the latch is kept set in the test so the main controller can
+/// see the holds release (25 ms worst case, FW-11), ms.
+const OVP_TEST_HOLD_MS: u32 = 30;
+/// The firmware's reset pulse, ms (≥ 1 ms; hardware minimum about 100 µs
+/// through the 220 Ω series resistor). 2 ms so that a 1 ms tick can never
+/// shorten it below 1 ms.
+pub const OVP_RESET_PULSE_MS: u32 = 2;
+/// `OVP_RST` is held high this long before `OVP_TEST` rises, ms.
+pub const OVP_RESET_PRE_MS: u32 = 50;
 
 /// Why the supervisor refused a permit. Recorded in its event record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,12 +293,30 @@ pub struct Supervisor {
     test_permits_given: u8,
     test_request_cleared: bool,
     last_test_refusal: Option<TestPermitRefusal>,
+    real_test_until: Option<Millis>,
+    real_test_released_at: Option<Millis>,
+    real_tests_given: u8,
+    real_request_cleared: bool,
+    real_refusal_noted: bool,
+    ovp_step: OvpStep,
+    ovp_test_ok: bool,
+    ovp_request_cleared: bool,
+    ovp_reset_at: Option<Millis>,
+    ovp_reset_done: bool,
+    ovp_seen_clear: bool,
     events: EventRecord<SUPERVISOR_EVENT_CAPACITY>,
 }
 
 /// The report fields whose change sends a report at once: permit, holding,
 /// fault, too hot, test permit, shock verdict.
-type ReportFlags = (bool, bool, Option<SupervisorFault>, bool, bool, Option<ShockCheck>);
+type ReportFlags = (
+    bool,
+    bool,
+    Option<SupervisorFault>,
+    bool,
+    bool,
+    Option<ShockCheck>,
+);
 
 /// True for the states in which the main controller may want the capacitor charged.
 const fn holdable(state: RescueState) -> bool {
@@ -319,6 +368,17 @@ impl Supervisor {
             test_permits_given: 0,
             test_request_cleared: true,
             last_test_refusal: None,
+            real_test_until: None,
+            real_test_released_at: None,
+            real_tests_given: 0,
+            real_request_cleared: true,
+            real_refusal_noted: false,
+            ovp_step: OvpStep::Idle,
+            ovp_test_ok: false,
+            ovp_request_cleared: true,
+            ovp_reset_at: None,
+            ovp_reset_done: false,
+            ovp_seen_clear: false,
             events: EventRecord::new(),
         })
     }
@@ -339,6 +399,12 @@ impl Supervisor {
     #[must_use]
     pub const fn test_permit_active(&self) -> bool {
         self.test_permit_until.is_some()
+    }
+
+    /// True while the REAL permit is given for a self-test step (D-62).
+    #[must_use]
+    pub const fn real_test_permit_active(&self) -> bool {
+        self.real_test_until.is_some()
     }
 
     /// The supervisor's verdict on the most recent shock sequence it
@@ -404,7 +470,15 @@ impl Supervisor {
             self.cancel_since = None;
         }
 
-        self.check_latched_faults(now, fresh, voltage);
+        // During the over-voltage latch test the own reading is full scale
+        // (its input is the test injection): the checks on it are
+        // suspended for exactly that step and no longer.
+        let ovp_running = self.ovp_test_running();
+        if ovp_running {
+            self.check_heartbeat(now, fresh);
+        } else {
+            self.check_latched_faults(now, fresh, voltage);
+        }
         self.check_temperature(hw, now, fresh);
         let claim = self.last_status.map(|s| s.state);
         // Ignored during the main controller's switch-on self-test (D-31).
@@ -503,12 +577,13 @@ impl Supervisor {
             let result = if self.permit_used {
                 Err(PermitRefusal::AlreadyUsed)
             } else {
-                self.check_permit(now, fresh, voltage, pads, cancel)
-                    .and(if status == SequenceStatus::Idle {
+                self.check_permit(now, fresh, voltage, pads, cancel).and(
+                    if status == SequenceStatus::Idle {
                         Ok(())
                     } else {
                         Err(PermitRefusal::SequenceNotIdle)
-                    })
+                    },
+                )
             };
             match result {
                 Ok(()) => {
@@ -556,10 +631,12 @@ impl Supervisor {
                 }
             }
         }
+        self.decide_real_test_permit(now, fresh, claim, test_request, voltage, pads, status);
         self.decide_test_permit(now, fresh, claim, test_request, voltage);
+        self.run_ovp(hw, now, fresh, claim, test_request, voltage);
 
         // Lower the permit before letting go of the hold.
-        hw.set_permit(self.permit_until.is_some());
+        hw.set_permit(self.permit_until.is_some() || self.real_test_until.is_some());
         hw.set_test_permit(self.test_permit_until.is_some());
         hw.set_discharge_hold(self.holding);
 
@@ -592,8 +669,12 @@ impl Supervisor {
             .sequence_start_timeout_ms
             .saturating_add(c.sequence_end_timeout_ms);
         let test_window = self.test_permit_until.is_some()
+            || self.real_test_until.is_some()
             || self
                 .test_permit_released_at
+                .is_some_and(|t| now.since(t) <= grace)
+            || self
+                .real_test_released_at
                 .is_some_and(|t| now.since(t) <= grace);
         let Some(mut w) = self.seq else {
             if status == SequenceStatus::Active && !test_window {
@@ -616,9 +697,10 @@ impl Supervisor {
                 w.judged = true;
                 let check = match end {
                     SequenceEnd::Completed => c.check_shock_residual(voltage, w.plan),
-                    SequenceEnd::TimeCapTripped | SequenceEnd::OverCurrentTripped => {
-                        ShockCheck::HardwareTrip
-                    }
+                    SequenceEnd::TimeCapTripped
+                    | SequenceEnd::OverCurrentTripped
+                    | SequenceEnd::PhaseCapTripped
+                    | SequenceEnd::HardwareFault => ShockCheck::HardwareTrip,
                 };
                 self.shock_check = Some(check);
                 self.events.push(now, Event::SupervisorShockCheck(check));
@@ -639,7 +721,10 @@ impl Supervisor {
             (false, None) => false,
         };
         let bounded = w.released_at.is_some_and(|r| {
-            now.since(r) > grace.saturating_add(c.post_shock_settle_ms).saturating_add(c.heartbeat_timeout_ms)
+            now.since(r)
+                > grace
+                    .saturating_add(c.post_shock_settle_ms)
+                    .saturating_add(c.heartbeat_timeout_ms)
         }) && (!w.started || w.judged);
         self.seq = if over || bounded { None } else { Some(w) };
     }
@@ -667,6 +752,7 @@ impl Supervisor {
                 || self.fault.is_some()
                 || voltage >= c.test_permit_max_voltage
                 || self.permit_until.is_some()
+                || self.real_test_until.is_some()
             {
                 if expired && wanted {
                     self.events.push(now, Event::SupervisorTestPermitExpired);
@@ -708,6 +794,224 @@ impl Supervisor {
         }
     }
 
+    /// Give, keep or withdraw the REAL permit for one self-test step (D-62,
+    /// change order FW-16). Given only while the main controller reports
+    /// its self-test and asks for it, with BOTH readings counting as empty
+    /// ([`Config::reads_empty`]: below 50 V even with the sensor's full
+    /// allowed error), the charger reported off, and, for the dry run, its
+    /// own pad reading open; at most [`Config::real_test_permit_ms`], one
+    /// grant per request, a bounded number per self-test. Withdrawn at once
+    /// if any condition fails while it is up (before the hardware latches a
+    /// sequence; once latched withdrawal has no effect, D-59, and the dry
+    /// run lasts 2.5 ms into open pads).
+    #[allow(clippy::too_many_arguments)]
+    fn decide_real_test_permit(
+        &mut self,
+        now: Millis,
+        fresh: bool,
+        claim: Option<RescueState>,
+        test_request: TestRequest,
+        voltage: Volts,
+        pads: Ohms,
+        status: SequenceStatus,
+    ) {
+        let c = self.config;
+        if claim != Some(RescueState::SelfTest) {
+            self.real_tests_given = 0;
+        }
+        let dry = test_request == TestRequest::RealPermitDryRun;
+        let wanted = fresh && (test_request == TestRequest::RealPermit || dry);
+        let main_empty = self
+            .last_status
+            .is_some_and(|s| c.reads_empty(s.capacitor_voltage) && !s.charger_on);
+        let safe = self.fault.is_none()
+            && main_empty
+            && c.reads_empty(voltage)
+            && (!dry || pads.0 > PAD_SENSE_MAX_OHMS.0);
+        if let Some(until) = self.real_test_until {
+            let ended = status.locked_out();
+            let running = status == SequenceStatus::Active;
+            if !wanted || ended || (dry && running) || (!running && (now >= until || !safe)) {
+                if wanted && !safe && !ended {
+                    self.events
+                        .push(now, Event::SupervisorRealTestPermitRefused);
+                }
+                self.real_test_until = None;
+                self.real_test_released_at = Some(now);
+            }
+        } else if wanted && self.real_request_cleared {
+            if safe
+                && self.real_tests_given < c.real_test_permits_per_self_test
+                && self.permit_until.is_none()
+                && self.test_permit_until.is_none()
+            {
+                self.real_test_until = Some(Millis(now.0.saturating_add(c.real_test_permit_ms)));
+                self.real_tests_given = self.real_tests_given.saturating_add(1);
+                self.real_request_cleared = false;
+                self.real_refusal_noted = false;
+                self.events.push(now, Event::SupervisorRealTestPermitted);
+            } else if !self.real_refusal_noted {
+                self.real_refusal_noted = true;
+                self.events
+                    .push(now, Event::SupervisorRealTestPermitRefused);
+            }
+        }
+        if !(test_request == TestRequest::RealPermit || dry) {
+            self.real_request_cleared = true;
+        }
+    }
+
+    /// The over-voltage latch (I-22): its test (D-62 step T-6) when the
+    /// self-test asks, the reset of a latch that powered up tripped, and the
+    /// reset after a real trip (FW-17).
+    ///
+    /// The test, in order: `OVP_RST` held high for [`OVP_RESET_PRE_MS`]
+    /// (50 ms), then `OVP_TEST` raised with the reset still high: the latch
+    /// must still trip (a shorted coupling capacitor in the reset path would
+    /// hold it clear); both lines low, the latch must stay set for
+    /// [`OVP_TEST_HOLD_MS`] (the main controller sees all four holds
+    /// release); then a reset pulse of [`OVP_RESET_PULSE_MS`] must clear it.
+    /// `OVP_TEST` is injected at this controller's own sense-amplifier input,
+    /// so its capacitor reading reads full scale meanwhile: the voltage
+    /// checks against that reading are suspended only while this step runs
+    /// (at most about 90 ms, every stage has its own time limit), and the
+    /// step is entered only with both readings proven empty beforehand.
+    #[allow(clippy::too_many_lines)]
+    fn run_ovp(
+        &mut self,
+        hw: &mut impl SupervisorHardware,
+        now: Millis,
+        fresh: bool,
+        claim: Option<RescueState>,
+        test_request: TestRequest,
+        voltage: Volts,
+    ) {
+        let c = self.config;
+        let tripped = hw.ovp_tripped();
+        let asked =
+            fresh && claim == Some(RescueState::SelfTest) && test_request == TestRequest::OvpTest;
+        if !asked {
+            self.ovp_request_cleared = true;
+        }
+        let main_empty = self
+            .last_status
+            .is_some_and(|s| fresh && c.reads_empty(s.capacitor_voltage));
+        let both_empty = main_empty && c.reads_empty(voltage);
+        if !tripped && self.ovp_step == OvpStep::Idle && self.ovp_reset_at.is_none() {
+            self.ovp_seen_clear = true;
+        }
+        let failed = |s: &mut Self, hw: &mut dyn FnMut(bool, bool)| {
+            hw(false, false);
+            s.ovp_step = OvpStep::Idle;
+            s.latch(now, SupervisorFault::OvpTestFailed);
+        };
+        let mut lines = |test: bool, reset: bool| {
+            hw.set_ovp_test(test);
+            hw.set_ovp_reset(reset);
+        };
+        match self.ovp_step {
+            OvpStep::Idle => {
+                if let Some(at) = self.ovp_reset_at {
+                    if now.since(at) >= OVP_RESET_PULSE_MS {
+                        lines(false, false);
+                        self.ovp_reset_at = None;
+                        self.ovp_reset_done = true;
+                        self.ovp_step = OvpStep::ResetLow(now);
+                        self.events.push(now, Event::SupervisorOvpReset);
+                    }
+                } else if tripped && !self.ovp_seen_clear {
+                    // Powered up tripped (its safe direction): reset it once
+                    // both readings are empty; a latch that will not reset
+                    // leaves the device not ready.
+                    if both_empty && !self.ovp_reset_done {
+                        lines(false, true);
+                        self.ovp_reset_at = Some(now);
+                    }
+                } else if tripped {
+                    // A real trip (FW-17): latched and recorded; reset only
+                    // once both readings count as empty; not ready until a
+                    // self-test passes (the fault stays until power-off).
+                    self.latch(now, SupervisorFault::OvpTripped);
+                    if !self.ovp_reset_done && both_empty {
+                        lines(false, true);
+                        self.ovp_reset_at = Some(now);
+                    }
+                } else if asked && self.ovp_request_cleared && self.fault.is_none() && both_empty {
+                    self.ovp_request_cleared = false;
+                    self.ovp_test_ok = false;
+                    lines(false, true);
+                    self.ovp_step = OvpStep::ResetPre(now);
+                }
+            }
+            OvpStep::ResetPre(at) => {
+                if now.since(at) >= OVP_RESET_PRE_MS {
+                    lines(true, true);
+                    self.ovp_step = OvpStep::TestHigh(now);
+                }
+            }
+            OvpStep::TestHigh(at) => {
+                if tripped {
+                    lines(false, false);
+                    self.ovp_step = OvpStep::TestLow(now);
+                } else if now.since(at) > 2 {
+                    failed(self, &mut lines);
+                }
+            }
+            OvpStep::TestLow(at) => {
+                if !tripped {
+                    // The latch did not hold once the injection was removed.
+                    failed(self, &mut lines);
+                } else if now.since(at) >= OVP_TEST_HOLD_MS {
+                    lines(false, true);
+                    self.ovp_step = OvpStep::ResetHigh(now);
+                }
+            }
+            OvpStep::ResetHigh(at) => {
+                if now.since(at) >= OVP_RESET_PULSE_MS {
+                    lines(false, false);
+                    self.ovp_step = OvpStep::ResetLow(now);
+                }
+            }
+            OvpStep::ResetLow(at) => {
+                if !tripped {
+                    self.ovp_step = OvpStep::Idle;
+                    if (!self.ovp_reset_done || self.ovp_seen_clear) && self.fault.is_none() {
+                        self.ovp_test_ok = true;
+                        self.events.push(now, Event::SupervisorOvpTestPassed);
+                    }
+                    self.ovp_seen_clear = true;
+                } else if now.since(at) > 2 {
+                    if self.ovp_seen_clear && self.fault == Some(SupervisorFault::OvpTripped) {
+                        self.ovp_step = OvpStep::Idle;
+                    } else if self.ovp_seen_clear {
+                        failed(self, &mut lines);
+                    } else {
+                        // A latch that powered up tripped and will not reset.
+                        self.ovp_step = OvpStep::Idle;
+                        self.latch(now, SupervisorFault::OvpTripped);
+                    }
+                }
+            }
+        }
+        if !asked && claim != Some(RescueState::SelfTest) {
+            self.ovp_test_ok = false;
+        }
+    }
+
+    /// True while the over-voltage latch test drives `OVP_TEST` and so
+    /// this controller's own reading is not a capacitor reading (bounded:
+    /// see [`Supervisor::run_ovp`]).
+    #[must_use]
+    pub fn ovp_test_running(&self) -> bool {
+        matches!(
+            self.ovp_step,
+            OvpStep::ResetPre(_)
+                | OvpStep::TestHigh(_)
+                | OvpStep::TestLow(_)
+                | OvpStep::ResetHigh(_)
+        ) || (matches!(self.ovp_step, OvpStep::ResetLow(_)) && !self.ovp_reset_done)
+    }
+
     fn on_status(&mut self, status: MainStatus, now: Millis) {
         if !armed(status.state) {
             // The arming (if any) is over: the next one gets a fresh permit.
@@ -734,10 +1038,14 @@ impl Supervisor {
         }
     }
 
-    fn check_latched_faults(&mut self, now: Millis, fresh: bool, voltage: Volts) {
+    fn check_heartbeat(&mut self, now: Millis, fresh: bool) {
         if self.last_status_at.is_some() && !fresh {
             self.latch(now, SupervisorFault::HeartbeatLost);
         }
+    }
+
+    fn check_latched_faults(&mut self, now: Millis, fresh: bool, voltage: Volts) {
+        self.check_heartbeat(now, fresh);
         if voltage > self.config.overvoltage_limit {
             self.latch(now, SupervisorFault::Overvoltage);
         }
@@ -798,14 +1106,20 @@ impl Supervisor {
             c.supervisor_temp_limit
         };
         let over = t > limit;
-        let main_claim = self.last_status.filter(|_| fresh).and_then(|s| s.temperature);
+        let main_claim = self
+            .last_status
+            .filter(|_| fresh)
+            .and_then(|s| s.temperature);
         let plausible = main_claim.is_none_or(|m| t.minus(m) <= c.temp_max_gradient);
         let was = self.too_hot;
         self.too_hot = over && plausible;
         if self.too_hot && !was {
             self.events.push(now, Event::SupervisorTooHot(t));
         }
-        self.note_temp_ignored(now, (over && !plausible).then_some(TempIgnored::DisagreesWithMain));
+        self.note_temp_ignored(
+            now,
+            (over && !plausible).then_some(TempIgnored::DisagreesWithMain),
+        );
     }
 
     fn note_temp_ignored(&mut self, now: Millis, why: Option<TempIgnored>) {
@@ -867,7 +1181,7 @@ impl Supervisor {
 
     fn send_report_if_due(&mut self, hw: &mut impl SupervisorHardware, now: Millis, v: Volts) {
         let flags = (
-            self.permit_until.is_some(),
+            self.permit_until.is_some() || self.real_test_until.is_some(),
             self.holding,
             self.fault,
             self.too_hot,
@@ -889,6 +1203,7 @@ impl Supervisor {
                 temperature: self.own_temp,
                 test_permit: flags.4,
                 shock_check: self.shock_check,
+                ovp_test_ok: self.ovp_test_ok,
             });
             self.last_report_at = Some(now);
             self.last_report_flags = flags;

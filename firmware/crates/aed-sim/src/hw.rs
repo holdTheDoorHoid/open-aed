@@ -11,9 +11,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use aed_core::sequencer::SequencerJob;
 use aed_core::{
-    BatteryStatus, BridgeTestResult, BridgeTestStep, DeciC, MainHardware, MainStatus,
-    PadCartridge, Prompt, RelayPosition, SensorSet, SequenceStatus, SupervisorHardware,
+    BatteryStatus, BridgeTestResult, BridgeTestStep, DeciC, HoldReadback, MainHardware, MainStatus,
+    PadCartridge, Probe, Prompt, RelayPosition, SensorSet, SequenceStatus, SupervisorHardware,
     SupervisorReport, TempPoint,
 };
 use aed_types::{Millis, Ohms, PatientMode, ShockPlan, Volts};
@@ -56,10 +57,40 @@ impl MainHardware for MainView {
     fn request_shock(&mut self, plan: Option<&ShockPlan>) {
         let mut p = self.plant.borrow_mut();
         let was_up = p.request.is_some() || p.request_bare;
-        match plan {
-            Some(plan) => p.request = Some(*plan),
-            None => p.request_bare = true,
+        // The board layer loads its delivery sequencer: a self-test plan
+        // (no charge voltage) runs in test mode, a rescue plan in shock mode.
+        let job = match plan {
+            Some(plan) => {
+                p.request = Some(*plan);
+                if plan.charge_voltage.0 == 0 {
+                    SequencerJob::Test(*plan)
+                } else {
+                    SequencerJob::Shock(*plan)
+                }
+            }
+            None => {
+                p.request_bare = true;
+                SequencerJob::RailOnly
+            }
+        };
+        p.load_sequencer(job);
+        if !was_up {
+            let now = p.now_us();
+            p.request_raised_us = Some(now);
         }
+    }
+    fn request_probe(&mut self, probe: Probe) {
+        let mut p = self.plant.borrow_mut();
+        let was_up = p.request.is_some() || p.request_bare;
+        p.request_bare = true;
+        let job = match probe {
+            Probe::RelayMove { hold_ms } => SequencerJob::RelayMove {
+                hold_us: hold_ms.saturating_mul(1_000),
+            },
+            Probe::StartWithoutLead => SequencerJob::StartWithoutLead,
+            Probe::DryRun => SequencerJob::DryRun(crate::plant::Plant::dry_run_plan()),
+        };
+        p.load_sequencer(job);
         if !was_up {
             let now = p.now_us();
             p.request_raised_us = Some(now);
@@ -69,6 +100,22 @@ impl MainHardware for MainView {
         let mut p = self.plant.borrow_mut();
         p.request = None;
         p.request_bare = false;
+        // Lowering the request does not stop the main controller's phase
+        // timer once it has commanded phase 1 (D-59: the hardware
+        // completes the sequence); the board layer drops it once done.
+        if !p.sequencer.is_some_and(|s| s.committed()) {
+            p.sequencer = None;
+        }
+    }
+    fn hold_readback(&mut self) -> HoldReadback {
+        self.plant.borrow().hold_readback()
+    }
+    fn set_coil_supply(&mut self, on: bool) {
+        let mut p = self.plant.borrow_mut();
+        p.set_coil_supply(on);
+    }
+    fn charger_done(&mut self) -> bool {
+        self.plant.borrow().charger_done
     }
     fn sequence_status(&mut self) -> SequenceStatus {
         self.plant.borrow().latch.status
@@ -80,7 +127,8 @@ impl MainHardware for MainView {
         let p = self.plant.borrow();
         BridgeTestResult {
             outcome: p.bridge_test_step(step),
-            measurement: 0,
+            // FW-14: the board layer's test-load current, mA.
+            measurement: p.test_current_ma(),
         }
     }
     fn cancel_pressed(&mut self) -> bool {
@@ -97,7 +145,7 @@ impl MainHardware for MainView {
         self.plant.borrow().battery
     }
     fn battery_under_load(&mut self) -> BatteryStatus {
-        self.plant.borrow().battery
+        self.plant.borrow_mut().battery_load_test()
     }
     fn pad_cartridge(&mut self) -> PadCartridge {
         self.plant.borrow().cartridge
@@ -162,6 +210,15 @@ impl SupervisorHardware for SupervisorView {
     }
     fn set_test_permit(&mut self, on: bool) {
         self.plant.borrow_mut().test_permit = on;
+    }
+    fn set_ovp_test(&mut self, on: bool) {
+        self.plant.borrow_mut().ovp_test = on;
+    }
+    fn set_ovp_reset(&mut self, high: bool) {
+        self.plant.borrow_mut().ovp_reset = high;
+    }
+    fn ovp_tripped(&mut self) -> bool {
+        self.plant.borrow().ovp_latched
     }
     fn sequence_status(&mut self) -> SequenceStatus {
         self.plant.borrow().latch.status

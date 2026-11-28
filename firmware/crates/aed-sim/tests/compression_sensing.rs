@@ -27,7 +27,8 @@ fn never_stops(rhythm: Rhythm, per_min: f64, ohms: f64, sensing: bool) -> aed_si
 }
 
 #[test]
-fn f12_compressions_that_never_stop_are_never_shocked_with_sensing_at_any_rate_or_size_above_the_threshold() {
+fn f12_compressions_that_never_stop_are_never_shocked_with_sensing_at_any_rate_or_size_above_the_threshold(
+) {
     // Finding F-12: the heart signal alone took compressions at 150/min
     // over a flatline for a shockable rhythm. With compression sensing the
     // analysis is never fed while compressions are sensed, whatever the
@@ -40,7 +41,10 @@ fn f12_compressions_that_never_stop_are_never_shocked_with_sensing_at_any_rate_o
                 let r = never_stops(rhythm, per_min, ohms, true);
                 assert_invariants(&r);
                 if !r.shocks.is_empty() || r.entered(RescueState::Countdown) {
-                    fail(&r, &format!("{per_min}/min {ohms} Ω: counted down or shocked"));
+                    fail(
+                        &r,
+                        &format!("{per_min}/min {ohms} Ω: counted down or shocked"),
+                    );
                 }
                 let old = never_stops(rhythm, per_min, ohms, false);
                 old_shocks += old.shocks.len();
@@ -51,7 +55,10 @@ fn f12_compressions_that_never_stop_are_never_shocked_with_sensing_at_any_rate_o
     println!(
         "F-12 sweep (SIMULATED): with sensing 0 shocks in {runs} runs; without sensing {old_shocks} shocks"
     );
-    assert!(old_shocks > 0, "the sweep must reproduce F-12 without sensing");
+    assert!(
+        old_shocks > 0,
+        "the sweep must reproduce F-12 without sensing"
+    );
 }
 
 #[test]

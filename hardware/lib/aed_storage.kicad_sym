@@ -2,7 +2,7 @@
 	(version 20251024)
 	(generator "aed_symgen")
 	(generator_version "1.0")
-	(symbol "IXTT10N100D2"
+	(symbol "IXTT2N170D2"
 		(pin_names
 			(offset 1.016)
 		)
@@ -22,7 +22,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "IXTT10N100D2"
+		(property "Value" "IXTT2N170D2"
 			(at -5.08 -6.35 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -44,7 +44,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.littelfuse.com/assetdocs/littelfuse-discrete-mosfets-n-channel-depletion-mode-ixt-10n100-datasheet?assetguid=5e358144-35f5-4d3b-b405-1eaa211abc28"
+		(property "Datasheet" "https://static.datasheets.com/doc/13418158-ixys-ixtt2n170d2-ds.pdf (mirror of IXYS DS100418B(02/12))"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -55,7 +55,7 @@
 				)
 			)
 		)
-		(property "Description" "IXYS/Littelfuse N-channel DEPLETION-mode MOSFET (normally on), 1000 V, RDS(on) 1.5 ohm at VGS = 0, TO-268 (D3PAK). Datasheet DS100326A(4/17), marked Preliminary Technical Information."
+		(property "Description" "IXYS/Littelfuse N-channel DEPLETION-mode MOSFET (normally on), 1700 V, RDS(on) <= 6.5 ohm at VGS = 0, VGS(off) -2.0..-4.0 V, TO-268 (D3PAK). Datasheet DS100418B(02/12). Replaces IXTT10N100D2 on sheet 11 (design rev 0.3, F-1)."
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -66,7 +66,7 @@
 				)
 			)
 		)
-		(property "MPN" "IXTT10N100D2"
+		(property "MPN" "IXTT2N170D2"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -88,7 +88,7 @@
 				)
 			)
 		)
-		(property "PinoutVerified" "NO - drafted from datasheet DS100326A(4/17) page 2, 'TO-268 Outline, Terminals: 1 - Gate, 2,4 - Drain, 3 - Source'. The datasheet numbers the tab 4 and the trimmed centre lead 2; the KiCad TO-268-2 footprint numbers the tab pad 2 (no centre-lead pad), so symbol pin 2 = drain = tab, needs human check"
+		(property "PinoutVerified" "NO - drafted from datasheet DS100418B(02/12) page 2, 'TO-268 Outline, Terminals: 1 - Gate, 2,4 - Drain, 3 - Source' (read 2026-11-27). The datasheet numbers the tab 4 and the trimmed centre lead 2; the KiCad TO-268-2 footprint numbers the tab pad 2 (no centre-lead pad), so symbol pin 2 = drain = tab, needs human check"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -110,7 +110,7 @@
 				)
 			)
 		)
-		(property "ki_keywords" "depletion MOSFET normally-on 1000V discharge"
+		(property "ki_keywords" "depletion MOSFET normally-on 1700V discharge"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -121,7 +121,7 @@
 				)
 			)
 		)
-		(symbol "IXTT10N100D2_0_1"
+		(symbol "IXTT2N170D2_0_1"
 			(rectangle
 				(start -5.08 5.08)
 				(end 5.08 -5.08)
@@ -134,7 +134,7 @@
 				)
 			)
 		)
-		(symbol "IXTT10N100D2_1_1"
+		(symbol "IXTT2N170D2_1_1"
 			(pin passive line
 				(at -7.62 0 0)
 				(length 2.54)

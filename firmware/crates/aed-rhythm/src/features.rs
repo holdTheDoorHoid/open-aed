@@ -16,9 +16,9 @@
 
 use crate::filter::{Biquad, Kind};
 use crate::settings::{
-    Settings, ARTIFACT_BAND_MAX_HZ, COUNT_CENTRE_HZ, COUNT_LEVEL, COUNT_Q,
-    DOMINANT_SEARCH_MAX_HZ, SAMPLES_PER_SECOND, SAMPLE_RATE_HZ, SPECTRUM_BINS, SPECTRUM_MIN_HZ,
-    SPECTRUM_STEP_HZ, TCSC_LEVEL, WINDOW_SAMPLES,
+    Settings, ARTIFACT_BAND_MAX_HZ, COUNT_CENTRE_HZ, COUNT_LEVEL, COUNT_Q, DOMINANT_SEARCH_MAX_HZ,
+    SAMPLES_PER_SECOND, SAMPLE_RATE_HZ, SPECTRUM_BINS, SPECTRUM_MIN_HZ, SPECTRUM_STEP_HZ,
+    TCSC_LEVEL, WINDOW_SAMPLES,
 };
 use aed_types::RhythmDecision;
 use core::f32::consts::PI;
@@ -243,16 +243,16 @@ pub fn vf_leakage(x: &[f32]) -> f32 {
         return 1.0;
     }
     let n = half_period as usize;
-    let (num, den) = x
-        .iter()
-        .skip(n)
-        .zip(x.iter())
-        .fold((0.0_f32, 0.0_f32), |(num, den), (now, past)| {
-            (
-                num + libm::fabsf(now + past),
-                den + libm::fabsf(*now) + libm::fabsf(*past),
-            )
-        });
+    let (num, den) =
+        x.iter()
+            .skip(n)
+            .zip(x.iter())
+            .fold((0.0_f32, 0.0_f32), |(num, den), (now, past)| {
+                (
+                    num + libm::fabsf(now + past),
+                    den + libm::fabsf(*now) + libm::fabsf(*past),
+                )
+            });
     if den > 0.0 {
         num / den
     } else {
@@ -376,16 +376,31 @@ pub fn classify_with(f: &Features, s: &Settings) -> WindowVerdict {
         f.rms_uv,
     ];
     if !all.iter().all(|v| v.is_finite()) {
-        return verdict(RhythmDecision::Indeterminate, Reason::InvalidMeasurement, false, false);
+        return verdict(
+            RhythmDecision::Indeterminate,
+            Reason::InvalidMeasurement,
+            false,
+            false,
+        );
     }
     if f.saturated_fraction > s.max_saturated_fraction {
-        return verdict(RhythmDecision::Indeterminate, Reason::Saturated, false, false);
+        return verdict(
+            RhythmDecision::Indeterminate,
+            Reason::Saturated,
+            false,
+            false,
+        );
     }
     if f.clipped_fraction > s.max_clipped_fraction {
         return verdict(RhythmDecision::Indeterminate, Reason::Clipped, false, false);
     }
     if f.peak_to_peak_uv > s.max_plausible_pp_uv {
-        return verdict(RhythmDecision::Indeterminate, Reason::AmplitudeImplausible, false, false);
+        return verdict(
+            RhythmDecision::Indeterminate,
+            Reason::AmplitudeImplausible,
+            false,
+            false,
+        );
     }
     let flat = f.peak_to_peak_uv < s.asystole_max_uv
         || (f.rms_uv < s.asystole_max_rms_uv && f.vf_leakage > s.asystole_min_leakage);
@@ -396,21 +411,31 @@ pub fn classify_with(f: &Features, s: &Settings) -> WindowVerdict {
         return verdict(RhythmDecision::Indeterminate, Reason::Noisy, false, false);
     }
 
-    let time_vote = f.threshold_crossing_fraction > s.tcsc_vf_min
-        && f.bandpass_count_fraction > s.count_vf_min;
+    let time_vote =
+        f.threshold_crossing_fraction > s.tcsc_vf_min && f.bandpass_count_fraction > s.count_vf_min;
     let freq_vote = f.vf_leakage < s.leakage_vf_max
         && f.dominant_frequency_hz > s.dominant_vf_min_hz
         && f.dominant_frequency_hz < s.dominant_vf_max_hz
         && f.spectral_concentration > s.concentration_vf_min;
 
     if f.low_band_fraction > s.max_low_band_fraction {
-        return verdict(RhythmDecision::Indeterminate, Reason::PossibleArtifact, time_vote, freq_vote);
+        return verdict(
+            RhythmDecision::Indeterminate,
+            Reason::PossibleArtifact,
+            time_vote,
+            freq_vote,
+        );
     }
     match (time_vote, freq_vote) {
         (true, true) if f.peak_to_peak_uv < s.fine_vf_max_pp_uv => {
             verdict(RhythmDecision::Indeterminate, Reason::FineVf, true, true)
         }
-        (true, true) => verdict(RhythmDecision::Shockable, Reason::BothMethodsShockable, true, true),
+        (true, true) => verdict(
+            RhythmDecision::Shockable,
+            Reason::BothMethodsShockable,
+            true,
+            true,
+        ),
         (false, false) => verdict(
             RhythmDecision::NonShockable,
             Reason::NeitherMethodShockable,

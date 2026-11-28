@@ -2,7 +2,8 @@
 # Ioff receivers for the lines that come from other supply domains, and every default resistor the contract gives
 # to the main controller's sheet.
 # NOT FOR CONSTRUCTION — unreviewed design (SAFETY.md §2a). Nothing here is an instruction to build or power anything.
-# Sources: docs/HARDWARE_DESIGN.md §B2, §B11, §F; hardware/aed-main/contract.md (issue 2) §2, §5, §7, §8, §9;
+# Sources: docs/HARDWARE_DESIGN.md v0.3 §B2, §B11, §F; hardware/aed-main/contract.md (issue 3) §0, §2, §5, §7, §8, §9;
+# change order hardware/aed-main/capture-notes/rev3-changes.md (WP-B: B-1, B-2, B-4, B-5);
 # ST DS13086 Rev 10 (July 2024) Table 27 (pin definitions), Tables 28/29 (alternate functions), Figure 24 (power
 # supply scheme), Tables 80/81 (HSE/LSE), Table 102 (NRST). Pin assignment, arithmetic and doubts:
 # hardware/aed-main/capture-notes/WP-B.md.
@@ -10,7 +11,7 @@
 [sheet]
 name = "04_main_mcu"
 title = "Main controller STM32U585ZIT6: clocks, SWD, NOR flash (event record), FRAM (durable store), link buffers"
-source = "docs/HARDWARE_DESIGN.md §B2, §B11; contract.md issue 2 §5, §8"
+source = "docs/HARDWARE_DESIGN.md v0.3 §B2, §B11; contract.md issue 3 §5, §8"
 comments = ["Every U401 pin is in analog (high-impedance, no pull) state from reset until firmware configures it (DS13086 §3.13); every safe default comes from a resistor (contract §5)",
             "Pin assignment, alternate functions, reset states and arithmetic: hardware/aed-main/capture-notes/WP-B.md"]
 
@@ -21,10 +22,10 @@ global = [
   "PWR_BTN_N", "MAIN_KEEP", "SUP_WAKE", "EN_5V0", "RTC_INT_N", "READY_D", "READY_CLK", "I2C_M_SCL", "I2C_M_SDA",
   "DOCK_DET_N", "GAUGE_ALRT_N", "BAT_LOAD_EN", "CHGR_INT_N", "CHGR_CE_N", "DOCK_TX", "DOCK_RX",
   "LINK_M2S", "LINK_S2M",
-  "HOLD_M_CLK", "HOLD_RB_A_N", "HOLD_RB_B_N", "SHOCK_REQ", "BRIDGE_ARMED_N",
+  "HOLD_M_CLK", "HOLD_RB_A_N", "HOLD_RB_B_N", "HOLD_RB_A2_N", "HOLD_RB_B2_N", "SHOCK_REQ", "BRIDGE_ARMED_N",
   "CHG_SESSION", "CHG_RUN", "CHG_DONE_N", "CHG_FAULT_N", "MODE_HW_RB_N",
   "HVM_SCLK", "HVM_MOSI", "HVM_CS_N", "HVM_MISO", "HVM_DRDY_N",
-  "CMD_HA", "CMD_LA", "CMD_HB", "CMD_LB", "RELAY_CMD", "BTEST_CMD", "K_REST_N", "SEQ_ACT_M_N", "SEQ_DONE_M_N",
+  "CMD_HA", "CMD_LA", "CMD_HB", "CMD_LB", "RELAY_CMD", "BTEST_CMD", "K_REST_N", "K_SUPPLY_EN", "SEQ_ACT_M_N", "SEQ_DONE_M_N",
   "BR_FAULT_N", "I_SHOCK",
   "PAD_PRESENT_N", "PAD_ID_1W", "NTC_PADS",
   "AFE_SCLK", "AFE_MOSI", "AFE_CS_N", "AFE_START", "AFE_RESET_N", "AFE_MISO", "AFE_DRDY_N",
@@ -96,7 +97,6 @@ type = "isolated_pin_label"
 match = "Global Label '(AFE_SCLK|AFE_MOSI|AFE_MISO|AFE_CS_N|AFE_DRDY_N|AFE_START|AFE_RESET_N)'"
 reason = "Contract 5.8: ADS1292R and its default resistors on 15_frontend_main (WP-H, placeholder in this worktree)."
 
-
 # ====================================================================== groups
 [[group]]
 id = "mcu"
@@ -104,7 +104,7 @@ title = "U401 STM32U585ZIT6 (LQFP144, LDO version without SMPS): every pin"
 note = """
 Pin numbers and names from KiCad's stock symbol STM32U585ZITx, cross-checked row by row against DS13086 Rev 10 Table 27 (LQFP144 column, non-SMPS). Alternate-function numbers from Tables 28/29. All 114 port pins are in analog mode after reset (DS13086 §3.13) except the debug pins PA13 (pull-up), PA14 (pull-down), PA15 (pull-up), PB4 (pull-up) and PB3 (Table 27 note 5); none of those five carries a contract signal.
 Phase commands: one advanced timer, TIM1 channels 1-4 (PE9, PE11, PE13, PE14, AF1), with the sequencer fault BR_FAULT_N on TIM1's break input (PE15, AF1) so a sequencer fault also forces the timer outputs inactive. The bootloader's pins (marked "(boot)" in Table 27) carry no shock, consent or charger output.
-Consent clock HOLD_M_CLK (PD12) is a plain GPIO toggled by the control loop (F-1); TIM4_CH1 is on the same pin for a one-pulse-mode variant, never a free-running timer.
+Consent clock HOLD_M_CLK (PD12) is a plain GPIO toggled by the control loop (F-1); TIM4_CH1 is on the same pin for a one-pulse-mode variant, never a free-running timer. Issue 3: HOLD_M_CLK at 1.5 kHz +/- 10 %, always stopped low (contract §0). K_SUPPLY_EN (PD7, push-pull, high-Z from reset; the 100 kOhm default to GND is on 14) switches the relay-coil supply on >= 0.2 s before RELAY_CMD. Second-sensor readbacks HOLD_RB_A2_N/HOLD_RB_B2_N on PG0/PG1 (VDD domain, not VDDIO2).
 """
 
 [[group]]
@@ -148,14 +148,14 @@ SN74LVC1G17 Schmitt buffers, Ioff <= 10 uA with VCC = 0 (SCES351Y). LINK_S2M: 10
 id = "pulls"
 title = "Default resistors the contract assigns to sheet 04 (readers' pull-ups on 3V3_MAIN)"
 note = """
-Open-drain readbacks and status lines: 100 kOhm up, so open, unpowered or unsoldered reads "not held / not armed / not active / not done / no fault / not at rest / not fitted" (R11). Contacts read by the main: 10 kOhm up (CANCEL_M_N, MODE_ADULT_N, MODE_CHILD_N). I2C_M bus 4.7 kOhm. PAD_ID_1W 2.2 kOhm. DOCK_TX 100 kOhm up (UART idle).
+Open-drain readbacks and status lines (issue 3: four hold-sensor readbacks HOLD_RB_A_N, HOLD_RB_B_N, HOLD_RB_A2_N, HOLD_RB_B2_N, R408/R409/R431/R432): 100 kOhm up, so open, unpowered or unsoldered reads "not held / not armed / not active / not done / no fault / not at rest / not fitted" (R11). Contacts read by the main: 10 kOhm up (CANCEL_M_N, MODE_ADULT_N, MODE_CHILD_N). I2C_M bus 4.7 kOhm. PAD_ID_1W 2.2 kOhm. DOCK_TX 100 kOhm up (UART idle).
 """
 
 [[group]]
 id = "analog"
 title = "ADC inputs: I_SHOCK anti-alias filter and pad-area NTC bias"
 note = """
-I_SHOCK (26.7 mV/A after the 2:3 divider on 13, 0-3.2 V): 1 kOhm + 4.7 nF C0G, corner 1/(2*pi*1k*4.7n) = 33.9 kHz, below half of a >= 100 kS/s sampling rate; the 1 kOhm also limits current into the pin if the divider on 13 fails open.
+I_SHOCK (issue 3: 24.0 mV/A after the 13.3k/20.0k divider on 13; <= 3.20 V with the INA240 saturated, below the 3.26 V VDDA minimum used by the simulation notes LR §5.1; full scale 3.20 V / 24.0 mV/A = 133 A): 1 kOhm + 4.7 nF C0G (unchanged, rev3 B-5), corner 1/(2*pi*1k*4.7n) = 33.9 kHz, below half of a >= 100 kS/s sampling rate; the 1 kOhm also limits current into the pin if the divider on 13 fails open.
 NTC_PADS (10 kOhm NTC to GND on sheet 14): 10.0 kOhm 0.1 % bias to VDDA_M, ratiometric to the ADC reference (VREF+ = VDDA_M), then 1 kOhm + 100 nF at the pin.
 """
 
@@ -228,8 +228,8 @@ pins = """
   53   PF13              MODE_ADULT_N       # GPIO in; -; 10k up here
   54   PF14              I2C_M_SCL          # I2C4_SCL; AF4; 4.7k up here
   55   PF15              I2C_M_SDA          # I2C4_SDA; AF4; 4.7k up here
-  56   PG0               NC                 # unused
-  57   PG1               NC                 # unused
+  56   PG0               HOLD_RB_A2_N       # GPIO in (issue 3); -; FT_ha, VDD domain (VDDIO2 is only PG2-PG15); 100k up here (R431)
+  57   PG1               HOLD_RB_B2_N       # GPIO in (issue 3); -; FT_ha, VDD domain; 100k up here (R432)
   58   PE7               CANCEL_M_N         # GPIO in, EXTI7 / WKUP6; -; 10k up here
   59   PE8               NC                 # unused
   60   PE9               CMD_HA             # TIM1_CH1; AF1; advanced timer TIM1; 100k to GND on 12
@@ -295,7 +295,7 @@ pins = """
   120  VSS               GND                # supply
   121  VDD               3V3_MAIN           # supply
   122  PD6               LINK_S2M_RX        # USART2_RX; AF7; from U404 (Ioff Schmitt receiver of LINK_S2M)
-  123  PD7               NC                 # unused
+  123  PD7               K_SUPPLY_EN        # GPIO out push-pull (issue 3); -; FT_h, no (boot) function; analog/high-Z from reset, 100k to GND on 14
   124  PG9               MEM_SCK            # SPI3_SCK; AF6; flash + F-RAM
   125  PG10              MEM_MISO           # SPI3_MISO; AF6
   126  PG11              MEM_MOSI           # SPI3_MOSI; AF6
@@ -1091,6 +1091,32 @@ datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip
 description = "100K 1% 0.1 W thick film 0603"
 fields = { DocRef = "contract 5.4 (open = not held)" }
 between = ["HOLD_RB_B_N", "3V3_MAIN"]
+
+[[part]]
+ref = "R431"
+group = "pulls"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "100K 1% 0.1 W thick film 0603"
+fields = { DocRef = "contract issue 3 5.4 HOLD_RB_A2_N (open = not held); rev3 B-2" }
+between = ["HOLD_RB_A2_N", "3V3_MAIN"]
+
+[[part]]
+ref = "R432"
+group = "pulls"
+lib_id = "Device:R"
+value = "100k"
+footprint = "Resistor_SMD:R_0603_1608Metric"
+mpn = "RC0603FR-07100KL"
+manufacturer = "Yageo"
+datasheet = "https://www.yageo.com/upload/media/product/products/datasheet/rchip/PYu-RC_Group_51_RoHS_L_12.pdf"
+description = "100K 1% 0.1 W thick film 0603"
+fields = { DocRef = "contract issue 3 5.4 HOLD_RB_B2_N (open = not held); rev3 B-2" }
+between = ["HOLD_RB_B2_N", "3V3_MAIN"]
 
 [[part]]
 ref = "R410"

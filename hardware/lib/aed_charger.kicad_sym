@@ -1610,7 +1610,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "1:50 7.5uH flyback (made to order)"
+		(property "Value" "1:50 7.5uH +10/-5% flyback (made to order)"
 			(at -10.16 -6.35 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1643,7 +1643,7 @@
 				)
 			)
 		)
-		(property "Description" "Flyback transformer 1:50 +-1 %, Lpri 7.5 uH +-10 %, <=10 % L loss at 25 A 70 C, leakage <=1 % Lpri, secondary self-capacitance <=15 pF, >=2,200 V DC working, 4.4 kV DC 60 s test"
+		(property "Description" "Flyback transformer 1:50 +-1 %, Lpri 7.5 uH +10 %/-5 % (v0.3), efficiency >=90 % at 20 A peak 30-45 kHz (v0.3), 12.4 A RMS, secondary winding resistance stated, <=10 % L loss at 25 A 70 C, leakage <=1 % Lpri, secondary self-capacitance <=15 pF, >=2,200 V DC working, 4.4 kV DC 60 s test"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)

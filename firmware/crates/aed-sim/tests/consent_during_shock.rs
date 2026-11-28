@@ -46,18 +46,31 @@ fn plan(mode: PatientMode, ohms: u16) -> ShockPlan {
 fn charged_plant(config: PlantConfig, ohms: f64, plan: &ShockPlan) -> Plant {
     let mut p = Plant::new(
         config,
-        Synth::new(Rhythm::VentricularFibrillation { amplitude_uv: 800.0 }, 1),
+        Synth::new(
+            Rhythm::VentricularFibrillation {
+                amplitude_uv: 800.0,
+            },
+            1,
+        ),
         1,
     );
     p.pad_ohms = Some(ohms);
-    p.cap_v = f64::from(plan.charge_voltage.0);
     p.main_hold = true;
     p.supervisor_hold = true;
-    for _ in 0..5 {
+    // Design v0.3: the holds take up to 35 ms to engage (FW-11) and the
+    // coil supply must be up 200 ms before the relay is commanded (FW-12).
+    p.set_coil_supply(true);
+    for _ in 0..250 {
         let _ = p.step();
     }
+    p.cap_v = f64::from(plan.charge_voltage.0);
     p
 }
+
+/// Since design v0.3 a sequence starts about 66 ms after the rail rises
+/// (30 ms rail-ready wait, 15.9 ms relay transfer, 14 ms settle; simulated
+/// band, aed-sim `HwTiming`), so consent is held this much longer.
+const START_MS: u32 = 70;
 
 /// Raise request and permit together, hold them for `hold_ms`, then drop
 /// both and let the plant settle. Returns the shock record, if any, and
@@ -66,18 +79,22 @@ fn raise_consent(p: &mut Plant, plan: &ShockPlan, hold_ms: u32) -> Option<ShockR
     p.request = Some(*plan);
     p.request_raised_us = Some(p.now_us());
     p.permit = true;
-    for _ in 0..hold_ms {
+    for _ in 0..hold_ms + START_MS {
         let _ = p.step();
     }
     p.request = None;
     p.permit = false;
-    for _ in 0..60 {
+    for _ in 0..100 {
         let _ = p.step();
     }
     p.shocks.last().copied()
 }
 
-fn one_shock(config: PlantConfig, ohms: u16, cut: Option<(ConsentLine, u64)>) -> (Option<ShockRecord>, u64) {
+fn one_shock(
+    config: PlantConfig,
+    ohms: u16,
+    cut: Option<(ConsentLine, u64)>,
+) -> (Option<ShockRecord>, u64) {
     let pl = plan(PatientMode::Adult, ohms);
     let mut p = charged_plant(config, f64::from(ohms), &pl);
     let t0 = p.now_us();
@@ -95,7 +112,12 @@ fn a_full_sequence_delivers_the_plan_as_the_waveform_model_predicts() {
         let s = s.expect("no shock");
         assert_eq!(s.end, ShockEnd::Completed);
         let err = (s.delivered_j() - s.planned_j()).abs() / s.planned_j();
-        assert!(err < 0.002, "{ohms} Ω: {} J vs {} J", s.delivered_j(), s.planned_j());
+        assert!(
+            err < 0.002,
+            "{ohms} Ω: {} J vs {} J",
+            s.delivered_j(),
+            s.planned_j()
+        );
         println!(
             "| {ohms} | {:.1} | {:.1} | {:.2} | {:.2} | {:.1} |",
             s.planned_j(),
@@ -140,8 +162,10 @@ fn consent_withdrawn_at_any_instant_gives_nothing_or_the_whole_plan_never_part_a
     println!("|---|---:|---:|---:|---:|---:|---:|");
     for line in [ConsentLine::Request, ConsentLine::Permit] {
         for ohms in [25u16, 80, 175] {
-            let (none, whole, partial, most) = sweep(PlantConfig::default(), ohms, line, 50);
-            println!("| {line:?} | {ohms} | 50 | {none} | {whole} | {partial} | {most:.4} |");
+            // 250 µs steps (was 50 µs): the sequence now lasts about 75 ms
+            // from the rail; the pulse itself still gets 20–60 samples.
+            let (none, whole, partial, most) = sweep(PlantConfig::default(), ohms, line, 250);
+            println!("| {line:?} | {ohms} | 250 | {none} | {whole} | {partial} | {most:.4} |");
             assert_eq!(partial, 0, "{line:?} {ohms} Ω: part of a shock delivered");
             assert!(none > 0 && whole > 0);
             assert!(most <= 1.0005, "{line:?} {ohms} Ω: more than planned");
@@ -159,26 +183,32 @@ fn the_first_design_cut_shocks_short_the_latched_design_does_not() {
         ..PlantConfig::default()
     };
     let (none, whole, partial, _) = sweep(old, 80, ConsentLine::Permit, 50);
+    // (50 µs steps here: the pulse must be sampled finely to show the cut.)
     println!("\nFirst design, permit withdrawn at every instant, 80 Ω: nothing {none}, whole {whole}, PART {partial} (SIMULATION ONLY)");
     assert!(partial > 100, "the old hardware should cut shocks short");
+    let _ = whole;
 }
 
 #[test]
 fn a_stuck_phase_timer_is_limited_by_the_hardware_time_cap() {
+    // Since D-63 the phase-1 cap (11.37 ms nominal) ends it, before the
+    // 25 ms overall cap.
     println!("\nPhase timer stuck in phase 1 (worst case), adult plan (SIMULATION ONLY):");
-    println!("| Ω | plan J | with the 25 ms cap J | ratio | pulse ms | without any cap J |");
+    println!("| Ω | plan J | with the phase-1 cap J | ratio | pulse ms | without any cap J |");
     println!("|---:|---:|---:|---:|---:|---:|");
     for ohms in [25u16, 50, 80, 125, 175] {
         let pl = plan(PatientMode::Adult, ohms);
         let mut p = charged_plant(PlantConfig::default(), f64::from(ohms), &pl);
         p.inject(Fault::MainTimerStuck);
         let s = raise_consent(&mut p, &pl, 80).unwrap();
-        assert_eq!(s.end, ShockEnd::TimeCap);
-        assert!(s.duration_us() <= 25_010, "{} µs", s.duration_us());
+        assert_eq!(s.end, ShockEnd::PhaseCap);
+        assert!(s.duration_us() <= 11_380, "{} µs", s.duration_us());
         assert!(s.delivered_j() <= 0.5 * 100e-6 * 1950.0 * 1950.0);
         let uncapped = PlantConfig {
             latch_timing: aed_core::interlock::LatchTiming {
                 time_cap_us: u32::MAX,
+                phase1_cap_us: u32::MAX,
+                phase2_cap_us: u32::MAX,
                 ..aed_core::interlock::LatchTiming::PROPOSED
             },
             ..PlantConfig::default()
@@ -224,7 +254,11 @@ fn over_current_is_tripped_by_the_hardware() {
     p.inject(Fault::OutputShort);
     let s = raise_consent(&mut p, &pl, 80).unwrap();
     assert_eq!(s.end, ShockEnd::OverCurrent);
-    assert!(s.delivered_j() < 0.01, "into the patient: {} J", s.delivered_j());
+    assert!(
+        s.delivered_j() < 0.01,
+        "into the patient: {} J",
+        s.delivered_j()
+    );
     assert!(s.duration_us() <= 20);
     println!("\nShorted output: tripped after {} µs at {:.0} A (model has no wiring inductance), {:.2} J into the patient (SIMULATION ONLY)",
         s.duration_us(), s.output_peak_a, s.delivered_j());
@@ -236,11 +270,14 @@ fn a_second_sequence_within_one_permit_is_locked_out() {
     let mut p = charged_plant(PlantConfig::default(), 80.0, &pl);
     p.request = Some(pl);
     p.permit = true;
-    for _ in 0..40 {
+    for _ in 0..40 + START_MS {
         let _ = p.step();
     }
     assert_eq!(p.shocks.len(), 1);
-    assert_eq!(p.latch.status, SequenceStatus::Ended(SequenceEnd::Completed));
+    assert_eq!(
+        p.latch.status,
+        SequenceStatus::Ended(SequenceEnd::Completed)
+    );
     // Charge again (as a fault would) and toggle the request with the
     // permit still up.
     p.cap_v = 1_950.0;
@@ -257,7 +294,8 @@ fn a_second_sequence_within_one_permit_is_locked_out() {
     // Only both lines down for the re-arm time clears it.
     p.request = None;
     p.permit = false;
-    for _ in 0..30 {
+    // Re-arm up to 60.34 ms plus the permit detector's drop-out (v0.3).
+    for _ in 0..80 {
         let _ = p.step();
     }
     assert_eq!(p.latch.status, SequenceStatus::Idle);
@@ -275,7 +313,11 @@ fn stuck_and_toggling_consent_lines_never_give_a_part_or_extra_shock() {
         let pl = plan(PatientMode::Adult, 80);
         let mut p = charged_plant(PlantConfig::default(), 80.0, &pl);
         p.inject(fault);
-        p.request = if request || fault == Fault::RequestStuckOn { Some(pl) } else { None };
+        p.request = if request || fault == Fault::RequestStuckOn {
+            Some(pl)
+        } else {
+            None
+        };
         p.permit = permit;
         for _ in 0..400 {
             let _ = p.step();
@@ -286,15 +328,24 @@ fn stuck_and_toggling_consent_lines_never_give_a_part_or_extra_shock() {
             let _ = p.step();
         }
         let j: Vec<f64> = p.shocks.iter().map(ShockRecord::delivered_j).collect();
-        println!("  {fault:?}: sequences {}, energies {j:.1?}", p.shocks.len());
+        println!(
+            "  {fault:?}: sequences {}, energies {j:.1?}",
+            p.shocks.len()
+        );
         assert!(p.shocks.len() <= 1, "{fault:?}");
         for s in &p.shocks {
             assert_eq!(s.end, ShockEnd::Completed, "{fault:?}");
-            assert!((s.delivered_j() - s.planned_j()).abs() < 0.002 * s.planned_j(), "{fault:?}");
+            assert!(
+                (s.delivered_j() - s.planned_j()).abs() < 0.002 * s.planned_j(),
+                "{fault:?}"
+            );
         }
-        // A line toggling at 1 kHz never holds the rail up long enough for
-        // the relay to move: no shock at all.
-        if matches!(fault, Fault::RequestToggling | Fault::PermitToggling) {
+        // A request line toggling at 1 kHz never holds the rail up long
+        // enough for the relay to move: no shock at all. (A toggling PERMIT
+        // line is what the supervisor's permit clock is: the dynamic
+        // detector, modelled since v0.3, holds consent through it, so it
+        // gives the whole plan once, which the checks above cover.)
+        if matches!(fault, Fault::RequestToggling) {
             assert!(p.shocks.is_empty(), "{fault:?}");
         }
     }
@@ -313,7 +364,8 @@ fn the_hardware_permit_cap_drops_a_rail_held_without_a_sequence() {
     }
     assert_eq!(p.latch.status, SequenceStatus::LockedOut);
     let held = p.now_ms - t0;
-    assert!((249..=252).contains(&held), "rail held {held} ms");
+    // The v0.3 window: 150 ms nominal (FW-5).
+    assert!((150..=152).contains(&held), "rail held {held} ms");
     assert!(p.shocks.is_empty());
 }
 
@@ -335,7 +387,12 @@ fn run_sim(mut sim: Simulation) -> RunResult {
 fn outcome(r: &RunResult) -> Option<String> {
     r.timeline
         .iter()
-        .find(|e| e.text.contains("delivered") || e.text.contains("withdrawn") || e.text.contains("did not") || e.text.contains("Interlock"))
+        .find(|e| {
+            e.text.contains("delivered")
+                || e.text.contains("withdrawn")
+                || e.text.contains("did not")
+                || e.text.contains("Interlock")
+        })
         .map(|e| e.text.clone())
 }
 
@@ -351,7 +408,13 @@ fn the_old_consent_behaviour_fails_against_a_realistic_plant_and_the_new_one_del
     let mut cut_short = 0;
     let mut refused = 0;
     let mut runs = 0;
-    for (legacy, latch) in [((true, true), false), ((true, true), true), ((false, true), false), ((false, true), true), ((false, false), true)] {
+    for (legacy, latch) in [
+        ((true, true), false),
+        ((true, true), true),
+        ((false, true), false),
+        ((false, true), true),
+        ((false, false), true),
+    ] {
         for phase in 0..8 {
             let mut s = short_vf();
             s.plant.voltage_sample_ms = 8;
@@ -362,7 +425,10 @@ fn the_old_consent_behaviour_fails_against_a_realistic_plant_and_the_new_one_del
             sim.set_legacy_consent_parts(legacy.0, legacy.1);
             let r = run_sim(sim);
             let j: f64 = r.shocks.iter().map(ShockRecord::delivered_j).sum();
-            let full = r.shocks.iter().any(|s| s.end == ShockEnd::Completed && s.delivered_j() > 140.0);
+            let full = r
+                .shocks
+                .iter()
+                .any(|s| s.end == ShockEnd::Completed && s.delivered_j() > 140.0);
             println!(
                 "| {} | {} | {phase} | {} | {j:.1} | {} |",
                 match legacy {
@@ -370,9 +436,16 @@ fn the_old_consent_behaviour_fails_against_a_realistic_plant_and_the_new_one_del
                     (false, true) => "supervisor before D-59",
                     _ => "D-59",
                 },
-                if latch { "latched (D-59)" } else { "first design" },
+                if latch {
+                    "latched (D-59)"
+                } else {
+                    "first design"
+                },
                 r.shocks.len(),
-                r.shocks.first().map_or_else(|| outcome(&r).unwrap_or_default(), |s| format!("{:?}", s.end))
+                r.shocks.first().map_or_else(
+                    || outcome(&r).unwrap_or_default(),
+                    |s| format!("{:?}", s.end)
+                )
             );
             if legacy.0 || legacy.1 {
                 runs += 1;
@@ -391,8 +464,18 @@ fn the_old_consent_behaviour_fails_against_a_realistic_plant_and_the_new_one_del
     // the old supervisor's rule alone blocks it or, with the first design's
     // hardware, cuts it short; with the latched hardware some of those
     // complete, which is exactly why the latch alone is not enough.
-    assert!(refused >= 16, "the old consent behaviour should block shocks");
-    assert!(cut_short > 0, "the old supervisor on the first design should cut shocks short");
+    assert!(
+        refused >= 16,
+        "the old consent behaviour should block shocks"
+    );
+    // Since v0.3 the start comes 14 ms after the relay leaves rest, so the
+    // old supervisor's rule (withdraw when its pads read open) now always
+    // withdraws BEFORE the start: it blocks the shock rather than cutting
+    // it short. Either way it fails.
+    assert!(
+        cut_short + refused > 0 && old_ok < runs,
+        "the old supervisor rule should fail"
+    );
 }
 
 #[test]
@@ -417,15 +500,25 @@ fn a_controller_withdrawing_at_each_instant_of_a_real_rescue_gives_nothing_or_th
             let planned: f64 = r.shocks.iter().map(ShockRecord::planned_j).sum();
             results.push((line, offset_us, r.shocks.len(), j, planned));
             assert!(r.shocks.len() <= 1);
-            assert!(j < 0.01 || (j - planned).abs() < 0.002 * planned, "{line:?} +{offset_us} µs: {j} J");
+            assert!(
+                j < 0.01 || (j - planned).abs() < 0.002 * planned,
+                "{line:?} +{offset_us} µs: {j} J"
+            );
             assert!(r.violations_of(aed_sim::Rule::ShockNotAsPlanned).is_empty());
             // Never a fault from a withdrawal: either delivered, or "not delivered" and CPR.
-            assert_ne!(r.final_state, RescueState::Fault, "{line:?} +{offset_us} µs");
+            assert_ne!(
+                r.final_state,
+                RescueState::Fault,
+                "{line:?} +{offset_us} µs"
+            );
         }
     }
     println!("\nWhole system, consent withdrawn after the request (SIMULATION ONLY):");
     for (line, off, n, j, _) in results {
-        println!("  {line:?} cut at +{:.1} ms: {n} shock(s), {j:.1} J", off as f64 / 1e3);
+        println!(
+            "  {line:?} cut at +{:.1} ms: {n} shock(s), {j:.1} J",
+            off as f64 / 1e3
+        );
     }
 }
 
@@ -437,24 +530,40 @@ fn outcome_event(r: &RunResult, want: &str) -> bool {
 fn relay_faults_in_a_rescue() {
     // Fails to transfer: not delivered, CPR.
     let mut s = short_vf();
-    s.script.push((aed_sim::Trigger::At(0), aed_sim::Action::Fault(Fault::RelayFailsToTransfer)));
+    // (After the switch-on self-test, which would find it: T-3, D-62.)
+    s.script.push((
+        aed_sim::Trigger::At(3_000),
+        aed_sim::Action::Fault(Fault::RelayFailsToTransfer),
+    ));
     let r = aed_sim::run(&s).unwrap();
     assert!(r.shocks.is_empty());
     assert!(outcome_event(&r, "Patient relay did not reach the bridge"));
     assert_ne!(r.final_state, RescueState::Fault);
     // Fails to return: the shock is delivered, then the relay fault.
     let mut s = short_vf();
-    s.script.push((aed_sim::Trigger::At(2_000), aed_sim::Action::Fault(Fault::RelayFailsToReturn)));
+    s.script.push((
+        aed_sim::Trigger::At(2_000),
+        aed_sim::Action::Fault(Fault::RelayFailsToReturn),
+    ));
     let r = aed_sim::run(&s).unwrap();
     assert_eq!(r.shocks.len(), 1);
     assert_eq!(r.final_fault, Some(aed_core::FaultKind::PatientRelayStuck));
-    // Slow (four times the model times): still delivered.
+    // Slow (four times the model times, 64 ms to transfer): since v0.3 the
+    // firmware gives up 40 ms after RELAY_CMD (FW-1), and the switch-on
+    // self-test finds it (T-3).
     let mut s = short_vf();
-    s.script.push((aed_sim::Trigger::At(0), aed_sim::Action::Fault(Fault::RelaySlow)));
+    s.script.push((
+        aed_sim::Trigger::At(0),
+        aed_sim::Action::Fault(Fault::RelaySlow),
+    ));
     let r = aed_sim::run(&s).unwrap();
-    assert_eq!(r.shocks.len(), 1);
-    assert_eq!(r.shocks[0].end, ShockEnd::Completed);
-    assert!(outcome_event(&r, "delivered"));
+    assert!(r.shocks.is_empty());
+    assert_eq!(
+        r.final_fault,
+        Some(aed_core::FaultKind::SelfTest(
+            aed_core::SelfTestFailure::RelayDidNotMove
+        ))
+    );
     let _ = ShockOutcome::Delivered;
 }
 

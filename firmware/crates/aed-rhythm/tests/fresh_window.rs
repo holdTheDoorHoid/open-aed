@@ -26,8 +26,8 @@
 //! 4. That the guard and the remaining settling after a full reset are
 //!    honoured (`a_fresh_window_soon_after_a_full_reset_still_waits_for_the_full_settling`).
 
-use aed_rhythm::settings::{FRESH_WINDOW_GUARD_SAMPLES, WARMUP_SAMPLES};
 use aed_rhythm::filter::Preprocessor;
+use aed_rhythm::settings::{FRESH_WINDOW_GUARD_SAMPLES, WARMUP_SAMPLES};
 use aed_rhythm::synth::{Rhythm, Synth};
 use aed_rhythm::Analyzer;
 use aed_types::{EcgSample, RhythmAnalyzer, RhythmDecision};
@@ -57,7 +57,9 @@ fn artifact(shape: Shape, phase: f32, pp_uv: f32) -> f32 {
         Shape::Sim => 0.5 * pp_uv * (libm::sinf(phase) + 0.25 * libm::sinf(2.0 * phase)) / 1.1,
         Shape::Synth => {
             0.5 * pp_uv
-                * (libm::sinf(phase) + 0.35 * libm::sinf(2.0 * phase) + 0.1 * libm::sinf(3.0 * phase))
+                * (libm::sinf(phase)
+                    + 0.35 * libm::sinf(2.0 * phase)
+                    + 0.1 * libm::sinf(3.0 * phase))
                 / 1.3
         }
         Shape::Pulse => {
@@ -74,7 +76,13 @@ fn artifact(shape: Shape, phase: f32, pp_uv: f32) -> f32 {
 /// Compression artifact at `per_min`, stopping after `stop_after_s` seconds
 /// at a chosen fraction of a compression cycle: the sample stream, as
 /// microvolts, of artifact followed by `after_s` seconds of nothing.
-fn artifact_stream(shape: Shape, pp_uv: f32, per_min: f32, stop_fraction: f32, after_s: f32) -> (Vec<f32>, usize) {
+fn artifact_stream(
+    shape: Shape,
+    pp_uv: f32,
+    per_min: f32,
+    stop_fraction: f32,
+    after_s: f32,
+) -> (Vec<f32>, usize) {
     let hz = per_min / 60.0;
     // Whole cycles for about 6 s, then the chosen fraction of one more.
     let cycles = libm::ceilf(6.0 * hz);
@@ -149,18 +157,34 @@ fn settle_ms(fraction: f32) -> u32 {
 #[test]
 fn measure_filter_settling_after_compression_artifact_stops() {
     println!("Leftover compression artifact after the analyser's filters (1 Hz high-pass, 50/60 Hz notches,");
-    println!("30 Hz low-pass), running continuously, after the artifact stops abruptly (SYNTHETIC).");
+    println!(
+        "30 Hz low-pass), running continuously, after the artifact stops abruptly (SYNTHETIC)."
+    );
     println!("Worst case over 3 shapes x 5 rates (60-180/min) x 8 stopping points:");
     for f in [0.10, 0.03, 0.01, 0.003] {
-        println!("  below {:>4.1} % of the artifact's size after {:>4} ms", f * 100.0, settle_ms(f));
+        println!(
+            "  below {:>4.1} % of the artifact's size after {:>4} ms",
+            f * 100.0,
+            settle_ms(f)
+        );
     }
-    println!("Largest leftover in the 4 s window starting 'guard' after the stop, per 1 mV of artifact:");
+    println!(
+        "Largest leftover in the 4 s window starting 'guard' after the stop, per 1 mV of artifact:"
+    );
     println!("| guard ms | peak µV | peak to peak µV | for a 10 mV artifact, peak to peak µV |");
     let mut previous = f32::MAX;
     for g in [0, 100, 200, 250, 300, 400, 500, 750, 1000] {
         let (peak, pp) = worst_leftover(g);
-        println!("| {g} | {:.1} | {:.1} | {:.0} |", peak * 1000.0, pp, pp * 10.0);
-        assert!(pp <= previous + 1e-3, "the leftover must shrink as the guard grows");
+        println!(
+            "| {g} | {:.1} | {:.1} | {:.0} |",
+            peak * 1000.0,
+            pp,
+            pp * 10.0
+        );
+        assert!(
+            pp <= previous + 1e-3,
+            "the leftover must shrink as the guard grows"
+        );
         previous = pp;
     }
     // The 1 Hz Butterworth high-pass has a time constant of about
@@ -215,8 +239,14 @@ fn non_shockable_rhythms() -> Vec<Rhythm> {
         .step_by(20)
         .map(|bpm| Rhythm::sinus(bpm as f32))
         .collect();
-    v.push(Rhythm::Sinus { bpm: 170.0, amplitude_uv: 2500.0 });
-    v.push(Rhythm::Sinus { bpm: 50.0, amplitude_uv: 300.0 });
+    v.push(Rhythm::Sinus {
+        bpm: 170.0,
+        amplitude_uv: 2500.0,
+    });
+    v.push(Rhythm::Sinus {
+        bpm: 50.0,
+        amplitude_uv: 300.0,
+    });
     v.push(Rhythm::Asystole);
     v
 }
@@ -233,7 +263,9 @@ fn sweep_non_shockable(guard: usize, seeds: &[u32]) -> (u32, u32, [u32; 3]) {
                 for pp in AMPLITUDES {
                     for rate in RATES {
                         for frac in STOP_FRACTIONS {
-                            let d = run_after_artifact(rhythm, seed, shape, pp, rate, frac, guard, 10.0);
+                            let d = run_after_artifact(
+                                rhythm, seed, shape, pp, rate, frac, guard, 10.0,
+                            );
                             runs += 1;
                             if d.iter().any(|(_, d)| *d == RhythmDecision::Shockable) {
                                 shocks += 1;
@@ -276,15 +308,45 @@ fn vf_is_still_detected_after_a_fresh_window_and_sooner_than_after_a_full_reset(
     let mut total = 0;
     let mut sooner = 0;
     for seed in [1, 2, 3, 42, 9001] {
-        for rhythm in [Rhythm::coarse_vf(), Rhythm::VentricularFibrillation { amplitude_uv: 400.0 }, Rhythm::rapid_vt(180.0)] {
+        for rhythm in [
+            Rhythm::coarse_vf(),
+            Rhythm::VentricularFibrillation {
+                amplitude_uv: 400.0,
+            },
+            Rhythm::rapid_vt(180.0),
+        ] {
             for pp in [1500.0, 10_000.0] {
                 for frac in [0.0, 0.25, 0.5, 0.75] {
                     total += 1;
-                    let warm = run_after_artifact(rhythm, seed, Shape::Sim, pp, 110.0, frac, FRESH_WINDOW_GUARD_SAMPLES, 12.0);
-                    let at = warm.iter().find(|(_, d)| *d == RhythmDecision::Shockable).map(|x| x.0);
+                    let warm = run_after_artifact(
+                        rhythm,
+                        seed,
+                        Shape::Sim,
+                        pp,
+                        110.0,
+                        frac,
+                        FRESH_WINDOW_GUARD_SAMPLES,
+                        12.0,
+                    );
+                    let at = warm
+                        .iter()
+                        .find(|(_, d)| *d == RhythmDecision::Shockable)
+                        .map(|x| x.0);
                     // The same signal after a full reset at the same moment (today's behaviour).
-                    let cold = run_after_artifact(rhythm, seed, Shape::Sim, pp, 110.0, frac, WARMUP_SAMPLES, 12.0);
-                    let cold_at = cold.iter().find(|(_, d)| *d == RhythmDecision::Shockable).map(|x| x.0);
+                    let cold = run_after_artifact(
+                        rhythm,
+                        seed,
+                        Shape::Sim,
+                        pp,
+                        110.0,
+                        frac,
+                        WARMUP_SAMPLES,
+                        12.0,
+                    );
+                    let cold_at = cold
+                        .iter()
+                        .find(|(_, d)| *d == RhythmDecision::Shockable)
+                        .map(|x| x.0);
                     if let Some(t) = at {
                         detected += 1;
                         if cold_at.is_some_and(|c| c - t > 0.5) {
@@ -297,7 +359,10 @@ fn vf_is_still_detected_after_a_fresh_window_and_sooner_than_after_a_full_reset(
     }
     println!("VF/VT after artifact: shockable within 12 s in {detected} of {total}; sooner than after a full reset in {sooner} (SYNTHETIC)");
     assert!(detected * 10 >= total * 9, "VF must still be detected");
-    assert!(sooner * 10 >= detected * 9, "the fresh window must save time");
+    assert!(
+        sooner * 10 >= detected * 9,
+        "the fresh window must save time"
+    );
 }
 
 #[test]
@@ -387,8 +452,21 @@ fn measure_guard_choices() {
                 for pp in AMPLITUDES {
                     for rate in RATES {
                         for frac in STOP_FRACTIONS {
-                            let d = run_after_artifact(Rhythm::Asystole, seed, shape, pp, rate, frac, guard, 12.0);
-                            asys.push(d.iter().find(|x| x.1 == RhythmDecision::NonShockable).map_or(99.0, |x| x.0));
+                            let d = run_after_artifact(
+                                Rhythm::Asystole,
+                                seed,
+                                shape,
+                                pp,
+                                rate,
+                                frac,
+                                guard,
+                                12.0,
+                            );
+                            asys.push(
+                                d.iter()
+                                    .find(|x| x.1 == RhythmDecision::NonShockable)
+                                    .map_or(99.0, |x| x.0),
+                            );
                         }
                     }
                 }
@@ -398,12 +476,20 @@ fn measure_guard_choices() {
         let mut vf = Vec::new();
         let mut vf_total = 0;
         for seed in [1, 2, 3, 42, 9001] {
-            for rhythm in [Rhythm::coarse_vf(), Rhythm::VentricularFibrillation { amplitude_uv: 400.0 }, Rhythm::rapid_vt(180.0)] {
+            for rhythm in [
+                Rhythm::coarse_vf(),
+                Rhythm::VentricularFibrillation {
+                    amplitude_uv: 400.0,
+                },
+                Rhythm::rapid_vt(180.0),
+            ] {
                 for shape in SHAPES {
                     for pp in [1500.0, 10_000.0] {
                         for frac in [0.0, 0.25, 0.5, 0.75] {
                             vf_total += 1;
-                            let d = run_after_artifact(rhythm, seed, shape, pp, 110.0, frac, guard, 12.0);
+                            let d = run_after_artifact(
+                                rhythm, seed, shape, pp, 110.0, frac, guard, 12.0,
+                            );
                             if let Some(x) = d.iter().find(|x| x.1 == RhythmDecision::Shockable) {
                                 vf.push(x.0);
                             }

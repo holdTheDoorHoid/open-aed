@@ -95,7 +95,9 @@ pub fn merge_repeated_times(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
             _ => out.push((t, v, 1)),
         }
     }
-    out.into_iter().map(|(t, s, n)| (t, s / f64::from(n))).collect()
+    out.into_iter()
+        .map(|(t, s, n)| (t, s / f64::from(n)))
+        .collect()
 }
 
 /// Put irregular points on a regular grid of `fs` per second, from time 0,
@@ -115,7 +117,9 @@ pub fn to_uniform(points: &[(f64, f64)], fs: u32, duration_s: f64) -> Vec<f64> {
             k += 1;
         }
         let v = match (p.get(k), p.get(k + 1)) {
-            (Some(&(t0, v0)), Some(&(t1, v1))) if t >= t0 && t1 > t0 => v0 + (v1 - v0) * (t - t0) / (t1 - t0),
+            (Some(&(t0, v0)), Some(&(t1, v1))) if t >= t0 && t1 > t0 => {
+                v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+            }
             (Some(&(_, v0)), _) => v0,
             (None, _) => 0.0,
         };
@@ -140,10 +144,16 @@ mod tests {
 
     #[test]
     fn refuses_bad_files() {
-        assert_eq!(parse_txt(b"0.1 0.2 0.3\n0.2 0.1\n"), Err(TxtError::BadLine(1)));
+        assert_eq!(
+            parse_txt(b"0.1 0.2 0.3\n0.2 0.1\n"),
+            Err(TxtError::BadLine(1))
+        );
         assert_eq!(parse_txt(b"0.1 x\n"), Err(TxtError::BadLine(1)));
         assert_eq!(parse_txt(b"0.1 NaN\n0.2 1\n"), Err(TxtError::BadLine(1)));
-        assert_eq!(parse_txt(b"0.2 1\n0.1 1\n"), Err(TxtError::TimeBackwards(2)));
+        assert_eq!(
+            parse_txt(b"0.2 1\n0.1 1\n"),
+            Err(TxtError::TimeBackwards(2))
+        );
         assert_eq!(parse_txt(b"0.2 1\n"), Err(TxtError::Implausible));
         assert_eq!(parse_txt(b"0.2 1\n99 1\n"), Err(TxtError::Implausible));
         assert_eq!(parse_txt(b""), Err(TxtError::Implausible));
@@ -152,7 +162,10 @@ mod tests {
     #[test]
     fn repeated_times_are_averaged_and_grid_is_interpolated() {
         let p = [(0.0, 0.0), (0.01, 1.0), (0.01, 3.0), (0.03, 0.0)];
-        assert_eq!(merge_repeated_times(&p), vec![(0.0, 0.0), (0.01, 2.0), (0.03, 0.0)]);
+        assert_eq!(
+            merge_repeated_times(&p),
+            vec![(0.0, 0.0), (0.01, 2.0), (0.03, 0.0)]
+        );
         let u = to_uniform(&p, 200, 0.04);
         // 0, 5, 10, ... 35 ms: up to 2 at 10 ms, down to 0 at 30 ms, then held.
         let want = [0.0, 1.0, 2.0, 1.5, 1.0, 0.5, 0.0, 0.0];

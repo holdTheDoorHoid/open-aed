@@ -108,14 +108,14 @@ fn run_self_test(
     test_voltage: Volts,
     link: FakeLink,
 ) -> (Result<SelfTestPass, SelfTestFailure>, u32, f32) {
-    run_self_test_with(board, &mut SelfTest::new(Config::default(), test_voltage), link)
+    run_self_test_with(board, &mut SelfTest::new(super::cfg(), test_voltage), link)
 }
 
 /// How long the switch-on interlock steps (D-61) take on a good board.
 /// They come before the charge step.
 fn interlock_steps_ms() -> u32 {
     let mut b = board();
-    let mut st = SelfTest::new(Config::default(), Volts(400));
+    let mut st = SelfTest::new(super::cfg(), Volts(400));
     let (r, _, _) = run_self_test_with(&mut b, &mut st, GOOD_LINK);
     assert!(r.is_ok());
     st.interlock_ms()
@@ -157,6 +157,7 @@ fn run_self_test_with(
                 temperature: None,
                 test_permit: board.test_permit,
                 shock_check: None,
+                ovp_test_ok: false,
             },
             received_at: Millis(board.now),
         });
@@ -299,7 +300,7 @@ fn self_test_failure_codes_are_distinct_per_check() {
 
 #[test]
 fn self_test_checks_have_time_limits() {
-    let c = Config::default();
+    let c = super::cfg();
     let mut b = board();
     b.charger_broken = true;
     let (_, took, _) = run_self_test(&mut b, Volts(400), GOOD_LINK);
@@ -327,12 +328,16 @@ fn self_test_checks_have_time_limits() {
 fn self_test_charge_step_limit_scales_with_the_test_voltage() {
     // Finding F-7: the charge step's limit follows the stored energy (the
     // square of the voltage), with a 1 s floor.
-    let c = Config::default();
+    let c = super::cfg();
     assert_eq!(c.charge_time_limit_for(Volts(400)), 1_000);
     assert_eq!(c.charge_time_limit_for(Volts(0)), 1_000);
     assert_eq!(c.charge_time_limit_for(Volts(1_950)), 11_407);
     assert_eq!(c.charge_time_limit_for(Volts(2_000)), 12_000);
-    assert_eq!(c.charge_time_limit_for(Volts(3_000)), 12_000, "never above the full limit");
+    assert_eq!(
+        c.charge_time_limit_for(Volts(3_000)),
+        12_000,
+        "never above the full limit"
+    );
     assert_eq!(SelfTest::new(c, Volts(400)).charge_time_limit_ms(), 1_000);
 }
 
@@ -342,13 +347,17 @@ fn weak_charger_is_reported_about_a_second_into_the_self_test() {
     b.charger_broken = true;
     let (r, took, _) = run_self_test(&mut b, Volts(400), GOOD_LINK);
     assert_eq!(r, Err(SelfTestFailure::ChargeTimeout));
-    assert!(took <= 1_100, "reported after {took} ms");
+    // 1 s charge limit plus the interlock steps, which since v0.3 wait the
+    // 75 ms re-arm time (FW-4) before the charge.
+    assert!(took <= 1_200, "reported after {took} ms");
     // A charger that only gets part way is caught the same way.
     let mut b = board();
     b.charge_rate = 0.02; // about a tenth of the normal speed
     let (r, took, _) = run_self_test(&mut b, Volts(400), GOOD_LINK);
     assert_eq!(r, Err(SelfTestFailure::ChargeTimeout));
-    assert!(took <= 1_100, "reported after {took} ms");
+    // 1 s charge limit plus the interlock steps, which since v0.3 wait the
+    // 75 ms re-arm time (FW-4) before the charge.
+    assert!(took <= 1_200, "reported after {took} ms");
 }
 
 #[test]
@@ -374,7 +383,7 @@ fn only_pad_problems_are_advisory() {
 #[test]
 fn self_test_abort_releases_capacitor() {
     let mut b = board();
-    let mut st = SelfTest::new(Config::default(), Volts(400));
+    let mut st = SelfTest::new(super::cfg(), Volts(400));
     b.main_hold = true;
     b.charger = Some(Volts(400));
     st.abort(&mut MainView(&mut b));
@@ -425,7 +434,7 @@ fn event_record_of_zero_capacity_does_not_crash() {
 
 #[test]
 fn default_config_is_valid_and_matches_documented_values() {
-    let c = Config::default();
+    let c = super::cfg();
     assert_eq!(c.validate(), Ok(()));
     assert_eq!(c.cpr_period_ms, 120_000);
     // D-30: "Stand clear. Three, two, one."
@@ -457,7 +466,7 @@ fn two_sensors_with_opposite_errors_inside_their_allowance_agree_and_read_at_pla
     // The accuracy the defaults assume (D-28): each sensor ±1 % ± 7 V. At
     // the adult and child charge voltages and the self-test voltage, two
     // sensors with opposite errors must agree and each must read "at plan".
-    let c = Config::default();
+    let c = super::cfg();
     for v in [1_950, 1_150, 400] {
         let high = sensor(v, 1, 7);
         let low = sensor(v, -1, -7);
@@ -474,7 +483,7 @@ fn two_sensors_with_opposite_errors_inside_their_allowance_agree_and_read_at_pla
 fn a_sensor_five_or_eight_percent_off_disagrees_at_the_charge_voltages() {
     // Outside the D-28 budget (two sensors may differ by 2 % + 24 V): one
     // sensor 5 % (or 8 %) off, the other perfect.
-    let c = Config::default();
+    let c = super::cfg();
     for v in [1_950, 1_150] {
         for off in [5, -5, 8, -8] {
             assert!(
@@ -491,10 +500,13 @@ fn a_sensor_five_or_eight_percent_off_disagrees_at_the_charge_voltages() {
 fn empty_is_only_reported_when_the_true_voltage_is_below_the_empty_voltage() {
     // A sensor reading low by its whole allowance must still not report
     // "empty" for a capacitor at or above 50 V.
-    let c = Config::default();
+    let c = super::cfg();
     for true_v in 50..200 {
         let low = sensor(true_v, -1, -12);
-        assert!(!c.reads_empty(low), "{true_v} V true reads {low:?} and counted as empty");
+        assert!(
+            !c.reads_empty(low),
+            "{true_v} V true reads {low:?} and counted as empty"
+        );
     }
     assert!(c.reads_empty(Volts(0)));
     assert!(c.reads_empty(Volts(30)));
@@ -502,7 +514,7 @@ fn empty_is_only_reported_when_the_true_voltage_is_below_the_empty_voltage() {
 
 #[test]
 fn contradictory_config_is_refused() {
-    let base = Config::default();
+    let base = super::cfg();
     let cases = [
         (
             Config {
@@ -692,28 +704,109 @@ fn each_interlock_check_of_the_self_test_has_its_own_failure_code() {
     use crate::hal::{BridgeTestOutcome, BridgeTestStep, RelayPosition, SequenceStatus};
     use SelfTestFailure as F;
     let cases: Vec<SelfTestCase> = std::vec![
-        ("relay not at rest", |b| {
-            b.relay = RelayPosition::Between;
-            b.relay_stuck_bridge = true;
-        }, GOOD_LINK, F::RelayNotAtFrontEnds),
-        ("lockout never cleared", |b| {
-            b.latch.status = SequenceStatus::LockedOut;
-            b.latch_timing.rearm_us = u32::MAX;
-        }, GOOD_LINK, F::SequenceNotIdle),
-        ("permit line stuck on", |b| b.permit_stuck_on = true, GOOD_LINK, F::InterlockPassedRequestAlone),
-        ("test permit not given", |_| {}, FakeLink { test_permits: false, ..GOOD_LINK }, F::TestPermitRefused),
-        ("request line stuck on", |b| b.request_stuck_on = true, GOOD_LINK, F::InterlockPassedPermitAlone),
-        ("hold-ok stuck on (R-6)", |b| b.hold_ok_stuck = true, GOOD_LINK, F::InterlockPassedWithoutHold),
-        ("test rail never rises", |b| b.test_limit_v = 0.0, GOOD_LINK, F::TestRailDidNotRise),
-        ("relay moves on a test rail", |b| b.relay_on_test_rail = true, GOOD_LINK, F::RelayMovedUnderTestPermit),
-        ("switch", |b| b.bridge_switch_fault = Some((BridgeTestStep::LowSideB, BridgeTestOutcome::DoesNotTurnOff)),
-            GOOD_LINK, F::BridgeSwitch(BridgeTestStep::LowSideB, BridgeTestOutcome::DoesNotTurnOff)),
-        ("bridge never starts", |b| b.bridge_no_start = true, GOOD_LINK, F::SequenceLatchFailed),
-        ("no lockout", |b| b.no_lockout = true, GOOD_LINK, F::LockoutFailed),
-        ("lockout never clears", |b| b.latch_timing.rearm_us = u32::MAX, GOOD_LINK, F::LockoutDidNotClear),
-        ("path A open", |b| b.path_a_broken = true, GOOD_LINK, F::DischargePathASlow),
-        ("path B open", |b| b.path_b_broken = true, GOOD_LINK, F::DischargePathBSlow),
-        ("supervisor ignores the path B request", |_| {}, FakeLink { releases_path_b: false, ..GOOD_LINK }, F::PathBNotReleased),
+        (
+            "relay not at rest",
+            |b| {
+                b.relay = RelayPosition::Between;
+                b.relay_stuck_bridge = true;
+            },
+            GOOD_LINK,
+            F::RelayNotAtFrontEnds
+        ),
+        (
+            "lockout never cleared",
+            |b| {
+                b.latch.status = SequenceStatus::LockedOut;
+                b.latch_timing.rearm_us = u32::MAX;
+            },
+            GOOD_LINK,
+            F::SequenceNotIdle
+        ),
+        (
+            "permit line stuck on",
+            |b| b.permit_stuck_on = true,
+            GOOD_LINK,
+            F::InterlockPassedRequestAlone
+        ),
+        (
+            "test permit not given",
+            |_| {},
+            FakeLink {
+                test_permits: false,
+                ..GOOD_LINK
+            },
+            F::TestPermitRefused
+        ),
+        (
+            "request line stuck on",
+            |b| b.request_stuck_on = true,
+            GOOD_LINK,
+            F::InterlockPassedPermitAlone
+        ),
+        (
+            "hold-ok stuck on (R-6)",
+            |b| b.hold_ok_stuck = true,
+            GOOD_LINK,
+            F::InterlockPassedWithoutHold
+        ),
+        (
+            "test rail never rises",
+            |b| b.test_limit_v = 0.0,
+            GOOD_LINK,
+            F::TestRailDidNotRise
+        ),
+        (
+            "relay moves on a test rail",
+            |b| b.relay_on_test_rail = true,
+            GOOD_LINK,
+            F::RelayMovedUnderTestPermit
+        ),
+        (
+            "switch",
+            |b| b.bridge_switch_fault =
+                Some((BridgeTestStep::LowSideB, BridgeTestOutcome::DoesNotTurnOff)),
+            GOOD_LINK,
+            F::BridgeSwitch(BridgeTestStep::LowSideB, BridgeTestOutcome::DoesNotTurnOff)
+        ),
+        (
+            "bridge never starts",
+            |b| b.bridge_no_start = true,
+            GOOD_LINK,
+            F::SequenceLatchFailed
+        ),
+        (
+            "no lockout",
+            |b| b.no_lockout = true,
+            GOOD_LINK,
+            F::LockoutFailed
+        ),
+        (
+            "lockout never clears",
+            |b| b.latch_timing.rearm_us = u32::MAX,
+            GOOD_LINK,
+            F::LockoutDidNotClear
+        ),
+        (
+            "path A open",
+            |b| b.path_a_broken = true,
+            GOOD_LINK,
+            F::DischargePathASlow
+        ),
+        (
+            "path B open",
+            |b| b.path_b_broken = true,
+            GOOD_LINK,
+            F::DischargePathBSlow
+        ),
+        (
+            "supervisor ignores the path B request",
+            |_| {},
+            FakeLink {
+                releases_path_b: false,
+                ..GOOD_LINK
+            },
+            F::PathBNotReleased
+        ),
     ];
     let mut seen = Vec::new();
     for (name, setup, link, expect) in cases {
@@ -723,7 +816,10 @@ fn each_interlock_check_of_the_self_test_has_its_own_failure_code() {
         assert_eq!(r, Err(expect), "{name}");
         assert!(!b.main_hold, "{name}: hold left on");
         assert!(b.charger.is_none(), "{name}: charger left on");
-        assert!(b.request.is_none() && !b.request_bare, "{name}: request left up");
+        assert!(
+            b.request.is_none() && !b.request_bare,
+            "{name}: request left up"
+        );
         assert!(!seen.contains(&expect), "{name}");
         seen.push(expect);
     }
@@ -734,7 +830,7 @@ fn the_periodic_self_test_also_checks_the_two_hardware_caps_and_the_mode_contact
     use crate::hal::BridgeTestStep;
     use aed_types::PatientMode;
     use SelfTestFailure as F;
-    let c = Config::default();
+    let c = super::cfg();
     // A good board passes, and the periodic checks take their time.
     let mut b = board();
     let mut st = SelfTest::periodic(c, Volts(400));
@@ -744,16 +840,61 @@ fn the_periodic_self_test_also_checks_the_two_hardware_caps_and_the_mode_contact
     let switch_on = interlock_steps_ms();
     std::println!("interlock steps: switch-on {switch_on} ms, periodic {periodic} ms (mock board)");
     assert!(periodic > switch_on + c.hardware_permit_cap_ms);
-    // Three latched test sequences: the latch check and the time cap check.
-    assert_eq!(b.test_fires.len(), 2);
+    // Four latched test sequences: the latch check, the phase-1 and phase-2
+    // caps and the overall cap (D-63, B14.5 T-8, T-9).
+    assert_eq!(b.test_fires.len(), 4);
     let cases: Vec<SelfTestCase> = std::vec![
-        ("time cap missing", |b| b.latch_timing.time_cap_us = u32::MAX, GOOD_LINK, F::TimeCapDidNotTrip),
-        ("time cap far too short", |b| b.latch_timing.time_cap_us = 10_000, GOOD_LINK, F::TimeCapTooShort),
-        ("permit cap missing", |b| b.latch_timing.permit_cap_us = u32::MAX, GOOD_LINK, F::PermitCapDidNotTrip),
-        ("mode contacts disagree", |b| {
-            b.mode = PatientMode::Adult;
-            b.mode_ceiling = Some(PatientMode::Child);
-        }, GOOD_LINK, F::ModeSwitchContactsDisagree),
+        (
+            "time cap missing",
+            |b| b.latch_timing.time_cap_us = u32::MAX,
+            GOOD_LINK,
+            F::TimeCapDidNotTrip
+        ),
+        (
+            "time cap far too short",
+            |b| b.latch_timing.time_cap_us = 10_000,
+            GOOD_LINK,
+            F::TimeCapTooShort
+        ),
+        (
+            "permit cap missing",
+            |b| b.latch_timing.permit_cap_us = u32::MAX,
+            GOOD_LINK,
+            F::PermitCapDidNotTrip
+        ),
+        (
+            "phase-1 cap missing",
+            |b| b.latch_timing.phase1_cap_us = u32::MAX,
+            GOOD_LINK,
+            F::PhaseCapDidNotTrip
+        ),
+        (
+            "phase-1 cap far too short",
+            |b| b.latch_timing.phase1_cap_us = 5_000,
+            GOOD_LINK,
+            F::PhaseCapTooShort
+        ),
+        (
+            "phase-2 cap missing",
+            |b| b.latch_timing.phase2_cap_us = u32::MAX,
+            GOOD_LINK,
+            F::PhaseCapDidNotTrip
+        ),
+        (
+            "phase-2 cap far too short",
+            |b| b.latch_timing.phase2_cap_us = 3_000,
+            GOOD_LINK,
+            F::PhaseCapTooShort
+        ),
+        (
+            "mode contacts disagree",
+            |b| {
+                b.mode = PatientMode::Adult;
+                b.mode_ceiling = Some(PatientMode::Child);
+            },
+            GOOD_LINK,
+            F::ModeSwitchContactsDisagree
+        ),
     ];
     for (name, setup, link, expect) in cases {
         let mut b = board();

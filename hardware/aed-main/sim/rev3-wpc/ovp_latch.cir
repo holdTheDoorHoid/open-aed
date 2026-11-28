@@ -1,0 +1,157 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* ovp_latch.cir — the revision 0.3 latching over-voltage comparator on sheet 08 (WP-C C-2..C-4) as drawn in
+* specs/08_sense_sup.toml, with its reset (OVP_RST, edge only) and its test input (OVP_TEST), and the
+* single-part failures that matter for "can a failure hold the limit off or hide a trip".
+*
+* Two arrangements of the test input are compared (parameter arr):
+*   arr = 1  AS DRAWN: OVP_TEST -> R812 4.7 k -> D801 BAS116 -> VCAPS_IN (the follower INPUT, ahead of U804 and R805)
+*   arr = 2  CHANGE ORDER C-4: OVP_TEST -> R812 22 k -> D801 -> OVP_SENSE (the comparator input, after R805)
+* Faults (parameters): fq = Q801 drain-source resistance (1e15 = healthy), r805 (1e12 = open),
+*   fd = resistance across D801 (1e15 = healthy), c812 (1e-18 = open), fc = resistance across C812 (1 = short).
+*
+* Timeline (one transient, 0-380 ms):
+*   0-1 ms 3V3_SUP up                         check  5 ms: OVP_TRIP low (powers up untripped)
+*   10-12 ms OVP_TEST high (capacitor at 0 V)  check 11 ms: tripped by the test; 15 ms: still high (latched)
+*   20 ms OVP_RST rising edge                  check 30 ms: cleared
+*   40-240 ms tap ramp 0 -> 3.0 V              measure VCAPS_BUF and the tap at the trip (x 1,002 = capacitor V)
+*   240-260 ms tap back to 0                   check 280 ms: still high (latched at 0 V)
+*   285 ms OVP_RST edge; 300 ms on OVP_RST is raised and HELD high (stuck reset line)
+*   360-362 ms OVP_TEST high with OVP_RST still high   check 370 ms: tripped (a stuck-high reset cannot hold
+*                                                      the latch clear) — the proposed T-OVP order (WP-C notes)
+*
+* Models: comparator behavioural (TLV9031 SNOSDA3H: push-pull, no internal hysteresis, 2 mV offset as a
+* parameter); follower ideal with rail clamp (OPA388); BSS138 level-1 fit from ../charger-storage/models;
+* BAS116 fitted HIGH-VF to the datasheet maximum (onsemi BAS116LT1/D Rev. 14: VF <= 0.90 V at 1 mA) [EST].
+.include ../charger-storage/models/datasheet_models.lib
+.param arr=1 fq=1e15 r805=100k fd=1e15 c812=100n fc=1e15 vos=0 r812=4.7k
+.param ra={arr == 1 ? 1m : 1e15}
+.param rb={arr == 1 ? 1e15 : 1m}
+
+V3 v33 0 PWL(0 0 1m 3.3)
+* VREF_S: ADR3425 2.5 V, follows the rail up (enable tied to VIN)
+BREF vrefs 0 V={min(2.5, max(0, v(v33)-0.2))}
+* threshold divider R807 21.5 k / R808 15.6 k, C810 100 nF
+R807 vrefs oref 21.5k
+R808 oref 0 15.6k
+C810 oref 0 100n
+* tap: supervisor string tap (sheet 11 source ~ 49.8 k) + R801 100 k + C801 10 nF; VCAP_S_TAP = Vcap/1,002
+VTAP tapsrc 0 PWL(0 0 40m 0 240m 3.0 260m 0)
+RSRC tapsrc vin 149.8k
+C801 vin 0 10n
+* U804 follower (ideal, clamped to its rails), R802 1 M pull-up
+BFOL fo 0 V={min(v(v33), max(0, v(vin)))}
+RFO fo vbuf 10
+R802 vbuf v33 1meg
+* latch: R805 (VCAPS_BUF -> OVP_SENSE), R806 (OVP_TRIP -> OVP_SENSE)
+R805 vbuf sense {r805}
+R806 otrip sense 100k
+BCMP ocmp 0 V={ v(v33) > 1.6 ? (v(sense) > v(oref) + vos ? v(v33)-0.075 : 0) : 0 }
+RCO ocmp otrip 50
+CCO otrip 0 20p
+* load on OVP_TRIP: 100 k pull-down on 11 (Q1111 gate) and the supervisor input
+ROL otrip 0 100k
+* reset: OVP_RST, R811 100 k default, C812 100 nF, R809 100 k, Q801 BSS138, R810 1 k
+VRST rst 0 PWL(0 0 20m 0 20.01m 3.3 21m 3.3 21.01m 0 285m 0 285.01m 3.3 286m 3.3 286.01m 0 300m 0 300.01m 3.3 380m 3.3)
+R811 rst 0 100k
+C812 rst rg {c812}
+RCF rst rg {fc}
+R809 rg 0 100k
+MQ801 rsd rg 0 0 BSS138
+RQF rsd 0 {fq}
+R810 rsd sense 1k
+* test: OVP_TEST, R813 100 k default, R812, D801 BAS116 -> injection node
+VTST tst 0 PWL(0 0 10m 0 10.01m 3.3 12m 3.3 12.01m 0 360m 0 360.01m 3.3 362m 3.3 362.01m 0)
+R813 tst 0 100k
+R812 tst ti {r812}
+D801 ti dk DBAS116
+RDF ti dk {fd}
+RKA dk vin {ra}
+RKB dk sense {rb}
+.model DBAS116 d(is=5e-12 n=1.8 rs=2 bv=85 ibv=100n cjo=2p)
+
+.control
+set noaskquit
+foreach case 1 2 3 4 5 6 7 8 9 10 11
+  if $case = 1
+    set nm = "arr1_as_drawn_healthy"
+    alterparam arr=1
+    alterparam r812=4.7k
+  end
+  if $case = 2
+    set nm = "arr2_change_order_healthy"
+    alterparam arr=2
+    alterparam r812=22k
+  end
+  if $case = 3
+    set nm = "arr1_R805_open"
+    alterparam arr=1
+    alterparam r812=4.7k
+    alterparam r805=1e12
+  end
+  if $case = 4
+    set nm = "arr2_R805_open"
+    alterparam arr=2
+    alterparam r812=22k
+    alterparam r805=1e12
+  end
+  if $case = 5
+    set nm = "arr1_D801_short"
+    alterparam arr=1
+    alterparam r812=4.7k
+    alterparam r805=100k
+    alterparam fd=1
+  end
+  if $case = 6
+    set nm = "arr2_D801_short"
+    alterparam arr=2
+    alterparam r812=22k
+    alterparam fd=1
+  end
+  if $case = 7
+    set nm = "arr1_Q801_DS_short"
+    alterparam arr=1
+    alterparam r812=4.7k
+    alterparam fd=1e15
+    alterparam fq=1
+  end
+  if $case = 8
+    set nm = "arr1_Q801_DS_leak_1M"
+    alterparam fq=1meg
+  end
+  if $case = 9
+    set nm = "arr2_Q801_DS_leak_1M"
+    alterparam arr=2
+    alterparam r812=22k
+    alterparam fq=1meg
+  end
+  if $case = 10
+    set nm = "arr1_C812_open"
+    alterparam arr=1
+    alterparam r812=4.7k
+    alterparam fq=1e15
+    alterparam c812=1e-18
+  end
+  if $case = 11
+    set nm = "arr1_C812_short"
+    alterparam c812=100n
+    alterparam fc=1
+  end
+  reset
+  tran 20u 380m
+  meas tran p5   find v(otrip) at=5m
+  meas tran t11  find v(otrip) at=11m
+  meas tran t15  find v(otrip) at=15m
+  meas tran r30  find v(otrip) at=30m
+  let vbtrip = -1
+  meas tran omax max v(otrip) from=35m to=240m
+  meas tran vbtrip find v(vbuf) when v(otrip)=1.6 rise=1 from=35m to=240m
+  meas tran l280 find v(otrip) at=280m
+  meas tran s370 find v(otrip) at=370m
+  let cap = vbtrip*1002
+  echo "RESULT $nm : powerup=$&p5 test=$&t11 held_after_test=$&t15 after_reset=$&r30 | real trip (max OVP_TRIP on the 0-3.0 V tap ramp $&omax V) at VCAPS_BUF=$&vbtrip V = $&cap V capacitor (-1 / -1002 = no trip) | latched_at_0V=$&l280 | test_with_RST_stuck_high=$&s370"
+end
+quit
+.endc
+.end

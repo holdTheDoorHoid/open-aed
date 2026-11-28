@@ -36,7 +36,10 @@ use common::{fail, run_scenario};
 fn vf_is_shocked_even_if_compressions_stop_late() {
     let r = run_scenario(&by_name("slow-hands-off").unwrap());
     if r.shocks.is_empty() {
-        fail(&r, "VF patient never shocked because compressions stopped 2.5 s late");
+        fail(
+            &r,
+            "VF patient never shocked because compressions stopped 2.5 s late",
+        );
     }
 }
 
@@ -54,7 +57,11 @@ fn measure_how_late_compressions_may_stop() {
             s.duration_ms = 40_000;
             let r = run(&s).unwrap();
             assert!(r.violations.is_empty());
-            row.push_str(if r.shocks.is_empty() { " no |" } else { " yes |" });
+            row.push_str(if r.shocks.is_empty() {
+                " no |"
+            } else {
+                " yes |"
+            });
         }
         println!("{row}");
     }
@@ -76,7 +83,10 @@ fn in_spec_sensor_errors_do_not_disable_the_device() {
     s.plant.supervisor_voltage_sensor.offset = -7.0;
     let r = run_scenario(&s);
     if r.shocks.len() != 1 {
-        fail(&r, "in-spec sensor errors (±1 % ± 7 V) made the device fault");
+        fail(
+            &r,
+            "in-spec sensor errors (±1 % ± 7 V) made the device fault",
+        );
     }
 }
 
@@ -100,7 +110,10 @@ fn frozen_main_leaves_capacitor_empty() {
 #[test]
 fn frozen_main_capacitor_empties_if_charger_is_gated_by_discharge_path() {
     let s = by_name("fault-main-freeze").unwrap();
-    assert!(s.plant.charger_gated_by_discharge, "the hardware rule is the default");
+    assert!(
+        s.plant.charger_gated_by_discharge,
+        "the hardware rule is the default"
+    );
     let r = run_scenario(&s);
     assert!(r.violations.is_empty(), "{:?}", r.violations);
     assert!(r.final_cap_v < f64::from(r.config.empty_voltage.0));
@@ -117,7 +130,9 @@ fn frozen_main_still_tells_responder_to_continue_cpr() {
     let r = run_scenario(&by_name("fault-main-freeze").unwrap());
     let frozen_at = r.main_frozen_at.unwrap();
     let grace = silence_grace_ms(&r.config);
-    let told = r.supervisor_alarm_at.is_some_and(|t| t >= frozen_at && t - frozen_at <= grace);
+    let told = r
+        .supervisor_alarm_at
+        .is_some_and(|t| t >= frozen_at && t - frozen_at <= grace);
     if !told || !r.violations_of(Rule::LeftWithoutInstruction).is_empty() {
         fail(&r, "device silent after main froze");
     }
@@ -149,7 +164,10 @@ fn conversion_one_second_before_delivery_is_not_shocked() {
     s.duration_ms = 40_000;
     let r = run_scenario(&s);
     if !r.violations_of(Rule::FiredOnNonShockableRhythm).is_empty() {
-        fail(&r, "shock fired into a normal rhythm that started 1 s before delivery");
+        fail(
+            &r,
+            "shock fired into a normal rhythm that started 1 s before delivery",
+        );
     }
 }
 
@@ -173,7 +191,11 @@ fn no_spurious_refusal_after_a_good_shock() {
 /// device can neither analyse nor shock, so that is the one instruction.
 #[test]
 fn pads_off_abort_gives_one_clear_instruction() {
-    for name in ["pads-off-during-charge", "pads-off-during-countdown", "fault-pads-off"] {
+    for name in [
+        "pads-off-during-charge",
+        "pads-off-during-countdown",
+        "fault-pads-off",
+    ] {
         let r = run_scenario(&by_name(name).unwrap());
         let both_at_once = r.prompts.windows(2).any(|w| {
             matches!(w, [(t1, Prompt::StartCpr), (t2, Prompt::AttachPads)] if t2.saturating_sub(*t1) < 1_000)
@@ -215,10 +237,12 @@ fn attached_pads_out_of_range_get_a_useful_instruction() {
     s.pad_ohms = 190.0;
     s.duration_ms = 60_000;
     let r = run_scenario(&s);
-    let useful = r
-        .prompts
-        .iter()
-        .any(|&(_, p)| matches!(p, Prompt::PressPadsFirmly | Prompt::CheckPads | Prompt::StartCpr));
+    let useful = r.prompts.iter().any(|&(_, p)| {
+        matches!(
+            p,
+            Prompt::PressPadsFirmly | Prompt::CheckPads | Prompt::StartCpr
+        )
+    });
     if !useful || !r.said(Prompt::PressPadsFirmly) || !r.said(Prompt::StartCpr) {
         fail(&r, "only 'Attach pads' for 60 s with pads on at 190 ohms");
     }
@@ -251,9 +275,17 @@ fn child_energy_at_the_top_of_the_voltage_window_is_within_tolerance() {
     s.plant.main_voltage_sensor = low;
     s.plant.supervisor_voltage_sensor = low;
     let r = run_scenario(&s);
-    let j = r.shocks.first().map_or(0.0, aed_sim::ShockRecord::delivered_j);
+    let j = r
+        .shocks
+        .first()
+        .map_or(0.0, aed_sim::ShockRecord::delivered_j);
     if !(42.5..=57.5).contains(&j) {
-        fail(&r, &format!("child shock from {top:.0} V into 25 Ω delivered {j:.1} J (target 50 J ±15 %)"));
+        fail(
+            &r,
+            &format!(
+                "child shock from {top:.0} V into 25 Ω delivered {j:.1} J (target 50 J ±15 %)"
+            ),
+        );
     }
 }
 
@@ -273,7 +305,10 @@ fn measure_how_close_to_delivery_a_rhythm_change_is_still_caught() {
     };
     let after = Config::default();
     println!("Rhythm change at a time before the planned shock (SIMULATED):");
-    for (to_name, to) in [("normal rhythm 75/min", Rhythm::sinus(75.0)), ("flatline", Rhythm::Asystole)] {
+    for (to_name, to) in [
+        ("normal rhythm 75/min", Rhythm::sinus(75.0)),
+        ("flatline", Rhythm::Asystole),
+    ] {
         for (name, config) in [
             ("before (5 s countdown, charge after advice)", before),
             ("after (D-29 + D-30)", after),
@@ -281,7 +316,9 @@ fn measure_how_close_to_delivery_a_rhythm_change_is_still_caught() {
             // When the shock fires with no change, for this configuration.
             let mut base = by_name("adult-vf").unwrap();
             base.duration_ms = 40_000;
-            let r = aed_sim::Simulation::with_config(&base, config).unwrap().run();
+            let r = aed_sim::Simulation::with_config(&base, config)
+                .unwrap()
+                .run();
             let fire = r.shocks.first().unwrap().at_ms;
             let analysing = r.states.iter().find(|&&(_, s)| s.is_analysing()).unwrap().0;
             let mut missed = Vec::new();
@@ -292,7 +329,10 @@ fn measure_how_close_to_delivery_a_rhythm_change_is_still_caught() {
                 let r = aed_sim::Simulation::with_config(&s, config).unwrap().run();
                 if !r.violations_of(Rule::FiredOnNonShockableRhythm).is_empty() {
                     missed.push(before_ms);
-                    assert!(before_ms < 5_000, "{name}: a change {before_ms} ms before delivery was missed");
+                    assert!(
+                        before_ms < 5_000,
+                        "{name}: a change {before_ms} ms before delivery was missed"
+                    );
                 }
             }
             let caught_from = missed.iter().max().map_or(250, |m| m + 250);
@@ -317,10 +357,15 @@ fn measure_how_close_to_delivery_a_rhythm_change_is_still_caught() {
 fn finding_12_fast_compressions_over_a_flatline_are_never_shocked() {
     let r = run_scenario(&by_name("f12-compressions-150-over-flatline").unwrap());
     if !r.shocks.is_empty() || r.entered(RescueState::Countdown) {
-        fail(&r, "compressions over a flatline led to a countdown or a shock");
+        fail(
+            &r,
+            "compressions over a flatline led to a countdown or a shock",
+        );
     }
     let mut old = by_name("f12-compressions-150-over-flatline").unwrap();
     old.chest_sensing = false;
     let old = run(&old).unwrap();
-    assert!(!old.violations_of(Rule::FiredOnNonShockableRhythm).is_empty());
+    assert!(!old
+        .violations_of(Rule::FiredOnNonShockableRhythm)
+        .is_empty());
 }

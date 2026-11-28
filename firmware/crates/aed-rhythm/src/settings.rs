@@ -100,7 +100,6 @@ pub const CONFIRM_WINDOWS: u8 = 3;
 /// See [`CONFIRM_WINDOWS`]. TUNED ON REAL DATA (E4c).
 pub const CONFIRM_SPAN: u8 = 5;
 
-
 // ---------------------------------------------------------------------------
 // Pre-filtering
 // ---------------------------------------------------------------------------

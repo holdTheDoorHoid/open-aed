@@ -240,7 +240,9 @@ impl Settings {
         if self.compressions_to_confirm == 0 {
             return Err(SettingsError::ConfirmCount);
         }
-        if self.rolling_seconds == 0 || usize::from(self.rolling_seconds) > crate::MAX_ROLLING_SECONDS {
+        if self.rolling_seconds == 0
+            || usize::from(self.rolling_seconds) > crate::MAX_ROLLING_SECONDS
+        {
             return Err(SettingsError::RollingPeriod);
         }
         Ok(())

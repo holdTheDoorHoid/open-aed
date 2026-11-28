@@ -41,7 +41,10 @@ impl fmt::Display for SignalError {
             SignalError::Unsupported(s) => write!(f, "unsupported signal layout: {s}"),
             SignalError::OffsetPastEnd => write!(f, "byte offset is past the end of the file"),
             SignalError::Truncated { expected, found } => {
-                write!(f, "signal file holds {found} samples per signal, header says {expected}")
+                write!(
+                    f,
+                    "signal file holds {found} samples per signal, header says {expected}"
+                )
             }
             SignalError::NoSignals => write!(f, "no signals"),
         }
@@ -114,8 +117,11 @@ pub fn decode_212(
         Some(n) => n,
         None => frames,
     };
-    let keep = usize::try_from(keep).map_err(|_| SignalError::Unsupported("too many samples".into()))?;
-    let mut out: Vec<Vec<i16>> = (0..signal_count).map(|_| Vec::with_capacity(keep)).collect();
+    let keep =
+        usize::try_from(keep).map_err(|_| SignalError::Unsupported("too many samples".into()))?;
+    let mut out: Vec<Vec<i16>> = (0..signal_count)
+        .map(|_| Vec::with_capacity(keep))
+        .collect();
     for frame in flat.chunks_exact(signal_count).take(keep) {
         for (sig, v) in out.iter_mut().zip(frame.iter()) {
             sig.push(*v);
@@ -204,11 +210,23 @@ mod tests {
             decode_212(&[1, 2, 3], 1, 0, Some(5)),
             Err(SignalError::Truncated { .. })
         ));
-        assert_eq!(decode_212(&[1, 2, 3], 1, 10, None), Err(SignalError::OffsetPastEnd));
-        assert_eq!(decode_212(&[1, 2, 3], 0, 0, None), Err(SignalError::NoSignals));
-        assert_eq!(decode_212(&[], 2, 0, None).unwrap(), vec![Vec::<i16>::new(), Vec::new()]);
+        assert_eq!(
+            decode_212(&[1, 2, 3], 1, 10, None),
+            Err(SignalError::OffsetPastEnd)
+        );
+        assert_eq!(
+            decode_212(&[1, 2, 3], 0, 0, None),
+            Err(SignalError::NoSignals)
+        );
+        assert_eq!(
+            decode_212(&[], 2, 0, None).unwrap(),
+            vec![Vec::<i16>::new(), Vec::new()]
+        );
         assert_eq!(decode_212_stream(&[7]), Vec::<i16>::new());
-        assert_eq!(decode_212(&[1, 2, 3], 1, u64::MAX, None), Err(SignalError::OffsetPastEnd));
+        assert_eq!(
+            decode_212(&[1, 2, 3], 1, u64::MAX, None),
+            Err(SignalError::OffsetPastEnd)
+        );
     }
 
     #[test]

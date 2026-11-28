@@ -127,7 +127,11 @@ fn lines(path: &Path) -> Result<Vec<(usize, String)>, DataError> {
         }
         number += 1;
         if buf.len() > MAX_LINE {
-            return Err(DataError::Parse(path.to_path_buf(), number, "line too long".into()));
+            return Err(DataError::Parse(
+                path.to_path_buf(),
+                number,
+                "line too long".into(),
+            ));
         }
         let text = String::from_utf8_lossy(&buf).trim().to_string();
         if number == 1 || text.is_empty() {
@@ -149,7 +153,11 @@ fn number(path: &Path, line: usize, s: &str) -> Result<f64, DataError> {
     if v.is_finite() {
         Ok(v)
     } else {
-        Err(DataError::Parse(path.to_path_buf(), line, "not finite".into()))
+        Err(DataError::Parse(
+            path.to_path_buf(),
+            line,
+            "not finite".into(),
+        ))
     }
 }
 
@@ -164,12 +172,20 @@ pub fn read_impedance(path: &Path) -> Result<(Vec<Sample>, usize), DataError> {
     for (line, text) in rows {
         let mut parts = text.split(';');
         let (Some(t), Some(z), None) = (parts.next(), parts.next(), parts.next()) else {
-            return Err(DataError::Parse(path.to_path_buf(), line, "expected two columns".into()));
+            return Err(DataError::Parse(
+                path.to_path_buf(),
+                line,
+                "expected two columns".into(),
+            ));
         };
         let t = number(path, line, t)?;
         let z = number(path, line, z)?;
         if !(0.0..=21_600.0).contains(&t) || z.abs() > 1_000.0 {
-            return Err(DataError::Parse(path.to_path_buf(), line, "value out of range".into()));
+            return Err(DataError::Parse(
+                path.to_path_buf(),
+                line,
+                "value out of range".into(),
+            ));
         }
         let index = (t * RATE_HZ).round();
         if (index - t * RATE_HZ).abs() > 0.1 {
@@ -202,7 +218,11 @@ pub fn read_analyses(path: &Path) -> Result<Vec<(u32, Vec<f64>)>, DataError> {
     let mut out = Vec::new();
     for (line, text) in lines(path)? {
         let Some((id, list)) = text.split_once(';') else {
-            return Err(DataError::Parse(path.to_path_buf(), line, "expected id;list".into()));
+            return Err(DataError::Parse(
+                path.to_path_buf(),
+                line,
+                "expected id;list".into(),
+            ));
         };
         let id = number(path, line, id)?;
         if !(1.0..=10_000.0).contains(&id) || id.fract() != 0.0 {
@@ -227,14 +247,24 @@ pub fn read_breaths(path: &Path) -> Result<Vec<f64>, DataError> {
     for (line, text) in lines(path)? {
         let cols: Vec<&str> = text.split(';').collect();
         let Some(time) = cols.get(1) else {
-            return Err(DataError::Parse(path.to_path_buf(), line, "missing time".into()));
+            return Err(DataError::Parse(
+                path.to_path_buf(),
+                line,
+                "missing time".into(),
+            ));
         };
         let hms = time.rsplit(' ').next().unwrap_or("");
         let parts: Vec<&str> = hms.split(':').collect();
         let [h, m, s] = parts.as_slice() else {
-            return Err(DataError::Parse(path.to_path_buf(), line, "bad time".into()));
+            return Err(DataError::Parse(
+                path.to_path_buf(),
+                line,
+                "bad time".into(),
+            ));
         };
-        let secs = number(path, line, h)? * 3600.0 + number(path, line, m)? * 60.0 + number(path, line, s)?;
+        let secs = number(path, line, h)? * 3600.0
+            + number(path, line, m)? * 60.0
+            + number(path, line, s)?;
         out.push(secs);
     }
     Ok(out)
@@ -254,7 +284,11 @@ pub fn read_list(path: &Path) -> Result<Vec<String>, DataError> {
             continue;
         }
         if case_id(name).is_none() {
-            return Err(DataError::Parse(path.to_path_buf(), i + 1, format!("bad case name {name:?}")));
+            return Err(DataError::Parse(
+                path.to_path_buf(),
+                i + 1,
+                format!("bad case name {name:?}"),
+            ));
         }
         out.push(name.to_string());
     }
@@ -281,8 +315,9 @@ pub fn load(root: &Path, names: &[String]) -> Result<Vec<Result<Case, DataError>
     Ok(names
         .iter()
         .map(|name| {
-            let id = case_id(name)
-                .ok_or_else(|| DataError::Parse(root.to_path_buf(), 0, format!("bad name {name}")))?;
+            let id = case_id(name).ok_or_else(|| {
+                DataError::Parse(root.to_path_buf(), 0, format!("bad name {name}"))
+            })?;
             let dir = root.join(name);
             let (samples, irregular_rows) = read_impedance(&dir.join("Impedance_signal.csv"))?;
             let breaths_s = read_breaths(&dir.join("Ventilation_volumes.csv")).unwrap_or_default();

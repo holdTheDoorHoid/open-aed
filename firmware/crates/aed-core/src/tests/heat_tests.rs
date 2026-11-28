@@ -55,7 +55,12 @@ fn pass() -> PeriodicOutcome {
 
 /// Wake as asked from `from` until `to` with the readings `temps(now)`;
 /// every test asked for passes. Returns the decisions and the time reached.
-fn run(s: &mut Sb, from: u32, to: u32, temps: impl Fn(u32) -> SensorSet) -> (Vec<(u32, StandbyDecision)>, u32) {
+fn run(
+    s: &mut Sb,
+    from: u32,
+    to: u32,
+    temps: impl Fn(u32) -> SensorSet,
+) -> (Vec<(u32, StandbyDecision)>, u32) {
     let mut now = from;
     let mut out = Vec::new();
     while now < to {
@@ -72,7 +77,7 @@ fn run(s: &mut Sb, from: u32, to: u32, temps: impl Fn(u32) -> SensorSet) -> (Vec
 }
 
 fn ready_device() -> (Sb, u32) {
-    let mut s = Sb::new(Config::default()).unwrap();
+    let mut s = Sb::new(super::cfg()).unwrap();
     let (_, now) = run(&mut s, 0, DAY, |_| all(25));
     assert!(s.readiness(now).is_ready(), "{:?}", s.readiness(now));
     (s, now)
@@ -86,7 +91,7 @@ fn reasons(s: &Sb, now: u32) -> ReasonSet {
 
 #[test]
 fn a_missing_out_of_range_or_disagreeing_sensor_is_not_trusted() {
-    let cfg = Config::default();
+    let cfg = super::cfg();
     let mut set = all(30);
     set.set(TempPoint::Cell1, None);
     set.set(TempPoint::Pads, Some(c(120)));
@@ -101,7 +106,7 @@ fn a_missing_out_of_range_or_disagreeing_sensor_is_not_trusted() {
 
 #[test]
 fn two_sensors_that_disagree_are_both_distrusted() {
-    let cfg = Config::default();
+    let cfg = super::cfg();
     let mut set = SensorSet::default();
     set.set(TempPoint::Cell1, Some(c(20)));
     set.set(TempPoint::Cell2, Some(c(40)));
@@ -128,7 +133,7 @@ fn a_sensor_unchanged_for_an_hour_while_the_others_moved_is_stuck_and_not_ready(
 
 #[test]
 fn outside_a_rescue_an_unknown_temperature_counts_as_too_hot_for_charging() {
-    let cfg = Config::default();
+    let cfg = super::cfg();
     let mut set = all(25);
     set.set(TempPoint::Capacitor, None);
     set.set(TempPoint::Supervisor, None);
@@ -140,18 +145,24 @@ fn outside_a_rescue_an_unknown_temperature_counts_as_too_hot_for_charging() {
     let mut set = all(25);
     set.set(TempPoint::Cell2, None);
     let a = assess(&cfg, &set, &[false; TEMP_POINTS]);
-    assert_eq!(battery_charge_check(&cfg, &a, true), Err(HeatInhibit::Unknown));
+    assert_eq!(
+        battery_charge_check(&cfg, &a, true),
+        Err(HeatInhibit::Unknown)
+    );
 }
 
 #[test]
 fn in_a_rescue_a_failed_sensor_takes_the_hottest_trusted_reading_plus_the_margin() {
-    let cfg = Config::default();
+    let cfg = super::cfg();
     let mut set = all(50);
     set.set(TempPoint::Capacitor, None);
     set.set(TempPoint::Supervisor, None);
     let a = assess(&cfg, &set, &[false; TEMP_POINTS]);
     // 50 + 5 = 55: allowed (the limit is 60).
-    assert_eq!(capacitor_charge_check(&cfg, &a, ChargeContext::Rescue, false), Ok(()));
+    assert_eq!(
+        capacitor_charge_check(&cfg, &a, ChargeContext::Rescue, false),
+        Ok(())
+    );
     let mut set = all(57);
     set.set(TempPoint::Capacitor, None);
     set.set(TempPoint::Supervisor, None);
@@ -165,9 +176,12 @@ fn in_a_rescue_a_failed_sensor_takes_the_hottest_trusted_reading_plus_the_margin
 
 #[test]
 fn in_a_rescue_no_trusted_reading_at_all_does_not_block_charging() {
-    let cfg = Config::default();
+    let cfg = super::cfg();
     let a = assess(&cfg, &SensorSet::default(), &[false; TEMP_POINTS]);
-    assert_eq!(capacitor_charge_check(&cfg, &a, ChargeContext::Rescue, false), Ok(()));
+    assert_eq!(
+        capacitor_charge_check(&cfg, &a, ChargeContext::Rescue, false),
+        Ok(())
+    );
     assert_eq!(
         capacitor_charge_check(&cfg, &a, ChargeContext::Standby, false),
         Err(HeatInhibit::Unknown)
@@ -176,9 +190,14 @@ fn in_a_rescue_no_trusted_reading_at_all_does_not_block_charging() {
 
 #[test]
 fn capacitor_charging_only_at_or_below_60_c_capacitor_and_cells_with_hysteresis() {
-    let cfg = Config::default();
+    let cfg = super::cfg();
     let check = |set: SensorSet, was: bool| {
-        capacitor_charge_check(&cfg, &assess(&cfg, &set, &[false; TEMP_POINTS]), ChargeContext::Rescue, was)
+        capacitor_charge_check(
+            &cfg,
+            &assess(&cfg, &set, &[false; TEMP_POINTS]),
+            ChargeContext::Rescue,
+            was,
+        )
     };
     assert_eq!(check(all(60), false), Ok(()));
     let mut hot_cap = all(55);
@@ -188,20 +207,26 @@ fn capacitor_charging_only_at_or_below_60_c_capacitor_and_cells_with_hysteresis(
     hot_cell.set(TempPoint::Cell2, Some(DeciC(601)));
     assert_eq!(check(hot_cell, false), Err(HeatInhibit::CellsHot));
     // Once held back: 59.5 °C is still held, 59.0 °C is allowed.
-    assert_eq!(check(SensorSet::uniform(DeciC(595)), true), Err(HeatInhibit::CapacitorHot));
+    assert_eq!(
+        check(SensorSet::uniform(DeciC(595)), true),
+        Err(HeatInhibit::CapacitorHot)
+    );
     assert_eq!(check(SensorSet::uniform(DeciC(590)), true), Ok(()));
 }
 
 #[test]
 fn capacitor_charging_has_no_cold_limit() {
-    let cfg = Config::default();
+    let cfg = super::cfg();
     let a = assess(&cfg, &all(-20), &[false; TEMP_POINTS]);
-    assert_eq!(capacitor_charge_check(&cfg, &a, ChargeContext::Standby, false), Ok(()));
+    assert_eq!(
+        capacitor_charge_check(&cfg, &a, ChargeContext::Standby, false),
+        Ok(())
+    );
 }
 
 #[test]
 fn battery_charging_only_between_0_and_45_c_and_never_when_unknown() {
-    let cfg = Config::default();
+    let cfg = super::cfg();
     let check = |t: i16, was: bool| {
         battery_charge_check(&cfg, &assess(&cfg, &all(t), &[false; TEMP_POINTS]), was)
     };
@@ -210,7 +235,13 @@ fn battery_charging_only_between_0_and_45_c_and_never_when_unknown() {
     assert_eq!(check(-1, true), Err(HeatInhibit::CellsCold));
     assert_eq!(check(46, true), Err(HeatInhibit::CellsHot));
     // Hysteresis: once stopped, 44.5 and 0.5 °C still wait; 44 and 1 °C resume.
-    let half = |dc: i16| battery_charge_check(&cfg, &assess(&cfg, &SensorSet::uniform(DeciC(dc)), &[false; TEMP_POINTS]), false);
+    let half = |dc: i16| {
+        battery_charge_check(
+            &cfg,
+            &assess(&cfg, &SensorSet::uniform(DeciC(dc)), &[false; TEMP_POINTS]),
+            false,
+        )
+    };
     assert_eq!(half(445), Err(HeatInhibit::CellsHot));
     assert_eq!(half(440), Ok(()));
     assert_eq!(half(5), Err(HeatInhibit::CellsCold));
@@ -242,10 +273,18 @@ fn heat_bands_follow_the_hottest_reading_with_hysteresis() {
     };
     assert_eq!(band_at(&mut s, 400), HeatBand::Normal);
     assert_eq!(band_at(&mut s, 401), HeatBand::Warm);
-    assert_eq!(band_at(&mut s, 390), HeatBand::Warm, "inside the 2 °C hysteresis");
+    assert_eq!(
+        band_at(&mut s, 390),
+        HeatBand::Warm,
+        "inside the 2 °C hysteresis"
+    );
     assert_eq!(band_at(&mut s, 380), HeatBand::Normal);
     assert_eq!(band_at(&mut s, 601), HeatBand::TooHot);
-    assert_eq!(band_at(&mut s, 590), HeatBand::TooHot, "inside the hysteresis");
+    assert_eq!(
+        band_at(&mut s, 590),
+        HeatBand::TooHot,
+        "inside the hysteresis"
+    );
     assert_eq!(band_at(&mut s, 580), HeatBand::Warm);
 }
 
@@ -269,12 +308,18 @@ fn above_60_c_is_not_ready_until_below_45_c_for_30_minutes_and_a_self_test_passe
     assert!(!r.contains(Reason::TooHotNow) && r.contains(Reason::WasTooHot));
     // Below 45 °C: 29 minutes is not enough...
     let (log, t3) = run(&mut s, t2, t2 + 29 * MIN, |_| all(30));
-    assert!(log.iter().all(|(_, d)| d.tests.run.is_none()), "no re-test before 30 min");
+    assert!(
+        log.iter().all(|(_, d)| d.tests.run.is_none()),
+        "no re-test before 30 min"
+    );
     assert!(reasons(&s, t3).contains(Reason::WasTooHot));
     // ... after 30 minutes the daily check is made due at once, it passes,
     // and the device is ready.
     let (log, t4) = run(&mut s, t3, t3 + 10 * MIN, |_| all(30));
-    let retest = log.iter().find(|(_, d)| d.tests.run.is_some()).expect("a re-test runs");
+    let retest = log
+        .iter()
+        .find(|(_, d)| d.tests.run.is_some())
+        .expect("a re-test runs");
     assert!(retest.0 >= t2 + 30 * MIN);
     assert!(s.readiness(t4).is_ready(), "{:?}", s.readiness(t4));
 }
@@ -301,19 +346,28 @@ fn too_hot_puts_both_tests_off_and_the_full_test_needs_cells_0_to_45_and_capacit
     // At 48 °C the daily check may charge to 400 V, the full test may not.
     let d = s.on_wake(&inputs(t + MIN, all(48)));
     assert_eq!(d.tests.run, Some(PeriodicTest::Daily));
-    assert_eq!(d.tests.deferred, Some((PeriodicTest::Full, Deferral::Temperature)));
+    assert_eq!(
+        d.tests.deferred,
+        Some((PeriodicTest::Full, Deferral::Temperature))
+    );
     // Cells at 40, capacitor at 52: the full test still waits (R-H4: 50 °C).
     let mut set = all(40);
     set.set(TempPoint::Capacitor, Some(c(52)));
     set.set(TempPoint::Supervisor, Some(c(52)));
-    let mut s2 = Sb::new(Config::default()).unwrap();
+    let mut s2 = Sb::new(super::cfg()).unwrap();
     let d = s2.on_wake(&inputs(0, set));
-    assert_eq!(d.tests.deferred, Some((PeriodicTest::Full, Deferral::Temperature)));
+    assert_eq!(
+        d.tests.deferred,
+        Some((PeriodicTest::Full, Deferral::Temperature))
+    );
     // Cold (−5 °C): the full test waits, the daily check runs (no cold limit).
-    let mut s3 = Sb::new(Config::default()).unwrap();
+    let mut s3 = Sb::new(super::cfg()).unwrap();
     let d = s3.on_wake(&inputs(0, all(-5)));
     assert_eq!(d.tests.run, Some(PeriodicTest::Daily));
-    assert_eq!(d.tests.deferred, Some((PeriodicTest::Full, Deferral::Temperature)));
+    assert_eq!(
+        d.tests.deferred,
+        Some((PeriodicTest::Full, Deferral::Temperature))
+    );
 }
 
 #[test]
@@ -342,7 +396,9 @@ fn a_reading_above_70_c_latches_service_needed_until_a_service_action() {
     let (mut s, now) = ready_device();
     let (_, t1) = run(&mut s, now, now + 20 * MIN, |_| all(72));
     let r = reasons(&s, t1);
-    assert!(r.contains(Reason::ServiceNeededOverheat) && r.contains(Reason::PadsReplaceAfterOverheat));
+    assert!(
+        r.contains(Reason::ServiceNeededOverheat) && r.contains(Reason::PadsReplaceAfterOverheat)
+    );
     // Cooling and passing tests does not clear it.
     let (_, t2) = run(&mut s, t1, t1 + 2 * DAY, |_| all(25));
     let r = reasons(&s, t2);
@@ -373,9 +429,18 @@ fn service_action_is_refused_without_full_test_battery_health_or_cooling() {
         full_self_test_passed: full,
         battery_health_passed: battery,
     };
-    assert_eq!(s.service_cleared(t, check(false, true)), Err(ServiceRefusal::FullTestNotPassed));
-    assert_eq!(s.service_cleared(t, check(true, false)), Err(ServiceRefusal::BatteryHealthNotPassed));
-    assert_eq!(s.service_cleared(t, check(true, true)), Err(ServiceRefusal::NotCooled));
+    assert_eq!(
+        s.service_cleared(t, check(false, true)),
+        Err(ServiceRefusal::FullTestNotPassed)
+    );
+    assert_eq!(
+        s.service_cleared(t, check(true, false)),
+        Err(ServiceRefusal::BatteryHealthNotPassed)
+    );
+    assert_eq!(
+        s.service_cleared(t, check(true, true)),
+        Err(ServiceRefusal::NotCooled)
+    );
     assert!(s.heat().service_needed());
 }
 
@@ -398,7 +463,11 @@ fn a_gap_in_the_heat_record_is_not_ready_until_a_self_test_passes_and_is_recorde
     assert!(d.heat_gap_found);
     assert!(!d.readiness.is_ready());
     assert!(d.readiness.reasons.contains(Reason::HeatRecordGap));
-    assert_eq!(d.tests.run, Some(PeriodicTest::Daily), "a re-test is made due at once");
+    assert_eq!(
+        d.tests.run,
+        Some(PeriodicTest::Daily),
+        "a re-test is made due at once"
+    );
     s.record(t, PeriodicTest::Daily, &pass());
     assert!(s.readiness(t).is_ready());
     assert_eq!(s.heat().lifetime().gaps, 1);
@@ -432,7 +501,10 @@ fn heat_record_keeps_the_peak_when_it_overwrites_old_entries() {
     let log = s.heat().log();
     assert_eq!(log.len(), 64);
     assert!(log.overwritten() > 0);
-    assert!(log.iter().all(|e| e.max.is_some_and(|m| m < c(30))), "the hot hour was overwritten");
+    assert!(
+        log.iter().all(|e| e.max.is_some_and(|m| m < c(30))),
+        "the hot hour was overwritten"
+    );
     assert_eq!(s.heat().lifetime().max, Some(c(66)), "but its peak is kept");
     assert!(s.heat().lifetime().above_too_hot_s >= 55 * MIN);
     assert_eq!(s.heat().lifetime().too_hot_events, 1);
@@ -447,9 +519,15 @@ fn pad_heat_total_counts_time_above_50_c_and_a_new_pad_set_resets_it() {
     let hot = s.heat().pad_hot_s();
     // An interval counts if either end of it was hot (conservative): up to
     // one 5-minute interval more than the spell itself.
-    assert!((2 * HOUR - 2 * MIN..=2 * HOUR + 5 * MIN).contains(&hot), "{hot}");
+    assert!(
+        (2 * HOUR - 2 * MIN..=2 * HOUR + 5 * MIN).contains(&hot),
+        "{hot}"
+    );
     let (_, t2) = run(&mut s, t1, t1 + 5 * HOUR, |_| all(45));
-    assert!(s.heat().pad_hot_s() <= hot + 5 * MIN, "45 °C does not count");
+    assert!(
+        s.heat().pad_hot_s() <= hot + 5 * MIN,
+        "45 °C does not count"
+    );
     let mut i = inputs(t2, all(25));
     i.pad_set_id = Some(7);
     s.on_wake(&i);
@@ -469,7 +547,7 @@ fn pad_heat_total_counts_time_above_50_c_and_a_new_pad_set_resets_it() {
 fn pads_past_their_heat_allowance_show_replace_pads() {
     let cfg = Config {
         pad_heat_allowance_s: 4 * HOUR,
-        ..Config::default()
+        ..super::cfg()
     };
     let mut s = Sb::new(cfg).unwrap();
     let (_, t0) = run(&mut s, 0, DAY, |_| all(25));
@@ -526,7 +604,7 @@ fn durable_record_survives_power_loss_and_a_lost_record_is_not_ready_until_servi
     let mut fram = Fram::default();
     s.save(&mut fram).unwrap();
     let before = s.durable().clone();
-    let (mut r, err) = Sb::restore(Config::default(), &mut fram).unwrap();
+    let (mut r, err) = Sb::restore(super::cfg(), &mut fram).unwrap();
     assert_eq!(err, None);
     assert_eq!(r.heat().lifetime(), before.heat.lifetime());
     assert_eq!(r.wear(), before.wear);
@@ -537,7 +615,7 @@ fn durable_record_survives_power_loss_and_a_lost_record_is_not_ready_until_servi
     assert!(d.heat_gap_found);
 
     fram.corrupt = true;
-    let (lost, err) = Sb::restore(Config::default(), &mut fram).unwrap();
+    let (lost, err) = Sb::restore(super::cfg(), &mut fram).unwrap();
     assert_eq!(err, Some(StoreError::Corrupt));
     assert!(reasons(&lost, 0).contains(Reason::RecordLost));
 }
@@ -573,7 +651,7 @@ fn the_weekly_full_energy_test_continues_after_the_capacitor_life_is_reached() {
 
 #[test]
 fn full_energy_test_charges_count_as_capacitor_wear_and_persist() {
-    let mut s = Sb::new(Config::default()).unwrap();
+    let mut s = Sb::new(super::cfg()).unwrap();
     run(&mut s, 0, 22 * DAY, |_| all(25));
     assert_eq!(s.wear().test_charges, 4);
 }
@@ -598,42 +676,74 @@ fn readiness_lists_every_reason_at_once() {
     s.add_rescue_charges(5_000);
     run(&mut s, now, now + 10 * MIN, |_| all(65));
     let r = reasons(&s, now + 10 * MIN);
-    for want in [Reason::TooHotNow, Reason::WasTooHot, Reason::CapacitorServiceDue] {
+    for want in [
+        Reason::TooHotNow,
+        Reason::WasTooHot,
+        Reason::CapacitorServiceDue,
+    ] {
         assert!(r.contains(want), "{want:?} missing from {r:?}");
     }
 }
 
 #[test]
 fn heat_config_that_contradicts_itself_is_refused() {
-    let d = Config::default();
+    let d = super::cfg();
     let bad = [
-        Config { heat_too_hot_above: c(75), ..d },
-        Config { heat_hysteresis: DeciC(0), ..d },
-        Config { battery_charge_min: c(50), ..d },
-        Config { precharge_max: c(65), ..d },
-        Config { supervisor_temp_limit: c(55), ..d },
-        Config { heat_cooled_below: c(65), ..d },
-        Config { heat_wake_warm_s: 600, ..d },
+        Config {
+            heat_too_hot_above: c(75),
+            ..d
+        },
+        Config {
+            heat_hysteresis: DeciC(0),
+            ..d
+        },
+        Config {
+            battery_charge_min: c(50),
+            ..d
+        },
+        Config {
+            precharge_max: c(65),
+            ..d
+        },
+        Config {
+            supervisor_temp_limit: c(55),
+            ..d
+        },
+        Config {
+            heat_cooled_below: c(65),
+            ..d
+        },
+        Config {
+            heat_wake_warm_s: 600,
+            ..d
+        },
     ];
     for cfg in bad {
         assert_eq!(cfg.validate(), Err(ConfigError::HeatThresholds), "{cfg:?}");
     }
     assert_eq!(
-        Config { capacitor_service_soon_percent: 0, ..d }.validate(),
+        Config {
+            capacitor_service_soon_percent: 0,
+            ..d
+        }
+        .validate(),
         Err(ConfigError::CapacitorLife)
     );
 }
 
 #[test]
 fn default_heat_config_matches_the_owner_decisions() {
-    let c0 = Config::default();
+    let c0 = super::cfg();
     assert_eq!(c0.validate(), Ok(()));
     // D-48.
     assert_eq!(c0.heat_normal_max, c(40));
     assert_eq!(c0.heat_too_hot_above, c(60));
     assert_eq!(c0.heat_service_above, c(70));
     assert_eq!(c0.heat_warm_spell_limit_s, 8 * HOUR);
-    assert_eq!((c0.battery_charge_min, c0.battery_charge_max), (c(0), c(45)));
+    assert_eq!(
+        (c0.battery_charge_min, c0.battery_charge_max),
+        (c(0), c(45))
+    );
     // D-41.
     assert_eq!(c0.capacitor_charge_max, c(60));
     // D-52, D-53.

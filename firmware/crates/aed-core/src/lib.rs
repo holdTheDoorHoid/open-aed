@@ -47,21 +47,22 @@ pub mod readiness;
 pub mod rescue;
 pub mod schedule;
 pub mod selftest;
+pub mod sequencer;
 pub mod standby;
 pub mod supervisor;
 
 pub use config::{Config, ConfigError};
 pub use events::{Event, EventRecord, TimedEvent};
-pub use hal::{
-    BatteryStatus, BridgeTestOutcome, BridgeTestResult, BridgeTestStep, MainHardware,
-    PadCartridge, RelayPosition, SequenceEnd, SequenceStatus, SupervisorHardware,
-};
-pub use link::{MainStatus, ShockCheck, SupervisorFault, SupervisorReport, TestRequest};
 pub use export::{crc32_update, write_record, EXPORT_FORMAT_VERSION};
+pub use hal::{
+    BatteryStatus, BridgeTestOutcome, BridgeTestResult, BridgeTestStep, HoldReadback, MainHardware,
+    PadCartridge, Probe, RelayPosition, SequenceEnd, SequenceStatus, SupervisorHardware,
+};
 pub use heat::{
     Assessment, ChargeContext, DeciC, HeatBand, HeatInhibit, HeatMonitor, SensorFault, SensorSet,
     ServiceCheck, ServiceRefusal, TempPoint,
 };
+pub use link::{MainStatus, ShockCheck, SupervisorFault, SupervisorReport, TestRequest};
 pub use prompts::Prompt;
 pub use readiness::{DeviceReadiness, Reason, ReasonSet};
 pub use rescue::{AbortReason, Counters, FaultKind, Rescue, RescueState, ShockOutcome};
@@ -69,11 +70,11 @@ pub use schedule::{
     Deferral, NotReadyReason, PeriodicOutcome, PeriodicTest, PeriodicTestRun, Readiness,
     TestCounters, TestGate, TestSchedule, WakeDecision, WakeInputs,
 };
+pub use selftest::{SelfTest, SelfTestFailure, SelfTestPass, SelfTestProgress};
 pub use standby::{
     CapacitorWear, DurableRecord, DurableStore, Standby, StandbyDecision, StandbyInputs,
     StoreError, WearStatus,
 };
-pub use selftest::{SelfTest, SelfTestFailure, SelfTestPass, SelfTestProgress};
 pub use supervisor::{
     PermitRefusal, PermitWithdrawal, ReleaseReason, Supervisor, TempIgnored, TestPermitRefusal,
 };

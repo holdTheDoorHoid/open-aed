@@ -1,6 +1,8 @@
 # WP-E capture notes — sheet `10_hv_charger` (high-voltage charger)
 
-Captured 27 November 2026 against contract issue 2 and `docs/HARDWARE_DESIGN.md` v0.2.
+Captured 27 November 2026 against contract issue 2 and `docs/HARDWARE_DESIGN.md` v0.2; **revised the same day to
+design revision 0.3 / contract issue 3 — see the section "Revision 0.3" at the end, which supersedes §3.6, §3.7 and
+§8 where they differ.**
 
 > **NOT FOR CONSTRUCTION — unreviewed design.** Drawn with AI assistance. It has not been reviewed by a qualified
 > high-voltage or medical-device engineer, and nothing in it has been built, simulated in circuit form or
@@ -432,3 +434,170 @@ rank 6); FET current sharing at turn-off.
   (16 of them high voltage: `HV_SEC`, `HV_D_MID`, `HV_RECT`, `HV_FB_1`…`HV_FB_13`; plus the global `HV_CAP_P`).
   245 pin connections; netlist round trip matches exactly.
 - No inter-sheet net was renamed, added or deleted.
+
+---
+
+## Revision 0.3
+
+27 November 2026, against `docs/HARDWARE_DESIGN.md` v0.3, `contract.md` issue 3 and the change order
+`rev3-changes.md` section WP-E (E-1…E-4). **NOT FOR CONSTRUCTION — unreviewed design.** Simulated figures are marked
+[SIM] and come from hand-built models in `sim/rev3-wpe/` (new this revision) and `sim/charger-storage/` (CS); nothing
+has been built or measured, and nothing here is an instruction to build, power or test anything.
+
+### R3.1 In plain language
+
+- **One resistor changed (R1019, 931 Ω → 876 Ω).** It sets the charger chip's own built-in voltage stop. That stop
+  cannot be made accurate enough to sit between a normal charge (at most 2,008.6 V) and the capacitor's 2,200 V
+  rating, and at the old value it could sometimes stop a normal adult charge early — a failure to shock. It is now a
+  **last-ditch stop above the normal range**: somewhere between 2,116 and 2,316 V (2,409 V in the very worst case).
+  Two other independent limits (the firmware's at 2,070 V and the latching hardware comparator at 2,073–2,142 V) act
+  first; this one only matters if both have failed, and it then relies on the capacitor's new surge rating
+  (≥ 2,420 V for ≥ 1 s). I re-did the arithmetic from the datasheet and got the same band as the simulation.
+- **The made-to-order transformer's requirement is tighter**: it must now be at least 90 % efficient, its inductance
+  may vary by +10 %/−5 % instead of ±10 %, and it must carry 12.4 A RMS.
+- **Charge time, honestly:** about 4.2 s normally, about 5–6 s in the cold worst case *if* the transformer meets its
+  90 % requirement — and possibly about 7.1 s (just over the 7 s target) in one cold corner that depends on a detail
+  of the charger chip the datasheet does not explain. My earlier 7.4–8.0 s was too pessimistic: it guessed the
+  losses of everything at 35–40 %; the simulation shows the circuit itself loses about 13 %.
+- **One new problem for the design authority (P4 below):** the last-ditch stop ends one charge but does not stop the
+  firmware from starting another. In the two-failure case it protects against, the firmware's own "charger seems
+  stuck, restart it" rule (FW-18) would keep refilling the capacitor to the last-ditch level, for much longer than
+  the 1 s the capacitor's surge rating covers. A firmware rule closes it.
+- The four items left open last time: C7 is closed (it became firmware rule FW-18), C3, C4 and C6 stay open, each
+  with what would settle it.
+
+### R3.2 Changes applied to the sheet (designators)
+
+| Change order | Designator | Before → after | Where |
+|---|---|---|---|
+| E-1 | **R1019** (RBG) | 931 Ω → **876 Ω 0.1 %**, `TNPW0603876RBEEA` (TNPW ordering scheme, not checked against the maker's page: `Verify` field) | spec part R1019 |
+| E-2 | **T1001** | value "1:50 7.5uH +10/-5% (made to order)"; description: Lpri 7.5 µH **+10 %/−5 %**, **efficiency ≥ 90 % at 20 A peak, 30–45 kHz**, **12.4 A RMS**, **secondary winding resistance stated by the maker** (design assumes ≤ 20 Ω), turns ±1 % marked load-bearing; `Verify` records P2 and P3 | spec part T1001; library symbol `T_FLYBACK_1to50` value and description |
+| E-3 | R1001 | kept 5.0 mΩ; `DocRef` records why 4.7 mΩ was not taken | spec part R1001 |
+| E-4 | sheet notes | controller box text replaced (876 Ω band, last-resort layer, D-65); header comment now "≈ 2,000 V normal, up to 2,409 V last resort"; clamp note (reflected 46.7/48.5 V); rectifier note; FB string note (C4) | spec `ctrl`, `power`, `hv_out`, `fb` notes and `comments` |
+| — (open items) | R1014, U1002 | `description`/`Verify` now say "OPEN (WP-E C3 / C6, O-16)" | spec |
+
+No net was renamed, added or removed; part count stays 93; contract net names and levels unchanged.
+
+### R3.3 Arithmetic: the primary-side trip with RBG 876 Ω [CALC; checked in `sim/rev3-wpe/l3_trip_rev3.cir`]
+
+LT3751 rev D: Vout + V_drops = 0.98 V × N × RVOUT/RBG (sensed level); comparator 0.955 / 0.98 / 1.005 V over
+temperature; overdrive 20 mV typ / 40 mV max for a 2 µs pulse. RVOUT/RBG = 40,200/876 = 45.890.
+
+| Quantity | Formula | Result |
+|---|---|---|
+| Sensed, nominal | 0.98 × 50 × 45.890 | **2,248.6 V** |
+| Sensed, low | 0.955 × 49.5 × 45.890 × 0.998 − 0.84 | 2,164.2 V |
+| Sensed, high | 1.005 × 50.5 × 45.890 × 1.002 + 0.84 | 2,334.6 V |
+| Sensed, high + 40 mV overdrive | 1.045 × 50.5 × 45.890 × 1.002 + 0.84 | 2,427.4 V |
+| **True capacitor trip** (minus drops 48.3 / 33.5 / 18.7 V) | | **2,115.9 / ≈ 2,215 / 2,315.9 V; 2,408.7 V with max overdrive** |
+| Monte Carlo, 200,000 uniform samples [SIM] | | 2,120–2,311 V; 2,396 V with overdrive |
+
+This matches the change order and CS Q4 (2,116–2,316 V, 2,409 V). Checks against the design:
+- **Never stops a normal charge:** low edge 2,115.9 − 2,008.6 = **107 V** above the window top (change order: ≥ 107 V). ✔
+- **Above the rated voltage:** the low edge is below 2,200 V for some units and the **nominal ≈ 2,215 V is above it** —
+  as intended for a last resort; the comparator (≤ 2,142 V) and firmware limit (≤ 2,098 V) sit below 2,200 V. ✔ (design text accurate)
+- **Inside the required surge rating** (`docs/requirements/storage-capacitor.md`: ≥ 2,420 V for ≥ 1 s, ≥ 100 events):
+  2,420 − 2,315.9 = **104 V** without overdrive, **11 V** at the very top with maximum overdrive. ✔ but thin at the top,
+  and only for an event that ends within 1 s — see P4.
+- Side effects checked: rectifier reverse voltage 2,408.7 + 50 × 9.19 = 2,868 V per UX-F5B (8 kV, 2.8×); FB string
+  172 V per element (1,000 V part); R1004's ≥ 3 kV open-element requirement still covers it.
+- **Inductance sensing rule** (datasheet: LPRI = 3 µs × VOUT/(IPK × N) "guarantees" the comparator sees the flyback;
+  much higher VOUT "could result in a runaway condition"), lowest IPK 100 mV/5.05 mΩ = 19.8 A: needs **7.07 µH** at the
+  2,335 V sensed top and **7.35 µH** at 2,427 V. The v0.3 minimum 7.125 µH gives a simulated flyback of **3.04 µs** at
+  2,316 V true and **2.93 µs** at 2,409 V [SIM] (v0.2's 6.75 µH: 2.88 / 2.78 µs). See P2.
+- **Clamp:** reflected voltage at the trip top (VOUT + drops)/N = 46.7 V (48.5 V with overdrive), was 45.7 V; the
+  SMCJ45A standoff is 45 V, minimum breakdown 50.0 V [UNVERIFIED], ≈ 47.8 V cold [EST]. Simulated clamp energy at
+  2,409 V with the cold-minimum TVS: 37.5 µJ/cycle against 21 µJ at 2,200 V with a nominal TVS; drain peak ≤ 76 V;
+  delivered energy down 1 % [SIM]. Not a problem, recorded as P6.
+
+### R3.4 Charge time, reconciled
+
+| Source | What it assumed | To 1,950 V, worst corner |
+|---|---|---|
+| WP-E v0.2 §3.7 (mine) | lumped efficiency 0.60–0.65 for **everything** (switch, diodes, transformer), 5.5 V pack less 0.17 V path drop, 19.8 A peak, 105 µF; no simulation | **7.41–8.03 s** |
+| CS Q3 [SIM] | per-cycle circuit simulation: switch, sense, diodes, snubber, clamp, path drop; **no transformer core or AC winding loss**; L −10 %; 6.66 MΩ standing load; no limit from the LT3751 clock | **5.29 s** (circuit efficiency 0.87) |
+| This revision [SIM, `charger_rev3.cir`] | CS method plus a **transformer efficiency factor**, L **+10 %/−5 %**, standing load **2.80 MΩ** (S-12), and a pessimistic [EST] bound for the LT3751 one-shot clock | see below |
+
+| Corner (5.5 V pack unless stated, 100 mV sense, R +1 %, hot switch, slow diodes, C +5 %) | to 1,150 V | to 1,950 V | to 2,008.6 V |
+|---|---|---|---|
+| Nominal 7.2 V, 25 °C, transformer 90 % | 1.71 s | **4.18 s** | 4.41 s |
+| Typical cold 5.8 V, 90 % | 2.00 s | **5.01 s** | 5.28 s |
+| Worst, L −5 %, no transformer loss (compare CS 5.29 s) | 2.11 s | 5.34 s | 5.63 s |
+| **Worst, L −5 %, transformer 90 %** | 2.35 s | **5.94 s** | 6.27 s |
+| Worst, L +10 %, 90 %, clock 38 µs (typical) | 2.42 s | 6.03 s | 6.36 s |
+| Worst, L −5 %, transformer 75.6 % | 2.80 s | **7.10 s** | 7.50 s |
+| Worst, L +10 %, 90 %, clock 32 µs (datasheet minimum), [EST] bound | 2.68 s | **7.08 s** | 7.47 s |
+| Cold, highest peak current, L +10 %, 90 %, clock 32 µs, [EST] bound | 2.58 s | 7.14 s | 7.54 s |
+
+**Honest range:** **≈ 4.2 s** (nominal) to **≈ 6.0 s** (cold worst corner) **if the transformer meets ≥ 90 %** and the
+LT3751's one-shot clock does not shorten cycles; **up to ≈ 7.1 s** — just missing D-29's 7 s — if the transformer
+reaches only ≈ 76 %, or if the clock limits long cycles at a cold pack the way my pessimistic bound assumes (P3).
+Add ≈ 0.3–0.4 s to reach the top of the at-plan window. Both earlier numbers were "right for what they assumed":
+mine over-counted the circuit losses, CS left out the transformer and the clock. Child (1,150 V): 1.7–2.8 s.
+
+### R3.5 Open items from §8, re-examined against v0.3
+
+| Item | v0.3 status | Result |
+|---|---|---|
+| **C3** UVLO2 band (4.66–4.94 V) vs `5V0_SYS` | v0.3 unchanged (71.5 kΩ, contract §8); §B1.6 now states `5V0_SYS` ≥ 4.9 V, and the datasheet's VCC minimum is 4.75 V (rev D EC table, read) | **Open.** The band (±0.14 V from the pin's ±30 mV threshold and ±3 % current) is wider than the 4.75–4.90 V gap, so no resistor on this sheet fits. Settled by either WP-A raising the `5V0_SYS` minimum to ≥ 5.0 V (TPS62130 set-point) **and** ADI confirming correct behaviour for 4.66 V ≤ VCC < 4.75 V, or the design authority accepting a cold-charging stop below 4.94 V. Marked on R1014. |
+| **C4** FB string part (10 × 4.02 MΩ 0.1 % thin film is not made) | contract issue 3 §8 and design §B4.3 still say 10 × 4.02 MΩ | **Open (documentation only).** The sheet keeps 14 × 2.87 MΩ TNPV1210 (ratio 1,089.9). Settled by the contract/design adopting it, or naming a real 4.02 MΩ 0.1 % part. At the new trip top each element sees 172 V of its 1,000 V. |
+| **C6** TPS25982 recommended only from TJ −15 °C | SLVSEI3D (May 2026) re-read: recommended TJ −15 to 125 °C; D-44 requires charging at −20 °C. The coordination half is closed by A-4 (pack OC ≥ 35 A or ≥ 1 ms, to be captured on 01) | **Open (cold rating).** Settled by a TI statement covering −20 °C, or by choosing a −40 °C-rated eFuse/hot-swap controller (the WP-A TPS25947 class is a candidate to check). Marked on U1002. |
+| **C7** silent charger stop; firmware rules | (a) and (b) adopted as FW-18 / F-3 item 7 | **Closed** for (a), (b). (c) "`CHG_DONE_N` low in adult mode" is now more important and is restated as **P4**. (d) a `VTRANS_GOOD` readback net remains a proposal for a later contract issue (not drawn; no net added). |
+
+### R3.6 Problems with the change order (for the design authority)
+
+- **P1 — E-2 wording.** "7 s is missed only below ≈ 76 % overall" should read "below ≈ 76 % **transformer**
+  efficiency (≈ 0.66 overall)", as §B4.2 and CS Q3 say. Confirmed by simulation: 75.6 % → 7.10 s.
+- **P2 — §B4.5's reason for −5 % is computed for the old trip.** "Needs ≥ 6.92 µH at 2,284 V" is the 931 Ω band. With
+  876 Ω the datasheet rule needs 7.07 µH at the no-overdrive top and 7.35 µH at the overdrive top; 7.125 µH meets the
+  first by 0.7 % and misses the second by 3 % (flyback 2.93 µs, still longer than the 2 µs at which the overdrive is
+  specified). **Captured as ordered (+10 %/−5 %).** Options: accept; tighten the lower limit to ≈ −2 % (hard to make);
+  or raise the nominal (≈ 7.8 µH +10/−5 %), which worsens P3.
+- **P3 — the LT3751 upper inductance rule was not checked by anyone.** Datasheet: LPRI < 38 µs / (IPK (1/VTRANS +
+  N/VOUT)), or less than the expected output power results; the clock is 32–44 µs. At a 5.33 V cold VTRANS and 2,000 V
+  this allows 6.57–7.80 µH (22.9 A) / 7.10–8.43 µH (21.2 A): the 7.5 µH nominal already exceeds it at the minimum clock,
+  and the CS model does not include the clock. The datasheet does not say how the clock limits the cycle; my bound gives
+  ≈ 7.1 s (R3.4). Settled by ADI applications engineering, or by running ADI's (encrypted, LTspice-only) LT3751 model.
+  Not a safety issue (slower charge only), but it decides whether D-29 is met in the cold.
+- **P4 — the last-resort stop can be held for longer than the surge rating covers.** In charge mode the trip sets
+  DONE and ends *one* charge; nothing in hardware prevents the next. In the case L3 exists for (firmware limit and
+  OVP comparator both failed — e.g. a wrong main reading), the firmware still regulates: F-3's 3 V restart, a
+  VTRANS-good toggle, and especially **FW-18** ("no rise for ≥ 200 ms → drop and restart") would refill the capacitor
+  to 2,116–2,409 V every few hundred milliseconds for as long as it holds, against a surge rating of ≥ 1 s per event.
+  Proposal (firmware, not drawn): **in adult mode, `CHG_DONE_N` low means the last-resort trip fired — lower
+  `CHG_SESSION`, do not restart, release the hold (dump), record a fault, "not ready"**; FW-18 must check
+  `CHG_DONE_N` first. This uses a signal independent of the voltage reading. Alternatively state a cumulative
+  duration in the capacitor's surge requirement.
+- **P5 — nominal last-resort trip above the continuous rating.** ≈ 2,215 V nominal > 2,200 V. Consistent with D-65
+  and §B4.4 ("last resort"), but §B4.6's wording "stops a charge at 2,116–2,316 V" should not be read as "below the
+  rating". No change.
+- **P6 — clamp margin at the trip top.** Reflected 46.7–48.5 V exceeds the SMCJ45A's 45 V standoff; simulated extra
+  clamp loss ≤ 16 µJ/cycle, ≈ 0.7 W (benign) with the TVS figures from memory. D1004 unchanged; SMCJ datasheet to be
+  read.
+- **P7 — contract §8 still lists the FB string as 10 × 4.02 MΩ** (C4).
+
+### R3.7 Datasheets consulted this revision
+
+| Part | Document | Status |
+|---|---|---|
+| LT3751 | "LT3751 High Voltage Capacitor Charger Controller with Regulation", rev D (12/17, "3751fd"), copy saved earlier from the distributor mirror (analog.com refuses automated access) | **opened**: EC table (VOUT comparator, overdrive, current limit, one-shot clock, VCC range), Pin Functions RBG equations, Transformer Design (LPRI rules), RBG selection |
+| TPS25982 | TI SLVSEI3D (Oct 2018, revised May 2026) | **opened**: recommended operating conditions (TJ −15…125 °C) |
+| SMCJ45A | Littelfuse SMCJ series | **not opened** (figures from memory, UNVERIFIED) |
+| UX-F5B, TNPV1210, BSS138, others | as §2 | not re-opened (unchanged parts) |
+| TNPW0603 876 Ω | Vishay TNPW (document 28758) | **not opened**: ordering code per the series scheme |
+
+### R3.8 Build and checks
+
+`bash tools/build.sh`: **BUILD OK** (first run). `python3 tools/xcheck.py`: runs; sheet 10's inter-sheet nets all
+reach their far sheets; the only single-sheet entry for this sheet is the local rail `VTRANS` (expected). The
+whole-design PDFs were regenerated by the build but are **not committed** from this worktree (they contain every
+sheet and would conflict with the seven parallel packages); regenerate at integration.
+
+### R3.9 Still needs simulation, data or measurement
+
+1. Transformer core + AC winding loss and secondary winding resistance (maker data) — decides the charge time and the
+   secondary-drop part of the trip band.
+2. LT3751 one-shot-clock behaviour on long cycles (P3) and VOUT-comparator overdrive for 2.9–3.3 µs pulses (ADI).
+3. SMCJ45A breakdown and clamping figures, cold (datasheet).
+4. A real LT3751 model run of the trip with the drawn values (the trip band here is arithmetic plus Monte Carlo).
+5. Firmware behaviour after an unexpected `CHG_DONE_N` (P4) — a firmware/simulator test, once the rule exists.
