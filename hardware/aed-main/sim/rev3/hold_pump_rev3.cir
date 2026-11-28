@@ -18,12 +18,14 @@
 *     off, which removes the power-up lock-out at 1.65-2 kHz (cases X1-X3 show it without the resistor).
 * Questions: the -20 C aged "held" threshold against the hold level (charger-storage notes Q1 open problem),
 * cold lock-out with the pilot at its maximum pinch-off (I-17), release time with the clock stopped low.
+* Timeline (corrected 2026-11-28, see notes.md Correction): power-up at 0; hold judged in 70-100 ms (was 30-40 ms,
+* inside the cold start-up); 1 ms clock gap at 100 ms; clock stopped at 150 ms; restarted at 190 ms; end 230 ms.
 * "held" = both HELD_N lines below 1.2 V. Release "conducting" = gate above -1.86 V (IXTT2N170D2 cold, as
 * charger-storage). Bottom-device gate capacitance kept at 5.3 nF (IXTT10N100D2; the 2N170D2 value was not read,
 * expected smaller, so this is conservative for release time).
 .include ../charger-storage/models/datasheet_models.lib
-.param nstg=4 cpump=2.2u chold=2.2u cres=3.3u kcap=1.0 vclk=3.3 fclk=2k rclk=35 tstop=60m trestart=90m
-.param rrel=1m rpu=22k stophigh=0 vp=1.5 ciss=5.3n nsens=1 ctrp=5 isl=4.7e-14 bz=4.7 idarkovp=0.2u cjb=2.2n rjb=1.8meg npil=3 tgap=40m gap=1m cin=4.7n rpb=1e12 rpo=1m
+.param nstg=4 cpump=2.2u chold=2.2u cres=3.3u kcap=1.0 vclk=3.3 fclk=2k rclk=35 tstop=150m trestart=190m
+.param rrel=1m rpu=22k stophigh=0 vp=1.5 ciss=5.3n nsens=1 ctrp=5 isl=4.7e-14 bz=4.7 idarkovp=0.2u cjb=2.2n rjb=1.8meg npil=3 tgap=100m gap=1m cin=4.7n rpb=1e12 rpo=1m
 .param tper={1/fclk}
 
 * ---- clock, stopped at tstop (low, or high if stophigh=1), restarted at trestart
@@ -113,10 +115,18 @@ R1137b 0 zkb {nsens==2 ? 3.9k : 1e12}
 XD1125b lab zkb ZENER params: bvz={bz}
 R1138b lab g 22k
 XU1101b lab g heldnb 5vgnd TLP187 params: ctr={ctrp} isled={isl}
+* line capacitance of each HELD_N line (LVC input + trace, 47 pF [EST], added 2026-11-28): without it the opto's
+* current-source output node has no capacitance and one run aborted with "timestep too small"
+CHN heldn 0 47p
+CHNb heldnb 0 47p
 RPUb v5 heldnb {rpu}
 * the reading the interlock acts on: with two sensors, "held" only if BOTH lines are low
 BHA heldall 0 V={nsens==2 ? max(v(heldn),v(heldnb)) : v(heldn)}
 
+* temperature probe, isolated from the circuit: one BAT54 at 1 mA. Its forward voltage is printed in every result line
+* to prove that the corner temperature reached the device models (0.388 V at -20 C, 0.323 V at 27 C, 0.263 V at 70 C).
+IPRB 0 tprb 1m
+DPRB tprb 0 BAT54
 .control
 set noaskquit
 * defaults = cold corner (-20 C, 3.1 V clock, 40 ohm source, capacitors at 70 %), aged sensors (CTR 250 %,
@@ -142,7 +152,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14
   alterparam isl = 1.57e-14
   alterparam rpu = 47k
   alterparam rrel = 1m
-  option temp = -20
+  set tc = -20
   if $cs = 1
     set nm = "R1_cold_1kHz_pilot2V0_aged"
     alterparam fclk = 1k
@@ -195,7 +205,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14
     alterparam bz = 4.09
     alterparam ctrp = 100
     alterparam isl = 1.41e-13
-    option temp = 25
+    set tc = 25
     alterparam fclk = 1.65k
   end
   if $cs = 11
@@ -205,7 +215,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14
     alterparam bz = 4.09
     alterparam ctrp = 100
     alterparam isl = 1.41e-13
-    option temp = 70
+    set tc = 70
     alterparam fclk = 1.35k
   end
   if $cs = 12
@@ -217,7 +227,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14
     alterparam bz = 4.3
     alterparam ctrp = 5
     alterparam isl = 4.7e-14
-    option temp = 25
+    set tc = 25
   end
   if $cs = 13
     set nm = "R10_hot70_3V2_1k5Hz_pilot0V5_stopHIGH_rule_broken"
@@ -226,7 +236,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14
     alterparam bz = 4.09
     alterparam ctrp = 100
     alterparam isl = 1.41e-13
-    option temp = 70
+    set tc = 70
     alterparam stophigh = 1
   end
   if $cs = 14
@@ -234,34 +244,43 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14
     alterparam nsens = 1
   end
   reset
-  tran 5u 130m 0 10u uic
+  * temperature AFTER reset (reset returns the circuit to the netlist temperature, 27 C; see the Correction in notes.md)
+  option temp=$tc
+  tran 5u 230m 0 10u uic
+  * a run the simulator aborted is flagged in the result line instead of being read as \"never released\"
+  let tend = time[length(time)-1]
+  set runst = complete
+  if tend < 229.9m
+    set runst = ABORTED_RESULT_VOID
+  end
   let thm = -1
   let tr19 = -1
   let tnhm = -1
   let trhm = -1
   meas tran theld  when v(heldall)=1.2 fall=1
-  meas tran vhmax  max v(g) from=30m to=40m
-  meas tran vhmin  min v(g) from=30m to=40m
-  meas tran hnmax  max v(heldall) from=30m to=40m
-  meas tran jbmin  min v(jb) from=30m to=40m
-  meas tran gaph   max v(heldall) from=40.5m to=45m
-  meas tran trel19 when v(g)=-1.86 rise=1 td=60m
-  meas tran tnh    when v(heldall)=1.2 rise=1 td=60m
-  meas tran trh    when v(heldall)=1.2 fall=1 td=90m
+  meas tran vprb find v(tprb) at=1m
+  meas tran vhmax  max v(g) from=70m to=100m
+  meas tran vhmin  min v(g) from=70m to=100m
+  meas tran hnmax  max v(heldall) from=70m to=100m
+  meas tran jbmin  min v(jb) from=70m to=100m
+  meas tran gaph   max v(heldall) from=100.5m to=105m
+  meas tran trel19 when v(g)=-1.86 rise=1 td=150m
+  meas tran tnh    when v(heldall)=1.2 rise=1 td=150m
+  meas tran trh    when v(heldall)=1.2 fall=1 td=190m
   if length(theld) > 0
     let thm = theld*1e3
   end
   if length(trel19) > 0
-    let tr19 = (trel19 - 60m)*1e3
+    let tr19 = (trel19 - 150m)*1e3
   end
   if length(tnh) > 0
-    let tnhm = (tnh - 60m)*1e3
+    let tnhm = (tnh - 150m)*1e3
   end
   if length(trh) > 0
-    let trhm = (trh - 90m)*1e3
+    let trhm = (trh - 190m)*1e3
   end
   let rip = vhmax - vhmin
-  echo "PUMP $nm | held_after_powerup_ms=$&thm hold_worst_V=$&vhmax ripple_V=$&rip heldN_max_30-40ms=$&hnmax pilot_bias_min=$&jbmin | 1ms_gap heldN_max=$&gaph | stop: gate>-1.86V_ms=$&tr19 not_held_ms=$&tnhm | restart: held_ms=$&trhm"
+  echo "PUMP $nm run=$runst T=$tc C (probe BAT54 VF at 1 mA = $&vprb V) | held_after_powerup_ms=$&thm hold_worst_V=$&vhmax ripple_V=$&rip heldN_max_70-100ms=$&hnmax pilot_bias_min=$&jbmin | 1ms_gap heldN_max=$&gaph | stop: gate>-1.86V_ms=$&tr19 not_held_ms=$&tnhm | restart: held_ms=$&trhm"
 end
 quit
 .endc

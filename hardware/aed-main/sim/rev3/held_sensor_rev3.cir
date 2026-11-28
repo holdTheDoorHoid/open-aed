@@ -42,6 +42,10 @@ XZA ala azk ZENER params: bvz={bz47} tbv={tbvz}
 RA2 ala g 22k
 XOA ala g ha 0 TLP187 params: ctr={ctrp} isled={isl} idark={idk}
 RPA v5 ha 10k
+* temperature probe, isolated from the circuit: one BAT54 at 1 mA. Its forward voltage is printed in every result line
+* to prove that the corner temperature reached the device models (0.388 V at -20 C, 0.323 V at 27 C, 0.263 V at 70 C).
+IPRB 0 tprb 1m
+DPRB tprb 0 BAT54
 .control
 set noaskquit
 foreach cn 1 2 3
@@ -53,7 +57,7 @@ foreach cn 1 2 3
     alterparam ctrp = 100
     alterparam tbvz = -2e-4
     alterparam idk = 20u
-    option temp = 70
+    set tc = 70
   end
   if $cn = 2
     set cname = NOM
@@ -63,7 +67,7 @@ foreach cn 1 2 3
     alterparam ctrp = 5
     alterparam tbvz = 0
     alterparam idk = 0.2u
-    option temp = 25
+    set tc = 25
   end
   if $cn = 3
     set cname = HIGH
@@ -73,10 +77,13 @@ foreach cn 1 2 3
     alterparam ctrp = 2.5
     alterparam tbvz = 2e-4
     alterparam idk = 0.2u
-    option temp = -20
+    set tc = -20
   end
   reset
+  * temperature AFTER reset (reset returns the circuit to the netlist temperature, 27 C; see the Correction in notes.md)
+  option temp=$tc
   dc VG 0 -12 -0.005
+  meas dc vprb max v(tprb)
   meas dc thR  find v(g) when v(hr)=1.2 fall=1
   meas dc thRS find v(g) when v(hs)=1.2 fall=1
   meas dc thA  find v(g) when v(ha)=1.2 fall=1
@@ -87,7 +94,7 @@ foreach cn 1 2 3
   let l6 = abs(iR6)*1e6
   let l74 = abs(iR74)*1e6
   let la74 = abs(iA74)*1e6
-  echo "HELD corner=$cname rev3_threshold=$&thR rev3_zener_shorted=$&thRS drawn_threshold=$&thA | HELD_N_dark=$&hdark V | load_per_sensor_uA at -6.0V=$&l6 at -7.4V=$&l74 (drawn at -7.4V=$&la74)"
+  echo "HELD corner=$cname T=$tc C (probe BAT54 VF at 1 mA = $&vprb V) rev3_threshold=$&thR rev3_zener_shorted=$&thRS drawn_threshold=$&thA | HELD_N_dark=$&hdark V | load_per_sensor_uA at -6.0V=$&l6 at -7.4V=$&l74 (drawn at -7.4V=$&la74)"
 end
 quit
 .endc

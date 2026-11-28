@@ -1,0 +1,83 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* held_margin_fix.cir — J-7 (capture-notes/01-rev3-integration.md): the "held" sensor margin re-derived at TRUE
+* temperature (temperature set after reset; a BAT54 probe printed with every line proves it). One sensor of
+* 11_hv_storage as drawn (R1137 3.9 k, D1125 MMSZ4687, R1138 22 k, U1101 TLP187 -> HOLD_A_HELD_N, 47 k + 1 M pull-up on
+* sheet 09), as ../rev3-wpf/held_threshold_wpf.cir. Threshold = bottom-gate magnitude at which the line falls below
+* 1.2 V. The lowest threshold (min zener, low LED VF, CTR 10,000 %, dark current 20 uA) is compared at 25, 50 and
+* 70 C with the IXTT2N170D2's LARGEST cut-off magnitude at that temperature: 4.0 V x DS100418B Fig. 12 factor
+* (1.00 / ~1.06 / ~1.11, typical-curve readings, as ../rev3-wpf) = 4.00 / 4.24 / 4.44 V. The highest threshold
+* (max zener, high LED VF, aged CTR 250 %) is reported at -20 C for comparison with the hold level.
+* Zener temperature coefficient (now applied: ../charger-storage/models ZENER uses TCV):
+*   MMSZ4687 4.3 V: ~0 mV/K typical (onsemi MMSZ4678T1/D Rev 13 Fig. 1); swept -1 / 0 / +1 mV/K [EST bound];
+*   MMSZ4688 4.7 V (option): ~+0.8 mV/K typical (same figure, as read in capture-notes/WP-F.md R3.5).
+* Models: ../charger-storage/models/datasheet_models.lib (hand-built, not makers' models).
+.include ../charger-storage/models/datasheet_models.lib
+.param bz=4.09 tbv=0 ctrp=100 isl=1.41e-13 idk=20u
+VG g 0 0
+V5 v5 0 5
+R1137 0 zk1 3.9k
+XD1125 la1 zk1 ZENER params: bvz={bz} tbv={tbv}
+R1138 la1 g 22k
+XU1101 la1 g h1 0 TLP187 params: ctr={ctrp} isled={isl} idark={idk}
+RP1 v5 h1 47k
+RB1 v5 h1 1meg
+IPRB 0 tprb 1m
+DPRB tprb 0 BAT54
+.control
+set noaskquit
+* --- lowest threshold against the largest cut-off, MMSZ4687 (as drawn), zener TC -1 / 0 / +1 mV/K
+foreach tcz -2.33e-4 0 2.33e-4
+  foreach tt 25 50 70
+    alterparam bz = 4.09
+    alterparam tbv = $tcz
+    alterparam ctrp = 100
+    alterparam isl = 1.41e-13
+    alterparam idk = 20u
+    reset
+    option temp=$tt
+    dc VG 0 -12 -0.005
+    meas dc th find v(g) when v(h1)=1.2 fall=1
+    meas dc vp max v(tprb)
+    echo "J7 MMSZ4687_min_4.09V zenerTC_rel=$tcz T=$tt C probe_BAT54=$&vp | lowest threshold=$&th"
+  end
+end
+* --- option: MMSZ4688 4.7 V (4.47-4.94 V at 50 uA, the part drawn before rev 0.3), +0.8 mV/K
+foreach tt 25 50 70
+  alterparam bz = 4.47
+  alterparam tbv = 1.79e-4
+  alterparam ctrp = 100
+  alterparam isl = 1.41e-13
+  alterparam idk = 20u
+  reset
+  option temp=$tt
+  dc VG 0 -12 -0.005
+  meas dc th find v(g) when v(h1)=1.2 fall=1
+  meas dc vp max v(tprb)
+  echo "J7 MMSZ4688_min_4.47V zenerTC=+0.8mV/K T=$tt C probe_BAT54=$&vp | lowest threshold=$&th"
+end
+* --- highest thresholds (aged, cold): what the hold must exceed
+foreach zz 1 2
+  if $zz = 1
+    alterparam bz = 4.52
+    alterparam tbv = 0
+    set zn = MMSZ4687_max_4.52V
+  else
+    alterparam bz = 4.94
+    alterparam tbv = 1.79e-4
+    set zn = MMSZ4688_max_4.94V
+  end
+  alterparam ctrp = 2.5
+  alterparam isl = 1.57e-14
+  alterparam idk = 0.2u
+  reset
+  option temp=-20
+  dc VG 0 -12 -0.005
+  meas dc th find v(g) when v(h1)=1.2 fall=1
+  meas dc vp max v(tprb)
+  echo "J7 $zn aged_CTR250 T=-20 C probe_BAT54=$&vp | highest threshold=$&th"
+end
+quit
+.endc
+.end

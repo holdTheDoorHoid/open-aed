@@ -2,6 +2,97 @@
 
 # Charger and storage/discharge simulations (sheets 10_hv_charger and 11_hv_storage)
 
+## Correction, 28 November 2026 (simulation audit)
+
+**What was wrong, in plain language.** Three mistakes in how two of these simulations were run made some results
+wrong. The circuits themselves were modelled correctly; the problems were in the instructions given to the
+simulator and in where the results were read.
+
+1. **The "cold" (−20 °C) and "hot" (+70 °C) runs of the hold pump and the "held" sensor were really at room
+   temperature for the semiconductors.** `hold_pump.cir` and `held_detector.cir` set the temperature and then
+   issued `reset`, which puts the simulator back to its default 27 °C. Proof: a diode probe (one BAT54 at 1 mA) reads
+   0.323 V after "−20 °C then reset", the same as at 27 °C, and 0.388 V / 0.263 V when the temperature is set after
+   the reset at −20 / +70 °C. The other parts of each corner (weaker capacitors, lower clock voltage, aged sensor,
+   slow clock) were real; only the diodes', LED's and transistors' own temperature behaviour was missing. Both
+   netlists now set the temperature after `reset` and print the probe voltage in every result line.
+2. **The hold level was read while the pump was still starting up.** `hold_pump.cir` judged "held", the hold level
+   and the 1 ms clock gap at 30–45 ms, but a cold pump takes 38–45 ms to settle. Once the temperature was real, this
+   made the cold hold look about 1.6 V weaker than it settles to, and a 1 ms gap look like a release. The timeline
+   is now: hold judged at 70–100 ms, gap at 100 ms, clock stopped at 150 ms, restarted at 190 ms (40 ms windows).
+   One run also stopped part-way ("timestep too small"); a run that stops early is now marked
+   `run=ABORTED_RESULT_VOID` instead of reading as "never released", and a 47 pF line capacitance on each HELD_N
+   line (estimate) removes that numerical stop.
+3. **The zener's temperature drift was silently ignored.** The zener model used a parameter (`TBV1`) that ngspice
+   42 does not recognise, so the ±0.94 mV/K corners in `held_detector.cir` had no effect. `models/datasheet_models.lib`
+   now uses ngspice's `TCV` (same intended drift). Netlists that do not set a drift are unchanged.
+
+Audited and **not** affected: `stack_static_*`, `stack_dynamic_*` (their cold/hot corners are stated factors on the
+transistor figures, not simulator temperature; re-run on 2026-11-28 with identical results, e.g. cfg 5 single short
+1,169 V cold / 1,174 V hot; the Monte Carlo was checked to change every parameter between runs), `discharge.cir`,
+`charger.cir`, `ovp_limits.cir`, `bleed.cir` (no semiconductor temperature corners).
+
+**Results that changed** [SIM, ngspice 42, same hand-built models; "was" = the figure in the sections below]:
+
+`held_detector.cir` — threshold = bottom-gate magnitude at which HELD_N falls below 1.2 V; low / nominal / high corner.
+
+| Quantity | Was | Corrected |
+|---|---|---|
+| As drawn (3.9 k + MMSZ4688 + LED ∥ 22 k, 10 k pull-up) | 5.39 / 6.27 / 6.97 V | **5.21 / 6.28 / 6.98 V** |
+| As drawn, zener shorted | 0.95 / 1.46 / 1.86 V | 0.83 / 1.46 / 1.93 V |
+| Two 3.9 V zeners in series | 8.29 / 9.49 / 10.41 V | 8.07 / 9.49 / 10.36 V |
+| Two 3.9 V zeners, one shorted | 4.62 / 5.47 / 6.13 V | **4.45** / 5.48 / 6.15 V |
+| Two sensors, transistors in series | 5.50 / 7.01 / 8.30 V | 5.34 / 7.01 / 8.28 V |
+| …one zener shorted | 5.45 / 6.61 / 7.63 V | 5.27 / 6.62 / 7.62 V |
+| Pump current at −7.4 V, one sensor / two | 0.29–0.42 / 0.58–0.84 mA | 0.30–0.44 / 0.59–0.87 mA |
+| Margin of the two-independent-sensor arrangement over the worst cut-off | 0.62 V (10N100D2, 4.77 V) / 1.15 V (2N170D2, 4.24 V) | **0.44 V / 0.97 V** (0.77 V against the 4.44 V that WP-F later read from Fig. 12 at 70 °C) |
+| Two series zeners, one shorted, over the 2N170D2's cut-off | 0.38 V | 0.21 V |
+
+`hold_pump.cir` — −20 °C rows: 3.1 V clock behind 40 Ω, capacitors at 70 %. Release times are "gate above −2.33 V" as
+in the table below; "not held" and "re-held" as there.
+
+| Case | Held after power-up: was → corrected | Hold, worst point | Conducting after stop | "Not held" after stop | Re-held |
+|---|---|---|---|---|---|
+| Drawn, −20 °C, 1 kHz, pilot 2.5 V | never → never | −1.2 → −1.25 V | — | — | never |
+| Drawn, −20 °C, 1 kHz, pilot 2.0 V | 34 → 38.9 ms | **−5.95 → −7.27 V** | 2.2 → 1.4 ms | 1.4 → 1.1 ms | 26 → 28.9 ms |
+| Drawn, −20 °C, 1 kHz, pilot 1.5 V | 34 → 37.8 ms | −5.96 → −7.28 V | 3.6 → 2.9 ms | 2.6 → 2.3 ms | 26 → 28.9 ms |
+| Drawn, −20 °C, 1 kHz, pilot 0.8 V | 34 → 37.8 ms | −5.96 → −7.28 V | 7.4 → 7.0 ms | 5.1 → 4.8 ms | 26 → 28.9 ms |
+| Drawn, 25 °C, 2 kHz, pilot 1.5 V | 26 → 26.9 ms | −6.69 → −8.33 V | 5.1 → 5.8 ms | 3.5 → 3.9 ms | 20 → 20.4 ms |
+| Drawn, 70 °C, 1 kHz, pilot 1.5 V, stops high | 31 → 27.8 ms | −6.17 → −7.87 V | 21 → **23.4 ms** | 13 → 16.4 ms | 29 → 26.9 ms |
+| Drawn, fresh, 3.5 V, 2 kHz, pilot 0.8 V, stops high | 21 → 21.5 ms | −7.43 → −8.91 V | > 30 ms → **40.3 ms** | 26 → 27.2 ms | (not released) → 8.4 ms |
+| Contract 3-stage pump, −20 °C, 1 kHz | 35 → **44.7 ms** | −6.02 → −6.55 V | 3.5 → 3.0 ms | 2.8 → 2.5 ms | 30 → 38.8 ms |
+| Contract 3-stage pump, 25 °C, 2 kHz | 23 → 23.0 ms | −6.80 → −7.32 V | 6.2 → 6.5 ms | 4.2 → 4.3 ms | 19 → 19.4 ms |
+| 5-stage pump, −20 °C, 1 kHz | 38 → 41.9 ms | **−5.48 → −7.50 V** | 2.9 → 2.7 ms | 2.2 → 2.0 ms | 27 → 28.8 ms |
+| Pilot-pump bleeds, fresh, stops high, pilot 1.2 V | 21 → 21.9 ms | −7.43 → −8.91 V | 8.8 → 8.9 ms | 7.4 → 7.6 ms | 25 → 25.9 ms |
+| Pilot-pump bleeds, 70 °C, 1 kHz, pilot 1.2 V | 31 → 27.8 ms | −6.17 → −7.87 V | 6.3 → 7.2 ms | 5.3 → 6.1 ms | 32 → 28.7 ms |
+| Pilot-pump bleeds, −20 °C, 1 kHz, pilot 1.8 V | never → never | | | | |
+
+The 1 ms clock gap still never released a path that held (HELD_N ≤ 0.72 V during it, corrected).
+
+**Conclusions that no longer hold** (the text below keeps the original wording):
+
+- Q1 "two independent sensors keep 0.62 V above the 10N100D2's worst cut-off (1.15 V above the 2N170D2's)": the
+  margins are **0.44 V / 0.97 V** at a true 70 °C. The arrangement is still the right one (it was adopted), but the
+  margin it was adopted on was overstated; see also `../rev3-fix/notes.md` (J-7).
+- Q1 open problem "the aged-cold threshold (6.97 V) is above the hold level this model gives at −20 °C / 1 kHz (−5.5 to
+  −6.0 V)": with the temperature real and the hold read after start-up, the drawn 4-stage pump settles at **−7.27 V**
+  against a 6.98 V threshold — 0.29 V above it, not below. Thin, but this model no longer predicts that an old unit
+  reads "not held" in the cold.
+- Q2 / I-24 "3, 4 or 5 stages give about the same loaded hold (−6.0, −6.0, −5.5 V); extra stages add ripple, not
+  voltage; this contradicts WP-F (−7.4 V)": corrected **−6.55 / −7.28 / −7.50 V**. The fourth stage is worth about
+  0.7 V in the cold and WP-F's −7.4 V is close to this model's 4-stage figure. `docs/HARDWARE_DESIGN.md` v0.3 §B5.4
+  repeats the old I-24 reasoning ("kept because it is drawn"); the stage should be kept *because it helps*.
+- Q2 "start-up is 21–38 ms": **21–45 ms** (the 3-stage pump at −20 °C is the slowest).
+- Q2 "clock stopped high is the slow case (21 ms to > 30 ms)": **23 ms to 40 ms**. "With the clock stopped low every
+  corner releases in ≤ 7.4 ms and reads not held in ≤ 5.1 ms": ≤ 7.0 ms / ≤ 4.8 ms (still true, slightly faster).
+- "What cannot be settled": the hold level at −20 °C in this model is −7.3 V (4-stage, 3.1 V clock), not
+  −5.5 to −6.0 V; it still needs measurement.
+
+Still true after correction: the 2.5 V pilot (MMBFJ177 top of range) never holds at −20 °C; bleeding the pilot-pump
+nodes with 1 MΩ fixes "stopped high" but brings the cold lock-out down to a 1.8 V pilot; the stack-sharing, discharge,
+charger, over-voltage and bleed results.
+
+---
+
 27 November 2026. First circuit simulation of this design (ngspice 42). Every number below is
 **[SIM]** unless marked otherwise, and every simulation uses models that were **built by hand from
 datasheet figures**, not makers' models (see "Models" at the end). Nothing here is an instruction to
@@ -132,6 +223,8 @@ narrower and lower than the 10N100D2's, which helps the "held" margins below.
 
 ### "Held" sensor (I-4), `held_detector.cir`
 
+> **Superseded (28 November 2026):** the −20 °C / +70 °C figures in this section ran at 27 °C; corrected figures are in the Correction at the top.
+
 Threshold = the bottom-gate magnitude at which `HOLD_x_HELD_N` falls below 1.2 V (sheet 09 must read
 V_IL ≥ 1.2 V, WP-F C-9). Low corner = min zener, low LED V_F, CTR 10,000 %, +70 °C; high corner = max
 zener, high LED V_F, aged CTR 250 %, −20 °C.
@@ -190,6 +283,8 @@ this needs a thermal model and the maker's SOA at mid voltages — **not settled
 time constant is not published, so its temperature under repetition was not simulated — **not settled**.
 
 ### Hold pump and release, `hold_pump.cir`
+
+> **Superseded (28 November 2026):** the −20 °C / +70 °C figures in this section ran at 27 °C; corrected figures are in the Correction at the top.
 
 Timeline: clock from power-up; a 1 ms clock gap at 40 ms (the firmware's allowed gap) must not release;
 clock stopped at 60 ms; restarted at 90 ms. "Conducting" = gate above −2.33 V (10N100D2) / −1.86 V (2N170D2).

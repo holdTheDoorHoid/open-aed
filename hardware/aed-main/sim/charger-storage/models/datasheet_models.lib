@@ -105,10 +105,14 @@ D2 a2 m DTVS15
 
 * MMSZ4688 4.7 V low-current zener. [DS] onsemi: VZ 4.47-4.94 V at IZT 50 uA; IR <= 10 uA at 3 V.
 * Breakdown softness NBV fitted [EST] so VZ falls ~0.2 V from 50 uA to 10 uA. Temperature coefficient
-* NOT read from a datasheet: corners +-0.94 mV/K (TBV1 +-2e-4) [EST]. bvz is a parameter for corners.
+* NOT read from a datasheet: corners +-0.94 mV/K (relative coefficient tbv +-2e-4 /K) [EST]. bvz is a parameter for corners.
+* Correction 2026-11-28 (simulation audit): this model used TBV1, which ngspice 42 does not recognise ("unrecognized
+* parameter (tbv1) - ignored"), so tbv had no effect. It now uses ngspice's TCV (volts per kelvin, applied as
+* BV(T) = BV - TCV x (T - TNOM)), so TCV = -tbv x bvz reproduces the intended relative coefficient. With tbv = 0 (the
+* default, and every netlist outside held_detector.cir / ../rev3/held_sensor_rev3.cir) nothing changes.
 .subckt ZENER a k params: bvz=4.7 tbv=0
 DZ a k DZM
-.model DZM d(is=1e-14 n=1 bv={bvz} ibv=50u nbv=4.8 tbv1={tbv} rs=20)
+.model DZM d(is=1e-14 n=1 bv={bvz} ibv=50u nbv=4.8 tcv={-tbv*bvz} rs=20)
 .ends ZENER
 
 * ---------------------------------------------------------------------------------------------------

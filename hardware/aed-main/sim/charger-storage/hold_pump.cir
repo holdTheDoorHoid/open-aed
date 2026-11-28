@@ -17,8 +17,8 @@
 * Models: models/datasheet_models.lib (hand-built). WP-F's corners: capacitors derated to 70 % (X7R DC bias,
 * temperature) at the hot and cold corners [EST]; clock source 30-40 ohm [WP-F].
 .include models/datasheet_models.lib
-.param nstg=4 cpump=2.2u chold=2.2u cres=3.3u kcap=1.0 vclk=3.3 fclk=2k rclk=35 tstop=60m trestart=90m
-.param stophigh=0 vp=1.5 ciss=5.3n nsens=1 ctrp=5 isl=4.7e-14 bz=4.7 idarkovp=0.2u cjb=2.2n rjb=1.8meg npil=3 tgap=40m gap=1m cin=4.7n rpb=1e12 rpo=1m
+.param nstg=4 cpump=2.2u chold=2.2u cres=3.3u kcap=1.0 vclk=3.3 fclk=2k rclk=35 tstop=150m trestart=190m
+.param stophigh=0 vp=1.5 ciss=5.3n nsens=1 ctrp=5 isl=4.7e-14 bz=4.7 idarkovp=0.2u cjb=2.2n rjb=1.8meg npil=3 tgap=100m gap=1m cin=4.7n rpb=1e12 rpo=1m
 .param tper={1/fclk}
 
 * ---- clock, stopped at tstop (low, or high if stophigh=1), restarted at trestart
@@ -105,14 +105,24 @@ R1137b 0 zkb {nsens==2 ? 3.9k : 1e12}
 XD1125b lab zkb ZENER params: bvz={bz}
 R1138b lab g 22k
 XU1101b lab g heldnb 5vgnd TLP187 params: ctr={ctrp} isled={isl}
+* line capacitance of each HELD_N line (LVC input + trace, 47 pF [EST], added 2026-11-28): without it the opto's
+* current-source output node has no capacitance and one run aborted with "timestep too small"
+CHN heldn 0 47p
+CHNb heldnb 0 47p
 RPUb v5 heldnb 10k
 * the reading the interlock acts on: with two sensors, "held" only if BOTH lines are low
 BHA heldall 0 V={nsens==2 ? max(v(heldn),v(heldnb)) : v(heldn)}
 
+* temperature probe, isolated from the circuit: one BAT54 at 1 mA. Its forward voltage is printed in every result line
+* to prove that the corner temperature reached the device models (0.388 V at -20 C, 0.323 V at 27 C, 0.263 V at 70 C).
+IPRB 0 tprb 1m
+DPRB tprb 0 BAT54
 .control
 set noaskquit
-* Timeline: clock starts at 0 (all capacitors empty: power-up); a 1 ms gap in the clock at 40 ms (the
-* firmware's allowed gap, R-11) must NOT release; clock stops at 60 ms (release); restarts at 90 ms (re-hold).
+* Timeline (corrected 2026-11-28, see notes.md Correction): clock starts at 0 (all capacitors empty: power-up); the
+* hold is judged in 70-100 ms, after start-up has settled (the first version judged it in 30-40 ms, while the cold
+* pump was still starting); a 1 ms gap in the clock at 100 ms (the firmware's allowed gap, R-11) must NOT release;
+* clock stops at 150 ms (release); restarts at 190 ms (re-hold); run ends at 230 ms.
 * "conducting" = gate above -2.33 V (smallest cut-off, IXTT10N100D2 cold, WP-F) or -1.86 V (IXTT2N170D2 cold).
 * Case codes: D = as drawn (4-stage pump, 2.2 uF, 3-stage pilot pump, one sensor); C = contract 3-stage pump;
 * V = candidate changes: a pilot JFET with a lower maximum pinch-off (2.0, 1.8 V; minimum 1.2 V); 1 Mohm bleeds on
@@ -135,7 +145,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
   alterparam rjb = 1.8meg
   alterparam rpb = 1e12
   alterparam rpo = 1m
-  option temp = -20
+  set tc = -20
   if $cs = 1
     set nm = "D1_drawn_cold_1kHz_3V1_pilot2V5"
   end
@@ -154,14 +164,14 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
     alterparam fclk = 2k
     alterparam rclk = 35
     alterparam vp = 1.5
-    option temp = 25
+    set tc = 25
   end
   if $cs = 5
     set nm = "D5_drawn_hot70_1kHz_3V2_pilot1V5_stopHIGH"
     alterparam vclk = 3.2
     alterparam vp = 1.5
     alterparam stophigh = 1
-    option temp = 70
+    set tc = 70
   end
   if $cs = 6
     set nm = "D6_drawn_fresh_3V5_2kHz_pilot0V8_stopHIGH"
@@ -171,7 +181,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
     alterparam rclk = 30
     alterparam vp = 0.8
     alterparam stophigh = 1
-    option temp = 25
+    set tc = 25
   end
   if $cs = 7
     set nm = "C1_contract3stg_cold_1kHz_3V1_pilot1V5"
@@ -186,7 +196,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
     alterparam fclk = 2k
     alterparam rclk = 35
     alterparam vp = 1.5
-    option temp = 25
+    set tc = 25
   end
   if $cs = 9
     set nm = "F1_5stg_cold_1kHz_3V1_pilot1V5"
@@ -210,7 +220,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
     alterparam rclk = 30
     alterparam vp = 1.2
     alterparam stophigh = 1
-    option temp = 25
+    set tc = 25
   end
   if $cs = 13
     set nm = "V4_Pbleed_hot70_1kHz_3V2_pilot1V2_stopHIGH"
@@ -218,7 +228,7 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
     alterparam vclk = 3.2
     alterparam vp = 1.2
     alterparam stophigh = 1
-    option temp = 70
+    set tc = 70
   end
   if $cs = 14
     set nm = "V5_Pbleed_cold_1kHz_3V1_pilot1V8"
@@ -232,7 +242,15 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
     alterparam nsens = 2
   end
   reset
-  tran 5u 130m 0 20u uic
+  * temperature AFTER reset (reset returns the circuit to the netlist temperature, 27 C; see the Correction in notes.md)
+  option temp=$tc
+  tran 5u 230m 0 20u uic
+  * a run the simulator aborted is flagged in the result line instead of being read as \"never released\"
+  let tend = time[length(time)-1]
+  set runst = complete
+  if tend < 229.9m
+    set runst = ABORTED_RESULT_VOID
+  end
   * defaults so that a measurement that never happens prints as -1 (= did not happen in the run)
   let thm = -1
   let tr23 = -1
@@ -240,32 +258,33 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
   let tnhm = -1
   let trhm = -1
   meas tran theld  when v(heldall)=1.2 fall=1
-  meas tran vhmax  max v(g) from=30m to=40m
-  meas tran vhmin  min v(g) from=30m to=40m
-  meas tran jbmin  min v(jb) from=30m to=40m
-  meas tran gapg   max v(g) from=40m to=45m
-  meas tran gaph   max v(heldall) from=40.5m to=45m
-  meas tran trel23 when v(g)=-2.33 rise=1 td=60m
-  meas tran trel19 when v(g)=-1.86 rise=1 td=60m
-  meas tran tnh    when v(heldall)=1.2 rise=1 td=60m
-  meas tran trh    when v(heldall)=1.2 fall=1 td=90m
+  meas tran vprb find v(tprb) at=1m
+  meas tran vhmax  max v(g) from=70m to=100m
+  meas tran vhmin  min v(g) from=70m to=100m
+  meas tran jbmin  min v(jb) from=70m to=100m
+  meas tran gapg   max v(g) from=100m to=105m
+  meas tran gaph   max v(heldall) from=100.5m to=105m
+  meas tran trel23 when v(g)=-2.33 rise=1 td=150m
+  meas tran trel19 when v(g)=-1.86 rise=1 td=150m
+  meas tran tnh    when v(heldall)=1.2 rise=1 td=150m
+  meas tran trh    when v(heldall)=1.2 fall=1 td=190m
   if length(theld) > 0
     let thm = theld*1e3
   end
   if length(trel23) > 0
-    let tr23 = (trel23 - 60m)*1e3
+    let tr23 = (trel23 - 150m)*1e3
   end
   if length(trel19) > 0
-    let tr19 = (trel19 - 60m)*1e3
+    let tr19 = (trel19 - 150m)*1e3
   end
   if length(tnh) > 0
-    let tnhm = (tnh - 60m)*1e3
+    let tnhm = (tnh - 150m)*1e3
   end
   if length(trh) > 0
-    let trhm = (trh - 90m)*1e3
+    let trhm = (trh - 190m)*1e3
   end
   let rip = vhmax - vhmin
-  echo "PUMP $nm | held_after_powerup_ms=$&thm hold_worst_V=$&vhmax ripple_V=$&rip pilot_bias_min_V=$&jbmin | 1ms_gap: gate_max=$&gapg heldN_max=$&gaph | stop: gate>-2.33V_ms=$&tr23 gate>-1.86V_ms=$&tr19 not_held_ms=$&tnhm | restart: held_ms=$&trhm"
+  echo "PUMP $nm run=$runst T=$tc C (probe BAT54 VF at 1 mA = $&vprb V) | held_after_powerup_ms=$&thm hold_worst_V=$&vhmax ripple_V=$&rip pilot_bias_min_V=$&jbmin | 1ms_gap: gate_max=$&gapg heldN_max=$&gaph | stop: gate>-2.33V_ms=$&tr23 gate>-1.86V_ms=$&tr19 not_held_ms=$&tnhm | restart: held_ms=$&trhm"
 end
 quit
 .endc

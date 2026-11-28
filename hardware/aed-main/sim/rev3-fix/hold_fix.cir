@@ -1,0 +1,195 @@
+* NOT FOR CONSTRUCTION — unreviewed design. Simulated results; models as stated; nothing has been built or measured.
+* SPDX-License-Identifier: CERN-OHL-S-2.0
+*
+* hold_fix.cir — TEMPLATE for the J-2 study (capture-notes/01-rev3-integration.md J-2): stack A hold pump, release
+* and both "held" sensors of 11_hv_storage AS DRAWN after revision 0.3 (copied part for part from
+* ../rev3-wpf/hold_held_wpf.cir, which reads them from specs/11_hv_storage.toml), driven by the sheet-09 hold-clock
+* buffer U908 (SN74LVC1G17 on 3V3_MAIN, specs/09_interlock.toml group hold_drive) modelled as a source of level vh
+* behind rclk. run.sh writes one copy per case, replacing the CASE_PARAMS line with that case's .param line and
+* CASE_LABEL with its name. Every parameter below is the as-drawn value unless a case changes it.
+*
+* Driver modes (time tstop):  mode 0 = clock keeps running;  1 = clock stopped LOW (firmware rule);
+*   2 = clock stopped HIGH (frozen controller with its pin high: fault 2 of HARDWARE_DESIGN v0.3 §B15);
+*   3 = buffer supply removed during a HIGH half-cycle: its rail falls to 0 in 1 ms [EST], the output follows it
+*       and is then high impedance (SN74LVC1G17 Ioff), leaving only R1131 100 k to GND on the pump input;
+*   4 = buffer supply removed during a LOW half-cycle (output high impedance at once);
+*   5 = clock keeps running and the over-voltage force opto U1103 is lit at tstop (the forced release).
+* Timeline: power-up at 0 (all capacitors empty); a 1 ms clock gap at 100 ms (the firmware's allowed gap) must not
+* release; stop / fault at tstop = 130 ms (+ a quarter period, so it falls in the half-cycle the mode needs);
+* the run ends at 230 ms. "Held" is judged in the settled window 70-100 ms (after start-up, before the gap).
+* Requirements (docs/HARDWARE_DESIGN.md v0.3 §B5.4 and firmware rule 4): HELD_N <= 1.0 V while held (sheet-09
+* V_IL 1.2 V); "not held" and the gate past the smallest cut-off within 25 ms of any loss of clock or supply.
+* "Conducting" = gate above the IXTT2N170D2's smallest cut-off at the case temperature, 2.0 V x Fig. 12 factor
+* (DS100418B): vc = -1.78 V at -20 C, -2.0 V at 25 C, -2.22 V at 70 C (same as ../rev3-wpf).
+* Temperature is set AFTER reset (see ../charger-storage/notes.md, Correction). A BAT54 probe at 1 mA, isolated
+* from the circuit, is printed with every result as proof (0.388 / 0.326 / 0.263 V at -20 / 25 / 70 C).
+* Models: ../charger-storage/models/datasheet_models.lib (hand-built from datasheet figures, not makers' models).
+* Pilot MMBFJ270: J177 sub-circuit with vp = pinch-off magnitude; temperature drift of the JFET not modelled
+* (the 0.5-2.0 V datasheet range is swept instead) [UNVERIFIED].
+.include ../charger-storage/models/datasheet_models.lib
+.param vh=3.1 rclk=40 fclk=1.5k duty=0.5 mode=1 tc=-20 vc=-1.78 kcap=0.7 cpm=2.2u chd=2.2u cres=3.3u rpo=470
+.param vp=2.0 ctrp=2.5 isl=1.57e-14 bz=4.52 tbv=0 rsh=22k rser=3.9k idk=0.2u idkovp=0.2u
+.param rpb=1e12 rjb=1.8meg rh=2.2meg cjb=2.2n cpp=10n cin=4.7n rpd=100k z1=0 z2=0 rbl=1e12 rlkp=1e12 pds=0 gear=0 r1133=10
+CASE_PARAMS
+.param tper={1/fclk} tgap=100m gap=1m tst={130m + (mode==2 || mode==3 ? 0.25 : 0.75)/fclk}
+* ---- driver: sheet-09 buffer output (level vh, resistance rclk) -> HOLD_A_DRV
+VCK ck0 0 PULSE(0 {vh} 0 2u 2u {duty*tper-2u} {tper})
+BCK ck1 0 V={ (time < tst || mode==0 || mode==5) ? ((time<tgap || time>tgap+gap) ? v(ck0) : 0) : (mode==2 ? vh : (mode==3 ? max(vh*(1-(time-tst)/1m),0) : 0)) }
+BSW swc 0 V={ (mode >= 3 && time > tst + (mode==3 ? 0.9m : 0)) ? 0 : 1 }
+SDRV ck1 drv swc 0 SWDRV
+.model SWDRV sw(vt=0.5 vh=0.1 ron={rclk} roff=1e9)
+* ---- sheet 11 as drawn: R1131 100 k to GND, R1133 10 ohm -> PMPA_CLK
+R1131 drv 0 {rpd}
+R1133 drv clk {r1133}
+BIDRV idrv 0 V={abs(v(drv)-v(clk))/r1133}
+C1111 clk p1 {kcap*cpm}
+C1112 clk p2 {kcap*cpm}
+C1113 clk p3 {kcap*cpm}
+C1114 clk p4 {kcap*cpm}
+D1109a h1 p1 BAT54
+D1109b p1 0 BAT54
+D1110a h2 p2 BAT54
+D1110b p2 h1 BAT54
+D1111a h3 p3 BAT54
+D1111b p3 h2 BAT54
+D1112a h4 p4 BAT54
+D1112b p4 h3 BAT54
+C1115 h1 0 {kcap*chd}
+C1116 h2 0 {kcap*chd}
+C1117 h3 0 {kcap*chd}
+R1194 h4 g {rpo}
+C1109 g 0 {kcap*cres}
+CISS g 0 3.65n
+R1127 g gtp 680k
+R1128 gtp 0 330k
+XD1101 g 0 SMF15CA
+* OVP force opto U1103 (TLP187: collector HV_RTN, emitter STKA_G). Its LED is fed 8.5 mA from 3V3_SUP by Q1111 when
+* OVP_TRIP is high (HARDWARE_DESIGN v0.3 §B5.4); here only in mode 5 (over-voltage force at tst, clock still running).
+* Otherwise LED off: dark current idkovp only. Same CTR corner as the sensors (ctrp).
+BOVL 0 ova I={ (mode==5 && time > tst) ? 8.5m : 0 }
+XU1103 ova 0 0 g TLP187 params: ctr={ctrp} isled={isl} idark={idkovp}
+* optional extra gate-source bleed (rbl; 1e12 = as drawn)
+RBL g 0 {rbl}
+* ---- release: pilot Q1112 MMBFJ270 + Q1109 BSS138, R1188 1 M
+XQ1112 rng jb 0 J177 params: vp={vp}
+M1109 0 rng g g BSS138
+R1188 rng g 1meg
+* ---- pilot pump C1125-C1127, D1117-D1119 BAV199 (pds=1: run_cases.sh swaps them for BAT54, the BAT54S halves), C1128/C1129 4.7 nF + R1190/R1191 2.2 M, C1130 + R1135
+C1125 clk rp1 {cpp}
+C1126 clk rp2 {cpp}
+C1127 clk rp3 {cpp}
+* optional bleeds on the pilot-pump nodes RLSA_P1..P3 (rpb; 1e12 = as drawn)
+RPB1 rp1 0 {rpb}
+RPB2 rp2 0 {rpb}
+RPB3 rp3 0 {rpb}
+D1117a 0 rp1 BAV199
+D1117b rp1 rh1 BAV199
+D1118a rh1 rp2 BAV199
+D1118b rp2 rh2 BAV199
+D1119a rh2 rp3 BAV199
+D1119b rp3 jb BAV199
+* reverse leakage across each pilot-pump diode (rlkp; 1e12 = none beyond the model; 1 meg = the hot Schottky
+* bound of 1 uA/V used for BAT54 in ../charger-storage/models [EST])
+RL17a 0 rp1 {rlkp}
+RL17b rp1 rh1 {rlkp}
+RL18a rh1 rp2 {rlkp}
+RL18b rp2 rh2 {rlkp}
+RL19a rh2 rp3 {rlkp}
+RL19b rp3 jb {rlkp}
+C1128 rh1 0 {cin}
+R1190 rh1 0 {rh}
+C1129 rh2 0 {cin}
+R1191 rh2 0 {rh}
+C1130 jb 0 {cjb}
+R1135 jb 0 {rjb}
+* ---- sensor 1: R1137, D1125, R1138, U1101 -> HOLD_A_HELD_N (z1: 0 intact, 1 zener shorted, 2 zener open)
+R1137 0 zk1 {rser}
+XD1125 la1 zk1x ZENER params: bvz={bz} tbv={tbv}
+RZ1O zk1 zk1x {z1==2 ? 1e15 : 1m}
+RZ1S zk1 la1 {z1==1 ? 0.1 : 1e15}
+R1138 la1 g {rsh}
+XU1101 la1 g heldn1 0 TLP187 params: ctr={ctrp} isled={isl} idark={idk}
+RPU1 v5 heldn1 47k
+RBU1 v5 heldn1 1meg
+* line capacitance of HOLD_A_HELD_N (LVC input + trace, 47 pF [EST]); without it the opto's current-source output
+* node has no capacitance and some release transients abort with "timestep too small" (time constant 2 us)
+CHN1 heldn1 0 47p
+* ---- sensor 2: R1196, D1133, R1197, U1105 -> HOLD_A_HELD2_N
+R1196 0 zk2 {rser}
+XD1133 la2 zk2x ZENER params: bvz={bz} tbv={tbv}
+RZ2O zk2 zk2x {z2==2 ? 1e15 : 1m}
+RZ2S zk2 la2 {z2==1 ? 0.1 : 1e15}
+R1197 la2 g {rsh}
+XU1105 la2 g heldn2 0 TLP187 params: ctr={ctrp} isled={isl} idark={idk}
+RPU2 v5 heldn2 47k
+RBU2 v5 heldn2 1meg
+CHN2 heldn2 0 47p
+V5 v5 0 5
+* HOLDA_OK is true only when BOTH lines are low; "not held" as soon as EITHER line is high
+BHA heldall 0 V=max(v(heldn1),v(heldn2))
+* ---- isolated temperature probe
+IPRB 0 tprb 1m
+DPRB tprb 0 BAT54
+* ---- constants for the control script
+VPTC ptc 0 {tc}
+VPVC pvc 0 {vc}
+VPTS pts 0 {tst}
+.control
+set noaskquit
+* CASE_TEMP is written by run_cases.sh from the case's tc (a circuit .param cannot be read before an analysis: a
+* first version of this file tried, the read failed and the case ran at 27 C - the very error this study corrects)
+set tcs = CASE_TEMP
+reset
+option temp=$tcs
+* GEAR_OPTION: run_cases.sh writes "option method=gear" here for a case given gear=1
+tran 5u 230m 0 10u uic
+* a run that the simulator aborted ("timestep too small") is reported as void, never as a release time or a pass
+let tend = time[length(time)-1]
+if tend < 229.9m
+  echo "FIX CASE_LABEL | RUN ABORTED at t=$&tend s - result void (re-run with gear=1)"
+  quit
+end
+* proof that the temperature reached the models: the probe must match the BAT54 model at tcs within 5 mV
+let vexp = 0.326 - 0.00136*($tcs - 25)
+let vpr = v(tprb)[10]
+let tok = abs(vpr - vexp) < 0.005
+if tok = 0
+  echo "FIX CASE_LABEL | TEMPERATURE NOT APPLIED (probe $&vpr V, expected $&vexp V) - result void"
+  quit
+end
+let vcc = v(pvc)[0]
+let tsv = v(pts)[0]
+meas tran vprb find v(tprb) at=1m
+meas tran ghmax max v(g) from=70m to=100m
+meas tran ghmin min v(g) from=70m to=100m
+meas tran hn1 max v(heldn1) from=70m to=100m
+meas tran hn2 max v(heldn2) from=70m to=100m
+meas tran hgap max v(heldall) from=100m to=110m
+meas tran ggap max v(g) from=100m to=110m
+meas tran jbmin min v(jb) from=70m to=100m
+* last "not held" -> "held" transition before the settled window = time to a steady "held"
+let theld = -1
+meas tran thl when v(heldall)=1.2 fall=last from=0 to=100m
+if length(thl) > 0
+  let theld = thl*1e3
+end
+* release after the stop / fault
+let tcond = -1
+let tnh = -1
+meas tran tco when v(g)=vcc rise=1 from=tsv to=230m
+meas tran tnhm when v(heldall)=1.2 rise=1 from=tsv to=230m
+if length(tco) > 0
+  let tcond = (tco - tsv)*1e3
+end
+if length(tnhm) > 0
+  let tnh = (tnhm - tsv)*1e3
+end
+meas tran gend max v(g) from=225m to=230m
+meas tran gst find v(g) at=tsv
+meas tran grun max v(g) from=70m to=tsv
+meas tran ipk max v(idrv) from=70m to=100m
+meas tran hrun max v(heldall) from=70m to=tsv
+echo "FIX CASE_LABEL | T=$tcs C probe_BAT54_VF=$&vprb | held_steady_after_ms=$&theld | gate 70-100ms worst=$&ghmax best=$&ghmin | HELD_N max s1=$&hn1 s2=$&hn2 | pilot_bias_min=$&jbmin | 1ms_gap: HELD_N max=$&hgap gate max=$&ggap | driver peak current 70-100ms=$&ipk A | while running 70 ms-stop: gate max=$&grun HELD_N max=$&hrun | after stop/fault: gate_at_stop=$&gst conducting_ms=$&tcond not_held_ms=$&tnh gate_at_end=$&gend"
+quit
+.endc
+.end

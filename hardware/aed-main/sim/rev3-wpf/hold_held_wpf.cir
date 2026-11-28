@@ -13,6 +13,9 @@
 *   sensor 2: R1196 3.9 k, D1133 MMSZ4687, R1197 22 k, U1105 TLP187 -> HOLD_A_HELD2_N;
 *   sheet 09 (contract issue 3 §5.4): 47 k to 5V0_SYS plus 1 M backup on each line; the opto emitters on GND;
 *   OVP force opto U1103: dark current only.
+* Timeline (corrected 2026-11-28, see notes.md Correction): power-up at 0; hold, HELD_N and "held" judged in 70-100 ms
+* (the first version used 30-40 ms, while the cold pump was still starting, and reported start-up as "fails");
+* 1 ms clock gap at 100 ms; clock stopped at 150 ms; restarted at 190 ms; end 230 ms.
 * "Held" for the interlock = BOTH lines below 1.2 V (09 reads V_IL >= 1.2 V); the sheet-11 requirement is
 * HELD_N <= 1.0 V. "Conducting" = gate above the IXTT2N170D2's smallest cut-off at that temperature
 * (2.0 V x Fig. 12 factor: 1.78 V at -20 C, 2.0 V at 25 C, 2.22 V at 70 C).
@@ -21,8 +24,8 @@
 * MMSZ4687 temperature coefficient: about 0 mV/K at 4.3 V (onsemi MMSZ4678T1/D Rev 13 Fig. 1, typical), so the
 * ngspice-ignored tbv1 (sim/rev3 note) no longer matters.
 .include ../charger-storage/models/datasheet_models.lib
-.param rsh=22k rser=3.9k cpm=2.2u rpo=470 vclk=3.1 fclk=1.5k rclk=40 tstop=60m trestart=90m stophigh=0 vp=2.0 kcap=0.7 ctrp=2.5 isl=1.57e-14
-.param bz=4.52 z1=0 z2=0 tgap=40m gap=1m
+.param rsh=22k rser=3.9k cpm=2.2u rpo=470 vclk=3.1 fclk=1.5k rclk=40 tstop=150m trestart=190m stophigh=0 vp=2.0 kcap=0.7 ctrp=2.5 isl=1.57e-14
+.param bz=4.52 z1=0 z2=0 tgap=100m gap=1m
 .param tper={1/fclk}
 VCK ck0 0 PULSE(0 {vclk} 0 2u 2u {tper/2-2u} {tper})
 BCK ck1 0 V={ ((time<tstop && (time<tgap || time>tgap+gap)) || time>trestart) ? v(ck0) : stophigh*vclk }
@@ -217,31 +220,31 @@ foreach cs 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
   end
   reset
   option temp=$tc
-  tran 5u 130m 0 10u uic
+  tran 5u 230m 0 10u uic
   let thm = -1
   let tcm = -1
   let tnhm = -1
   let trhm = -1
   meas tran theld when v(heldall)=1.2 fall=1
-  meas tran vhmax max v(g) from=30m to=40m
-  meas tran vhmin min v(g) from=30m to=40m
-  meas tran h1max max v(heldn1) from=30m to=40m
-  meas tran h2max max v(heldn2) from=30m to=40m
-  meas tran gaph max v(heldall) from=40.5m to=45m
-  meas tran tcond when v(g)=$vc rise=1 td=60m
-  meas tran tnh when v(heldall)=1.2 rise=1 td=60m
-  meas tran trh when v(heldall)=1.2 fall=1 td=90m
+  meas tran vhmax max v(g) from=70m to=100m
+  meas tran vhmin min v(g) from=70m to=100m
+  meas tran h1max max v(heldn1) from=70m to=100m
+  meas tran h2max max v(heldn2) from=70m to=100m
+  meas tran gaph max v(heldall) from=100.5m to=105m
+  meas tran tcond when v(g)=$vc rise=1 td=150m
+  meas tran tnh when v(heldall)=1.2 rise=1 td=150m
+  meas tran trh when v(heldall)=1.2 fall=1 td=190m
   if length(theld) > 0
     let thm = theld*1e3
   end
   if length(tcond) > 0
-    let tcm = (tcond - 60m)*1e3
+    let tcm = (tcond - 150m)*1e3
   end
   if length(tnh) > 0
-    let tnhm = (tnh - 60m)*1e3
+    let tnhm = (tnh - 150m)*1e3
   end
   if length(trh) > 0
-    let trhm = (trh - 90m)*1e3
+    let trhm = (trh - 190m)*1e3
   end
   echo "HOLD $nm T=$tc C | held_after_powerup_ms=$&thm | hold worst point V=$&vhmax (best $&vhmin) | HELD_N max while held: s1=$&h1max s2=$&h2max | 1 ms gap: max=$&gaph | stop low: conducting_ms=$&tcm not_held_ms=$&tnhm | restart held_ms=$&trhm"
 end
